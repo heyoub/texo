@@ -1,0 +1,24 @@
+[package]
+name = "texo-mcp"
+description = "texo MCP stdio server — read-only claim-chain tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+texo-core = { path = "../texo-core", version = "0.1.0" }
+rmcp.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

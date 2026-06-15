@@ -1,0 +1,25 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Local BatPak workspace (created by `texo init` / `just demo`)
+/.texo/
+
+# Generated compile output (from `texo compile` / `just demo`)
+/public/*
+!/public/.gitkeep
+
+# VS Code extension build artifacts
+/extensions/vscode/node_modules/
+/extensions/vscode/out/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Env / secrets
+.env
+.env.*

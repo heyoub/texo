@@ -1,0 +1,71 @@
+{
+  "name": "texo",
+  "displayName": "texo",
+  "description": "Context version control for claims — stale markdown diagnostics",
+  "version": "0.1.0",
+  "publisher": "texo",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Linters"],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "texo.checkCurrentFile",
+        "title": "texo: Check Current File"
+      },
+      {
+        "command": "texo.checkWorkspace",
+        "title": "texo: Check Workspace"
+      },
+      {
+        "command": "texo.generateAgentContext",
+        "title": "texo: Generate Agent Context"
+      }
+    ],
+    "configuration": {
+      "title": "texo",
+      "properties": {
+        "texo.binaryPath": {
+          "type": "string",
+          "default": "texo",
+          "description": "Path to the texo CLI binary"
+        },
+        "texo.storePath": {
+          "type": "string",
+          "default": ".texo/store",
+          "description": "BatPak store path"
+        },
+        "texo.workspaceId": {
+          "type": "string",
+          "default": "demo",
+          "description": "Workspace id"
+        },
+        "texo.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check markdown files on save"
+        },
+        "texo.checkOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "Check markdown files on open"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node out/diagnostics.test.js",
+    "watch": "tsc -watch -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

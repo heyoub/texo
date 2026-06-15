@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "texo": {
+      "command": "texo",
+      "args": ["mcp"],
+      "cwd": "."
+    }
+  }
+}

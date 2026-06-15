@@ -1,0 +1,173 @@
+---
+source: crates/texo-core/tests/golden_ingest.rs
+expression: golden
+---
+{
+  "workspace_id": "demo",
+  "sources_observed": 4,
+  "claims_recorded": 14,
+  "receipts": [
+    {
+      "kind": "SourceObserved",
+      "sequence": 2,
+      "scope": "workspace:demo",
+      "entity_prefix": "source"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 3,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 4,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 5,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 6,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "SourceObserved",
+      "sequence": 7,
+      "scope": "workspace:demo",
+      "entity_prefix": "source"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 8,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 9,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 10,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 11,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "SourceObserved",
+      "sequence": 12,
+      "scope": "workspace:demo",
+      "entity_prefix": "source"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 13,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 14,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 15,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 16,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "SourceObserved",
+      "sequence": 17,
+      "scope": "workspace:demo",
+      "entity_prefix": "source"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 18,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimRecorded",
+      "sequence": 19,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 20,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 21,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 22,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 23,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 24,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 25,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 26,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 27,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    },
+    {
+      "kind": "ClaimSuperseded",
+      "sequence": 28,
+      "scope": "workspace:demo",
+      "entity_prefix": "claim"
+    }
+  ]
+}

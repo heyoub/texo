@@ -1,0 +1,184 @@
+//! BatPak store handle — sole BatPak import site.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+use batpak::prelude::*;
+
+use crate::config::TexoConfig;
+use crate::events::envelope::{DecodeError, TexoEvent};
+use crate::events::payloads::{
+    ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, OnboardingCompiled, SourceObserved,
+};
+use crate::ingest::PlannedAction;
+use crate::journal::replay::{load_source_body_hashes, load_workspace_events};
+use crate::replay::reducer::ReplayedState;
+use crate::replay::ReplayError;
+use crate::state::ingest::{IngestCommitted, IngestMode, IngestPlan};
+use crate::types::ids::WorkspaceId;
+use crate::types::receipt::ReceiptView;
+
+/// Journal-specific errors.
+#[derive(Debug, thiserror::Error)]
+pub enum JournalError {
+    /// BatPak store error.
+    #[error("store: {0}")]
+    Store(#[from] StoreError),
+    /// Coordinate validation error.
+    #[error("coordinate: {0}")]
+    Coordinate(#[from] CoordinateError),
+    /// Event decode error.
+    #[error("decode: {0}")]
+    Decode(#[from] DecodeError),
+    /// Replay projection error.
+    #[error("replay: {0}")]
+    Replay(#[from] ReplayError),
+    /// Append receipt failed BatPak verification.
+    #[error("receipt invalid: {0}")]
+    ReceiptInvalid(String),
+    /// Domain validation error.
+    #[error("{0}")]
+    Domain(String),
+}
+
+/// Owned BatPak store handle (`Store<Open>`).
+pub struct StoreHandle {
+    store: Store<Open>,
+}
+
+impl StoreHandle {
+    /// Open a store at the given directory path.
+    pub fn open(path: &Path) -> Result<Self, JournalError> {
+        validate_event_payload_registry()
+            .map_err(|e| JournalError::Domain(format!("event payload registry: {e}")))?;
+        let store = Store::open(StoreConfig::new(path))?;
+        Ok(Self { store })
+    }
+
+    /// Borrow the underlying BatPak store.
+    pub fn store(&self) -> &Store<Open> {
+        &self.store
+    }
+
+    /// Close the store cleanly.
+    pub fn close(self) -> Result<(), JournalError> {
+        self.store.close()?;
+        Ok(())
+    }
+
+    /// Replay all texo events for a workspace.
+    pub fn replay_workspace(
+        &self,
+        workspace: &WorkspaceId,
+        _config: &TexoConfig,
+    ) -> Result<ReplayedState, JournalError> {
+        let events = load_workspace_events(&self.store, workspace)?;
+        Ok(ReplayedState::from_events(events)?)
+    }
+
+    /// Append a source observed event.
+    pub fn append_source(
+        &self,
+        workspace: &WorkspaceId,
+        payload: &SourceObserved,
+    ) -> Result<ReceiptView, JournalError> {
+        crate::journal::append::append_source_observed(&self.store, workspace, payload)
+    }
+
+    /// Append a claim recorded event.
+    pub fn append_claim(&self, payload: &ClaimRecorded) -> Result<ReceiptView, JournalError> {
+        crate::journal::append::append_claim_recorded(&self.store, payload)
+    }
+
+    /// Append a supersession event.
+    pub fn append_superseded(
+        &self,
+        payload: &ClaimSuperseded,
+    ) -> Result<ReceiptView, JournalError> {
+        crate::journal::append::append_superseded(&self.store, payload)
+    }
+
+    /// Append a conflict event.
+    pub fn append_conflict(
+        &self,
+        payload: &ClaimConflictDetected,
+    ) -> Result<ReceiptView, JournalError> {
+        crate::journal::append::append_conflict(&self.store, payload)
+    }
+
+    /// Append onboarding compiled event.
+    pub fn append_onboarding_compiled(
+        &self,
+        payload: &OnboardingCompiled,
+    ) -> Result<ReceiptView, JournalError> {
+        crate::journal::append::append_onboarding_compiled(&self.store, payload)
+    }
+
+    /// List raw events for tests.
+    pub fn load_events(&self, workspace: &WorkspaceId) -> Result<Vec<TexoEvent>, JournalError> {
+        Ok(load_workspace_events(&self.store, workspace)?)
+    }
+
+    /// Collect known source body hashes without full claim replay.
+    pub fn existing_source_hashes(
+        &self,
+        workspace: &WorkspaceId,
+    ) -> Result<HashSet<String>, JournalError> {
+        Ok(load_source_body_hashes(&self.store, workspace)?)
+    }
+}
+
+/// Ingest markdown sources under `input` into the journal.
+pub fn ingest_sources(
+    handle: &StoreHandle,
+    config: &TexoConfig,
+    workspace: &WorkspaceId,
+    input: &Path,
+    mode: IngestMode,
+    observed_at_ms: u64,
+) -> Result<IngestCommitted, JournalError> {
+    let existing = handle.existing_source_hashes(workspace)?;
+    let plan = crate::ingest::plan_sources(input, config, workspace, observed_at_ms, &existing)?;
+    if matches!(mode, IngestMode::DryRun) {
+        return Ok(IngestCommitted {
+            sources_observed: plan.sources_observed,
+            claims_recorded: plan.claims_recorded,
+            workspace_id: plan.workspace_id,
+            receipts: Vec::new(),
+        });
+    }
+
+    let mut receipts = Vec::new();
+    for action in plan.actions {
+        let receipt = match action {
+            PlannedAction::Source(payload) => handle.append_source(workspace, &payload)?,
+            PlannedAction::Claim(payload) => handle.append_claim(&payload)?,
+            PlannedAction::Supersede(payload) => handle.append_superseded(&payload)?,
+        };
+        receipts.push(receipt);
+    }
+
+    Ok(IngestCommitted {
+        sources_observed: plan.sources_observed,
+        claims_recorded: plan.claims_recorded,
+        workspace_id: plan.workspace_id,
+        receipts,
+    })
+}
+
+/// Plan-only ingest for dry runs.
+pub fn plan_ingest_sources(
+    input: &Path,
+    config: &TexoConfig,
+    workspace: &WorkspaceId,
+    observed_at_ms: u64,
+    existing_hashes: &HashSet<String>,
+) -> Result<IngestPlan, JournalError> {
+    crate::ingest::plan_sources(input, config, workspace, observed_at_ms, existing_hashes).map(
+        |plan| IngestPlan {
+            sources_observed: plan.sources_observed,
+            claims_recorded: plan.claims_recorded,
+            workspace_id: plan.workspace_id,
+        },
+    )
+}

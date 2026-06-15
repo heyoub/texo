@@ -1,0 +1,15 @@
+---
+source: crates/texo-core/tests/golden_compile.rs
+expression: "CompileGolden { file_names, onboarding_first_line, }"
+---
+{
+  "file_names": [
+    "onboarding.generated.md",
+    "claims.json",
+    "stale-context.json",
+    "conflicts.json",
+    "agent-context.json",
+    "index.html"
+  ],
+  "onboarding_first_line": "# Generated Onboarding"
+}

@@ -1,0 +1,12 @@
+[default]
+extend-ignore-re = ["(?i)crate", "Ba?tPak", "texo", "ctxvc", "serde", "rmcp"]
+
+[files]
+extend-exclude = [
+    "extensions/vscode/node_modules/",
+    "extensions/vscode/out/",
+    "target/",
+    "public/",
+    "crates/texo-core/tests/snapshots/",
+    "Cargo.lock",
+]
