@@ -1,6 +1,6 @@
 //! Staleness checking against replayed claim state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::extract::normalize::normalize_line;
@@ -112,9 +112,23 @@ pub fn check_staleness(
 }
 
 /// Infer supersession edges during ingest ordering.
-pub fn infer_supersessions(claims: &[(ClaimId, ClaimView)]) -> Vec<(ClaimId, ClaimId, String)> {
+///
+/// `new_claims` are the claims recorded in the current ingest batch. `historical_claims`
+/// are the workspace's currently-active claims loaded from the journal; they participate
+/// as supersession candidates but can never themselves be the superseding (winning) claim.
+/// This guarantees an edge is only emitted when a new claim supersedes an older one, and
+/// never purely between two pre-existing historical claims (those were resolved at their own
+/// ingest time). `existing_edges` lists `(old_claim_id, new_claim_id)` pairs already recorded
+/// in the journal so duplicate edges are not re-emitted.
+pub fn infer_supersessions(
+    new_claims: &[(ClaimId, ClaimView)],
+    historical_claims: &[(ClaimId, ClaimView)],
+    existing_edges: &HashSet<(String, String)>,
+) -> Vec<(ClaimId, ClaimId, String)> {
+    let new_ids: HashSet<String> = new_claims.iter().map(|(id, _)| id.to_string()).collect();
+
     let mut by_subject: HashMap<String, Vec<(ClaimId, ClaimView)>> = HashMap::new();
-    for (id, view) in claims {
+    for (id, view) in new_claims.iter().chain(historical_claims.iter()) {
         by_subject
             .entry(view.subject_hint.clone())
             .or_default()
@@ -127,8 +141,11 @@ pub fn infer_supersessions(claims: &[(ClaimId, ClaimView)]) -> Vec<(ClaimId, Cla
             continue;
         }
 
+        // The superseding claim must come from the current batch; restrict winner
+        // candidates accordingly so historical claims never supersede each other.
         let mut winners: Vec<(ClaimId, ClaimView)> = group
             .iter()
+            .filter(|(id, _)| new_ids.contains(id.as_str()))
             .filter(|(_, v)| {
                 has_replacement_keyword(&v.text) || has_replacement_keyword(&v.normalized_text)
             })
@@ -136,17 +153,30 @@ pub fn infer_supersessions(claims: &[(ClaimId, ClaimView)]) -> Vec<(ClaimId, Cla
             .collect();
 
         if winners.is_empty() {
-            winners.push(group.last().expect("len >= 2").clone());
+            // Fall back to the last new-batch claim in insertion order.
+            let Some(latest_new) = group
+                .iter()
+                .rev()
+                .find(|(id, _)| new_ids.contains(id.as_str()))
+            else {
+                continue;
+            };
+            winners.push(latest_new.clone());
         }
 
         winners.sort_by_key(|(_, v)| supersession_canonical_rank(v));
-        let canonical = winners.last().expect("non-empty winners");
+        let Some(canonical) = winners.last() else {
+            continue;
+        };
 
         for (candidate_id, candidate) in &group {
             if candidate_id == &canonical.0 {
                 continue;
             }
             if candidate.normalized_text == canonical.1.normalized_text {
+                continue;
+            }
+            if existing_edges.contains(&(candidate_id.to_string(), canonical.0.to_string())) {
                 continue;
             }
             edges.push((
@@ -159,6 +189,12 @@ pub fn infer_supersessions(claims: &[(ClaimId, ClaimView)]) -> Vec<(ClaimId, Cla
             ));
         }
     }
+    // Deterministic ordering independent of HashMap iteration order.
+    edges.sort_by(|a, b| {
+        a.0.as_str()
+            .cmp(b.0.as_str())
+            .then_with(|| a.1.as_str().cmp(b.1.as_str()))
+    });
     edges
 }
 

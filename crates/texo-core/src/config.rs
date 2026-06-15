@@ -195,6 +195,33 @@ impl WorkspaceConfig {
             root.join(path)
         }
     }
+
+    /// Resolve the directory that [`Self::docs_glob`] scans, relative to `root`.
+    ///
+    /// The returned path is the literal (non-wildcard) prefix of the configured
+    /// glob, which is the directory tree the staleness scan should walk. A glob
+    /// such as `docs/**/*.md` resolves to `<root>/docs`, while `sample_sources/**/*.md`
+    /// resolves to `<root>/sample_sources`. Patterns whose first component is
+    /// already a wildcard resolve to `root` itself.
+    pub fn docs_scan_root(&self, root: &Path) -> PathBuf {
+        let glob_path = PathBuf::from(&self.docs_glob);
+        let mut prefix = PathBuf::new();
+        for component in glob_path.components() {
+            let part = component.as_os_str().to_string_lossy();
+            if part.contains(['*', '?', '[']) {
+                break;
+            }
+            prefix.push(component);
+        }
+        if prefix.as_os_str().is_empty() {
+            return root.to_path_buf();
+        }
+        if prefix.is_absolute() {
+            prefix
+        } else {
+            root.join(prefix)
+        }
+    }
 }
 
 /// Configuration-specific failures.
@@ -264,5 +291,33 @@ docs_glob = "docs/**/*.md"
         let root = TexoRootConfig::load(&path).expect("load");
         let staging = root.resolve(Some("staging")).expect("staging");
         assert_eq!(staging.store_path, ".texo/stores/staging");
+    }
+
+    #[test]
+    fn docs_scan_root_uses_glob_prefix() {
+        let root = Path::new("/ws");
+
+        let demo = WorkspaceConfig::demo();
+        assert_eq!(demo.docs_scan_root(root), root.join("sample_sources"));
+
+        let staging = WorkspaceConfig {
+            workspace_id: "staging".to_string(),
+            store_path: ".texo/stores/staging".to_string(),
+            docs_glob: "docs/**/*.md".to_string(),
+            extractor_cmd: None,
+        };
+        assert_eq!(staging.docs_scan_root(root), root.join("docs"));
+    }
+
+    #[test]
+    fn docs_scan_root_falls_back_to_root_for_leading_wildcard() {
+        let root = Path::new("/ws");
+        let cfg = WorkspaceConfig {
+            workspace_id: "demo".to_string(),
+            store_path: ".texo/store".to_string(),
+            docs_glob: "**/*.md".to_string(),
+            extractor_cmd: None,
+        };
+        assert_eq!(cfg.docs_scan_root(root), root.to_path_buf());
     }
 }

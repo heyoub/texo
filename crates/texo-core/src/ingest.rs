@@ -39,6 +39,11 @@ pub enum PlannedAction {
 }
 
 /// Build an ingest plan using workspace config (heuristic or optional cmd extractor).
+///
+/// `historical_claims` are the workspace's currently-active claims (loaded from the
+/// journal) included as supersession candidates, and `existing_edges` are
+/// `(old_claim_id, new_claim_id)` pairs already recorded so they are not re-emitted.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_sources_for_config(
     input: &Path,
     config: &WorkspaceConfig,
@@ -46,6 +51,8 @@ pub fn plan_sources_for_config(
     observed_at_ms: u64,
     existing_hashes: &HashSet<String>,
     root: &Path,
+    historical_claims: &[(ClaimId, ClaimView)],
+    existing_edges: &HashSet<(String, String)>,
 ) -> Result<IngestPlanInternal, JournalError> {
     plan_sources(
         input,
@@ -55,10 +62,17 @@ pub fn plan_sources_for_config(
         existing_hashes,
         root,
         extract_claims,
+        historical_claims,
+        existing_edges,
     )
 }
 
 /// Build an ingest plan by scanning markdown sources.
+///
+/// `historical_claims` are currently-active workspace claims included as supersession
+/// candidates; only new-batch claims may supersede. `existing_edges` are already-recorded
+/// `(old_claim_id, new_claim_id)` pairs that must not be duplicated.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_sources(
     input: &Path,
     config: &WorkspaceConfig,
@@ -67,6 +81,8 @@ pub fn plan_sources(
     existing_hashes: &HashSet<String>,
     root: &Path,
     extract: ExtractClaimsFn,
+    historical_claims: &[(ClaimId, ClaimView)],
+    existing_edges: &HashSet<(String, String)>,
 ) -> Result<IngestPlanInternal, JournalError> {
     let root_dir = if input.is_dir() {
         input
@@ -124,7 +140,9 @@ pub fn plan_sources(
         }
     }
 
-    for (old_id, new_id, reason) in infer_supersessions(&claim_views) {
+    for (old_id, new_id, reason) in
+        infer_supersessions(&claim_views, historical_claims, existing_edges)
+    {
         actions.push(PlannedAction::Supersede(ClaimSuperseded {
             old_claim_id: old_id.to_string(),
             new_claim_id: new_id.to_string(),

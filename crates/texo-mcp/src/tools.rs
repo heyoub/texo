@@ -80,7 +80,11 @@ impl ToolContext {
             input.subject_hint.as_deref(),
         );
         journal.close()?;
-        Ok(serde_json::to_string_pretty(&context.claims)?)
+        let output = serde_json::json!({
+            "claims": context.claims,
+            "replayed_through_sequence": context.replayed_through_sequence,
+        });
+        Ok(serde_json::to_string_pretty(&output)?)
     }
 
     /// Execute get_agent_context tool.

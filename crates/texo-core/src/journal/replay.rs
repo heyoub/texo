@@ -32,9 +32,9 @@ pub fn load_workspace_events(
             let stored = store
                 .get(event_id)
                 .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if let Some(decoded) = decode_stored_event(&stored, entry.global_sequence())? {
-                events.push(decoded);
-            }
+            // Strict policy: an unknown kind propagates as an error here rather
+            // than being silently skipped (SPEC.md:73 — no silent partial state).
+            events.push(decode_stored_event(&stored, entry.global_sequence())?);
         }
         after = Some(page.last().expect("non-empty page").global_sequence());
     }
@@ -61,10 +61,11 @@ pub fn load_source_body_hashes(
             let stored = store
                 .get(event_id)
                 .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if let Some(payload) = stored
-                .event
-                .route_typed::<SourceObserved>()
-                .map_err(map_typed_decode_error)?
+            // Decode against all five known kinds so a truly unknown kind still
+            // errors (no silent skip), then filter to the SOURCE kind we want.
+            // Other KNOWN kinds are intentionally ignored here.
+            if let TexoEvent::SourceObserved { payload, .. } =
+                decode_stored_event(&stored, entry.global_sequence())?
             {
                 hashes.insert(payload.body_hash_hex);
             }
@@ -77,15 +78,27 @@ pub fn load_source_body_hashes(
 
 fn map_typed_decode_error(error: TypedDecodeError) -> DecodeError {
     match error {
-        TypedDecodeError::KindMismatch { .. } => DecodeError::UnsupportedKind,
+        // `route_typed` (the only producer reaching this mapper) returns
+        // `Ok(None)` on a kind mismatch and never `TypedDecodeError::KindMismatch`,
+        // so only the genuine decode-failure case is reachable here. A truly
+        // unknown kind is reported by the explicit `Err(UnsupportedKind)`
+        // fallthrough in `decode_stored_event`, not from this mapping.
         TypedDecodeError::DecodeFailure { source, .. } => DecodeError::Decode(source.to_string()),
+        TypedDecodeError::KindMismatch { .. } => {
+            DecodeError::Decode("unexpected kind mismatch from route_typed".to_string())
+        }
     }
 }
 
+/// Decode one stored entry into a known texo event.
+///
+/// Recognizes all five known texo kinds. A kind that matches none of them is
+/// treated as an error (`DecodeError::UnsupportedKind`) rather than being
+/// silently skipped, so callers replay full state or fail loudly.
 fn decode_stored_event(
     stored: &StoredEvent<serde_json::Value>,
     sequence: u64,
-) -> Result<Option<TexoEvent>, DecodeError> {
+) -> Result<TexoEvent, DecodeError> {
     let scope = stored.coordinate.scope().to_string();
     let entity = stored.coordinate.entity().to_string();
     let event_id = stored.event.header.event_id;
@@ -98,7 +111,7 @@ fn decode_stored_event(
     {
         let mut receipt = base_receipt;
         receipt.kind = "SourceObserved".to_string();
-        return Ok(Some(TexoEvent::SourceObserved { payload, receipt }));
+        return Ok(TexoEvent::SourceObserved { payload, receipt });
     }
     if let Some(payload) = stored
         .event
@@ -107,7 +120,7 @@ fn decode_stored_event(
     {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimRecorded".to_string();
-        return Ok(Some(TexoEvent::ClaimRecorded { payload, receipt }));
+        return Ok(TexoEvent::ClaimRecorded { payload, receipt });
     }
     if let Some(payload) = stored
         .event
@@ -116,7 +129,7 @@ fn decode_stored_event(
     {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimSuperseded".to_string();
-        return Ok(Some(TexoEvent::ClaimSuperseded { payload, receipt }));
+        return Ok(TexoEvent::ClaimSuperseded { payload, receipt });
     }
     if let Some(payload) = stored
         .event
@@ -125,7 +138,7 @@ fn decode_stored_event(
     {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimConflictDetected".to_string();
-        return Ok(Some(TexoEvent::ClaimConflictDetected { payload, receipt }));
+        return Ok(TexoEvent::ClaimConflictDetected { payload, receipt });
     }
     if let Some(payload) = stored
         .event
@@ -134,8 +147,10 @@ fn decode_stored_event(
     {
         let mut receipt = base_receipt;
         receipt.kind = "OnboardingCompiled".to_string();
-        return Ok(Some(TexoEvent::OnboardingCompiled { payload, receipt }));
+        return Ok(TexoEvent::OnboardingCompiled { payload, receipt });
     }
 
-    Ok(None)
+    // None of the five known kinds matched: this is a truly unknown kind, which
+    // must not be silently dropped (SPEC.md:73 — no silent partial state).
+    Err(DecodeError::UnsupportedKind)
 }

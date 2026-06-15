@@ -1,9 +1,12 @@
 //! End-to-end demo flow via CLI.
 
 use assert_cmd::Command;
+use texo_core::fixture::FIXTURE_OBSERVED_AT_MS;
 
 fn texo() -> Command {
-    Command::cargo_bin("texo").expect("texo binary")
+    let mut cmd = Command::cargo_bin("texo").expect("texo binary");
+    cmd.env("TEXO_OBSERVED_AT_MS", FIXTURE_OBSERVED_AT_MS.to_string());
+    cmd
 }
 
 #[test]

@@ -54,24 +54,44 @@ pub struct ReceiptView {
 }
 
 impl ReceiptView {
-    /// Build from a verified BatPak append receipt.
+    /// Build a view from a BatPak append receipt that was already verified
+    /// against the store at write time.
+    ///
+    /// Note on scope: the `AppendReceipt` signing material (`key_id`,
+    /// `signature`, `extensions`) is intentionally NOT carried onto the view.
+    /// Those fields are ephemeral — BatPak's [`StoredEvent`]/`EventHeader` do
+    /// not persist them — so they cannot be recovered at replay/verify time and
+    /// would not round-trip through the JSON surface. Re-verification of a
+    /// projected view (see [`crate::journal::receipt::verify_receipt_view`])
+    /// therefore performs an existence + sequence + content-hash consistency
+    /// check on the unsigned path; signed re-verification is not yet wired (see
+    /// that function's docs).
+    ///
+    /// [`StoredEvent`]: batpak::prelude::StoredEvent
     pub fn from_verified_append(
         receipt: &AppendReceipt,
         kind: &str,
         scope: &str,
         entity: &str,
     ) -> Self {
-        receipt_view(
-            receipt.event_id.into(),
-            receipt.sequence,
-            kind,
-            scope,
-            entity,
-        )
+        ReceiptView {
+            event_id: EventIdHex::new(format!("{:#x}", u128::from(receipt.event_id))),
+            sequence: LocalSequence::new(receipt.sequence),
+            kind: kind.to_string(),
+            scope: scope.to_string(),
+            entity: entity.to_string(),
+        }
     }
 }
 
-/// Build receipt view from BatPak append metadata.
+/// Build a receipt view from bare BatPak append metadata.
+///
+/// Used by the replay path, which reconstructs a view from a persisted
+/// [`StoredEvent`] (event id, sequence, coordinate). The original receipt's
+/// signing material is not persisted by BatPak and so is not available here;
+/// the produced view describes the unsigned, replay-recoverable shape.
+///
+/// [`StoredEvent`]: batpak::prelude::StoredEvent
 pub fn receipt_view(
     event_id: u128,
     sequence: u64,

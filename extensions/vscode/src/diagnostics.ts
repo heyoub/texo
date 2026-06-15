@@ -1,10 +1,11 @@
+import * as path from "node:path";
 import * as vscode from "vscode";
 import { lineRange } from "./range";
 import { StalenessReport } from "./runner";
 
 const collection = vscode.languages.createDiagnosticCollection("texo");
 
-export function publishDiagnostics(report: StalenessReport): void {
+export function publishDiagnostics(report: StalenessReport, root: string): void {
   const byFile = new Map<string, vscode.Diagnostic[]>();
 
   for (const diag of report.diagnostics) {
@@ -24,6 +25,7 @@ export function publishDiagnostics(report: StalenessReport): void {
 
   collection.clear();
   for (const [file, diagnostics] of byFile) {
-    collection.set(vscode.Uri.file(file), diagnostics);
+    const absolute = path.isAbsolute(file) ? file : path.join(root, file);
+    collection.set(vscode.Uri.file(absolute), diagnostics);
   }
 }

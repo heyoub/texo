@@ -5,6 +5,7 @@ use assert_cmd::Command;
 use insta::assert_json_snapshot;
 use serde_json::Value;
 use tempfile::TempDir;
+use texo_core::fixture::FIXTURE_OBSERVED_AT_MS;
 
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -23,11 +24,13 @@ fn setup_workspace() -> TempDir {
 
     Command::new(cargo_bin("texo"))
         .args(["init", "--workspace", "demo"])
+        .env("TEXO_OBSERVED_AT_MS", FIXTURE_OBSERVED_AT_MS.to_string())
         .current_dir(dir.path())
         .assert()
         .success();
     Command::new(cargo_bin("texo"))
         .args(["ingest", "sample_sources"])
+        .env("TEXO_OBSERVED_AT_MS", FIXTURE_OBSERVED_AT_MS.to_string())
         .current_dir(dir.path())
         .assert()
         .success();
@@ -49,6 +52,7 @@ fn claims_json_golden() {
     let dir = setup_workspace();
     let output = Command::new(cargo_bin("texo"))
         .args(["claims", "--json"])
+        .env("TEXO_OBSERVED_AT_MS", FIXTURE_OBSERVED_AT_MS.to_string())
         .current_dir(dir.path())
         .output()
         .expect("run claims");

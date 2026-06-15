@@ -1,10 +1,9 @@
 //! Journal receipt verification against BatPak store index.
 
-use std::collections::BTreeMap;
-
-use batpak::prelude::*;
+use batpak::prelude::{Open, Store};
 
 use crate::events::envelope::TexoEvent;
+use crate::journal::receipt::verify_receipt_view;
 use crate::journal::replay::load_workspace_events;
 use crate::types::ids::WorkspaceId;
 
@@ -25,33 +24,7 @@ pub fn verify_journal_receipts(
 
 fn verify_event_receipt(store: &Store<Open>, event: &TexoEvent) -> Result<(), VerifyError> {
     let receipt = event_receipt_view(event);
-    let event_id_hex = receipt.event_id.as_str();
-    let raw = event_id_hex.strip_prefix("0x").unwrap_or(event_id_hex);
-    let event_id = EventId::from(
-        u128::from_str_radix(raw, 16)
-            .map_err(|e| VerifyError::Journal(format!("invalid event id: {e}")))?,
-    );
-    let stored = store
-        .get(event_id)
-        .map_err(|e| VerifyError::Journal(format!("store get: {e}")))?;
-    let verification = store.verify_append_receipt_wire_detailed(
-        event_id,
-        receipt.sequence.get(),
-        stored.event.header.content_hash,
-        [0u8; 32],
-        None,
-        BTreeMap::new(),
-    );
-    if !verification.is_valid() {
-        let message = verification
-            .error()
-            .map_or_else(|| "unknown".to_string(), |e| format!("{e:?}"));
-        return Err(VerifyError::Journal(format!(
-            "receipt {} invalid: {message}",
-            receipt.event_id
-        )));
-    }
-    Ok(())
+    verify_receipt_view(store, receipt).map_err(|e| VerifyError::Journal(e.to_string()))
 }
 
 fn event_receipt_view(event: &TexoEvent) -> &crate::types::receipt::ReceiptView {

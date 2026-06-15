@@ -99,12 +99,8 @@ pub fn compile_out(
     let workspace = journal.config().workspace()?;
     let replayed = journal.replay(&workspace)?;
     let context = build_agent_context(&replayed.state, workspace.as_str(), None);
-    let stale = check_staleness(
-        &replayed.state,
-        workspace.as_str(),
-        &root.join("sample_sources"),
-        root,
-    )?;
+    let docs_root = journal.config().docs_scan_root(root);
+    let stale = check_staleness(&replayed.state, workspace.as_str(), &docs_root, root)?;
     let conflicts = detect_conflicts(&replayed.state, workspace.as_str());
     let output = compile_artifacts(&context, &replayed.state, &stale, &conflicts)?;
 

@@ -5,7 +5,9 @@ use crate::events::payloads::{
     ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, SourceObserved,
 };
 use crate::replay::state::{ClaimState, ClaimView, ConflictView, SourceView, SupersessionView};
-use crate::state::claim_lifecycle::{initial_claim_status, transition, ClaimLifecycleEvent};
+use crate::state::claim_lifecycle::{
+    initial_claim_status, transition, validate_supersession, ClaimLifecycleEvent,
+};
 use crate::types::ids::{ClaimId, ConflictId, SourceId};
 use crate::types::status::{ClaimStatus, ConflictStatus};
 use crate::types::IdParseError;
@@ -92,6 +94,15 @@ fn apply_supersession_event(
     let new_id = ClaimId::try_from(payload.new_claim_id.as_str())
         .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
 
+    validate_supersession(payload).map_err(|e| ReplayError::Transition(e.to_string()))?;
+
+    if !state.claims.contains_key(&payload.old_claim_id) {
+        return Err(ReplayError::MissingClaim(payload.old_claim_id.clone()));
+    }
+    if !state.claims.contains_key(&payload.new_claim_id) {
+        return Err(ReplayError::MissingClaim(payload.new_claim_id.clone()));
+    }
+
     if let Some(old) = state.claims.get_mut(&payload.old_claim_id) {
         old.status = transition(old.status, ClaimLifecycleEvent::Superseded)
             .map_err(|e| ReplayError::Transition(e.to_string()))?;
@@ -127,7 +138,8 @@ fn apply_conflict(
         .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
     let claim_b = ClaimId::try_from(payload.claim_b.as_str())
         .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let status = ConflictStatus::parse_str(&payload.status).unwrap_or(ConflictStatus::Open);
+    let status = ConflictStatus::parse_str(&payload.status)
+        .ok_or_else(|| ReplayError::InvalidStatus(payload.status.clone()))?;
 
     if status == ConflictStatus::Open {
         for id in [&payload.claim_a, &payload.claim_b] {
@@ -162,4 +174,141 @@ pub enum ReplayError {
     /// Illegal lifecycle transition.
     #[error("transition: {0}")]
     Transition(String),
+    /// Referenced claim is absent from replay state.
+    #[error("missing claim: {0}")]
+    MissingClaim(String),
+    /// Unrecognized conflict status string in event payload.
+    #[error("invalid conflict status: {0}")]
+    InvalidStatus(String),
+}
+
+#[cfg(test)]
+mod tests {
+    //! PROVES: INV-REPLAY-ERRORS (F3/F4 error paths) — folding domain events
+    //! directly through the reducer must surface MissingClaim, Transition
+    //! (self-supersession) and InvalidStatus rather than panicking or silently
+    //! succeeding.
+    use super::*;
+    use crate::events::payloads::{ClaimConflictDetected, ClaimRecorded, ClaimSuperseded};
+    use crate::replay::reducer::fold_events;
+    use crate::types::receipt::receipt_view;
+
+    const SOURCE_ID: &str = "src_abc123def456";
+
+    fn recorded_event(claim_id: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimRecorded {
+            payload: ClaimRecorded {
+                claim_id: claim_id.to_string(),
+                workspace_id: "demo".to_string(),
+                source_id: SOURCE_ID.to_string(),
+                source_path: "x.md".to_string(),
+                line_start: 1,
+                line_end: 1,
+                text: "x".to_string(),
+                normalized_text: "x".to_string(),
+                subject_hint: "s".to_string(),
+                predicate_hint: "unknown".to_string(),
+                object_hint: "x".to_string(),
+                confidence_ppm: 500_000,
+                extractor_kind: "test".to_string(),
+                observed_at_ms: 1,
+            },
+            receipt: receipt_view(sequence.into(), sequence, "ClaimRecorded", "demo", claim_id),
+        }
+    }
+
+    fn supersede_event(old: &str, new: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimSuperseded {
+            payload: ClaimSuperseded {
+                old_claim_id: old.to_string(),
+                new_claim_id: new.to_string(),
+                workspace_id: "demo".to_string(),
+                reason: "test".to_string(),
+                decided_by: "test".to_string(),
+                observed_at_ms: 2,
+            },
+            receipt: receipt_view(sequence.into(), sequence, "ClaimSuperseded", "demo", old),
+        }
+    }
+
+    fn conflict_event(status: &str, claim_a: &str, claim_b: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimConflictDetected {
+            payload: ClaimConflictDetected {
+                conflict_id: "conflict_aaaaaaaaaaaa".to_string(),
+                workspace_id: "demo".to_string(),
+                claim_a: claim_a.to_string(),
+                claim_b: claim_b.to_string(),
+                reason: "test".to_string(),
+                status: status.to_string(),
+                observed_at_ms: 3,
+            },
+            receipt: receipt_view(
+                sequence.into(),
+                sequence,
+                "ClaimConflictDetected",
+                "demo",
+                "conflict_aaaaaaaaaaaa",
+            ),
+        }
+    }
+
+    #[test]
+    fn supersession_missing_old_claim_errors() {
+        // new_claim recorded but old_claim never recorded.
+        let new_id = "claim_bbbbbbbbbbbb";
+        let old_id = "claim_aaaaaaaaaaaa";
+        let events = [
+            recorded_event(new_id, 1),
+            supersede_event(old_id, new_id, 2),
+        ];
+        let result = fold_events(&events);
+        match result {
+            Err(ReplayError::MissingClaim(id)) => assert_eq!(id, old_id),
+            other => panic!("expected MissingClaim({old_id}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supersession_missing_new_claim_errors() {
+        // old_claim recorded but new_claim never recorded.
+        let old_id = "claim_aaaaaaaaaaaa";
+        let new_id = "claim_bbbbbbbbbbbb";
+        let events = [
+            recorded_event(old_id, 1),
+            supersede_event(old_id, new_id, 2),
+        ];
+        let result = fold_events(&events);
+        match result {
+            Err(ReplayError::MissingClaim(id)) => assert_eq!(id, new_id),
+            other => panic!("expected MissingClaim({new_id}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_supersession_errors_with_transition() {
+        // old_claim_id == new_claim_id must be rejected by validate_supersession.
+        let id = "claim_aaaaaaaaaaaa";
+        let events = [recorded_event(id, 1), supersede_event(id, id, 2)];
+        let result = fold_events(&events);
+        assert!(
+            matches!(result, Err(ReplayError::Transition(_))),
+            "self-supersession must produce ReplayError::Transition, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn conflict_with_unparsable_status_errors() {
+        let a = "claim_aaaaaaaaaaaa";
+        let b = "claim_bbbbbbbbbbbb";
+        let events = [
+            recorded_event(a, 1),
+            recorded_event(b, 2),
+            conflict_event("not_a_status", a, b, 3),
+        ];
+        let result = fold_events(&events);
+        match result {
+            Err(ReplayError::InvalidStatus(s)) => assert_eq!(s, "not_a_status"),
+            other => panic!("expected InvalidStatus(not_a_status), got {other:?}"),
+        }
+    }
 }

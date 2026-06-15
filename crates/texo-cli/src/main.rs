@@ -3,10 +3,10 @@
 mod commands;
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use texo_core::fixture::FIXTURE_OBSERVED_AT_MS;
 use texo_mcp::run_stdio;
 
 #[derive(Parser)]
@@ -136,7 +136,21 @@ fn main() -> Result<()> {
     }
 }
 
-/// Observation timestamp for writes (fixed in tests via env override pattern).
+/// Observation timestamp (in milliseconds since the Unix epoch) for writes.
+///
+/// Returns real wall-clock time by default. If the `TEXO_OBSERVED_AT_MS`
+/// environment variable is set and parses as a `u64`, that value is returned
+/// instead. This override exists so golden/integration tests can pin a
+/// deterministic timestamp (e.g. the fixture constant).
 pub fn observed_at_ms() -> u64 {
-    FIXTURE_OBSERVED_AT_MS
+    if let Ok(raw) = std::env::var("TEXO_OBSERVED_AT_MS") {
+        if let Ok(parsed) = raw.trim().parse::<u64>() {
+            return parsed;
+        }
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }

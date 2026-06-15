@@ -13,10 +13,12 @@ use crate::events::payloads::{
 use crate::ingest::PlannedAction;
 use crate::journal::replay::{load_source_body_hashes, load_workspace_events};
 use crate::replay::reducer::ReplayedState;
+use crate::replay::state::ClaimView;
 use crate::replay::ReplayError;
 use crate::state::ingest::{IngestCommitted, IngestMode, IngestPlan};
-use crate::types::ids::WorkspaceId;
+use crate::types::ids::{ClaimId, WorkspaceId};
 use crate::types::receipt::ReceiptView;
+use crate::types::status::ClaimStatus;
 
 /// Journal-specific errors.
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +42,10 @@ pub enum JournalError {
     #[error("{0}")]
     Domain(String),
 }
+
+/// Active claim candidates and already-recorded supersession edges for incremental
+/// supersession inference.
+type SupersessionContext = (Vec<(ClaimId, ClaimView)>, HashSet<(String, String)>);
 
 /// Owned BatPak store handle (`Store<Open>`).
 pub struct StoreHandle {
@@ -126,6 +132,37 @@ impl StoreHandle {
     ) -> Result<HashSet<String>, JournalError> {
         Ok(load_source_body_hashes(&self.store, workspace)?)
     }
+
+    /// Load the workspace's currently-active claims plus already-recorded supersession
+    /// edges by replaying the journal.
+    ///
+    /// Active claims are returned as `(ClaimId, ClaimView)` candidates for incremental
+    /// supersession inference; edges are `(old_claim_id, new_claim_id)` pairs that already
+    /// exist so they are not re-emitted. Reuses the existing replay entry points.
+    pub fn active_claims_for_supersession(
+        &self,
+        workspace: &WorkspaceId,
+        config: &WorkspaceConfig,
+    ) -> Result<SupersessionContext, JournalError> {
+        let state = self.replay_workspace(workspace, config)?.state;
+
+        let mut claims: Vec<(ClaimId, ClaimView)> = state
+            .claims
+            .values()
+            .filter(|c| c.status == ClaimStatus::Current)
+            .map(|c| (c.claim_id.clone(), c.clone()))
+            .collect();
+        // Deterministic candidate ordering independent of HashMap iteration order.
+        claims.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+
+        let existing_edges: HashSet<(String, String)> = state
+            .superseded
+            .values()
+            .map(|s| (s.old_claim_id.to_string(), s.new_claim_id.to_string()))
+            .collect();
+
+        Ok((claims, existing_edges))
+    }
 }
 
 /// Ingest markdown sources under `input` into the journal.
@@ -139,6 +176,8 @@ pub fn ingest_sources(
     root: &Path,
 ) -> Result<IngestCommitted, JournalError> {
     let existing = handle.existing_source_hashes(workspace)?;
+    let (historical_claims, existing_edges) =
+        handle.active_claims_for_supersession(workspace, config)?;
     let plan = crate::ingest::plan_sources_for_config(
         input,
         config,
@@ -146,6 +185,8 @@ pub fn ingest_sources(
         observed_at_ms,
         &existing,
         root,
+        &historical_claims,
+        &existing_edges,
     )?;
     if matches!(mode, IngestMode::DryRun) {
         return Ok(IngestCommitted {
@@ -175,7 +216,12 @@ pub fn ingest_sources(
 }
 
 /// Plan-only ingest for dry runs.
+///
+/// Loads the workspace's currently-active claims and already-recorded supersession edges
+/// from the journal (via [`StoreHandle::active_claims_for_supersession`]) so that the plan
+/// reports cross-session supersessions, matching [`ingest_sources`] in [`IngestMode::DryRun`].
 pub fn plan_ingest_sources(
+    handle: &StoreHandle,
     input: &Path,
     config: &WorkspaceConfig,
     workspace: &WorkspaceId,
@@ -183,6 +229,8 @@ pub fn plan_ingest_sources(
     existing_hashes: &HashSet<String>,
     root: &Path,
 ) -> Result<IngestPlan, JournalError> {
+    let (historical_claims, existing_edges) =
+        handle.active_claims_for_supersession(workspace, config)?;
     crate::ingest::plan_sources_for_config(
         input,
         config,
@@ -190,6 +238,8 @@ pub fn plan_ingest_sources(
         observed_at_ms,
         existing_hashes,
         root,
+        &historical_claims,
+        &existing_edges,
     )
     .map(|plan| IngestPlan {
         sources_observed: plan.sources_observed,
