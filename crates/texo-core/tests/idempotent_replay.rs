@@ -40,6 +40,7 @@ fn second_ingest_of_unchanged_sources_is_idempotent() {
         &dir.path().join("sample_sources"),
         IngestMode::Commit,
         FIXTURE_OBSERVED_AT_MS,
+        dir.path(),
     )
     .expect("second ingest");
     journal.close().expect("close");

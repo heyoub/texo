@@ -17,6 +17,7 @@ pub struct ClaimHints {
 
 const KEYWORDS: &[(&str, u32)] = &[
     ("decided", 900_000),
+    ("decision:", 900_000),
     ("changed", 900_000),
     ("owner", 800_000),
     ("owns", 800_000),
@@ -34,6 +35,11 @@ const KEYWORDS: &[(&str, u32)] = &[
     (" deprecated", 650_000),
     (" deploy", 650_000),
     (" release", 650_000),
+    (" friday", 700_000),
+    (" tuesday", 700_000),
+    (" monday", 700_000),
+    (" wednesday", 700_000),
+    (" thursday", 700_000),
 ];
 
 /// Derive hints from a raw markdown line.
@@ -102,6 +108,11 @@ fn detect_subject(lower: &str, normalized: &str) -> String {
 }
 
 fn detect_object(normalized: &str, predicate: &str) -> String {
+    for day in ["monday", "tuesday", "wednesday", "thursday", "friday"] {
+        if normalized.contains(day) {
+            return day.to_string();
+        }
+    }
     if predicate == "unknown" {
         return normalized.to_string();
     }

@@ -21,7 +21,7 @@ fn compile_demo_snapshot() {
     ingest_sample_sources(dir.path());
 
     let out = dir.path().join("public");
-    let output = compile_out(dir.path(), &out, FIXTURE_OBSERVED_AT_MS).expect("compile");
+    let output = compile_out(dir.path(), &out, FIXTURE_OBSERVED_AT_MS, None).expect("compile");
 
     let file_names: Vec<String> = output.files.iter().map(|(name, _)| name.clone()).collect();
     let onboarding_first_line = output

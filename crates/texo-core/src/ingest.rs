@@ -3,9 +3,11 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::config::TexoConfig;
+use crate::config::WorkspaceConfig;
 use crate::events::payloads::{ClaimRecorded, ClaimSuperseded, SourceObserved};
-use crate::extract::extract_claims;
+use crate::extract::{
+    extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError, ExtractedClaim,
+};
 use crate::journal::JournalError;
 use crate::replay::state::ClaimView;
 use crate::source::{collect_markdown_files, MarkdownDocument};
@@ -36,15 +38,37 @@ pub enum PlannedAction {
     Supersede(ClaimSuperseded),
 }
 
-/// Build an ingest plan by scanning markdown sources.
-pub fn plan_sources(
+/// Build an ingest plan using workspace config (heuristic or optional cmd extractor).
+pub fn plan_sources_for_config(
     input: &Path,
-    _config: &TexoConfig,
+    config: &WorkspaceConfig,
     workspace: &WorkspaceId,
     observed_at_ms: u64,
     existing_hashes: &HashSet<String>,
+    root: &Path,
 ) -> Result<IngestPlanInternal, JournalError> {
-    let root = if input.is_dir() {
+    plan_sources(
+        input,
+        config,
+        workspace,
+        observed_at_ms,
+        existing_hashes,
+        root,
+        extract_claims,
+    )
+}
+
+/// Build an ingest plan by scanning markdown sources.
+pub fn plan_sources(
+    input: &Path,
+    config: &WorkspaceConfig,
+    workspace: &WorkspaceId,
+    observed_at_ms: u64,
+    existing_hashes: &HashSet<String>,
+    root: &Path,
+    extract: ExtractClaimsFn,
+) -> Result<IngestPlanInternal, JournalError> {
+    let root_dir = if input.is_dir() {
         input
     } else {
         input.parent().unwrap_or_else(|| Path::new("."))
@@ -58,7 +82,7 @@ pub fn plan_sources(
     let mut sequence = 0u64;
 
     for path in files {
-        let doc = MarkdownDocument::from_path(&path, root)
+        let doc = MarkdownDocument::from_path(&path, root_dir)
             .map_err(|e| JournalError::Domain(e.to_string()))?;
         if seen_source_hashes.contains(&doc.body_hash_hex)
             || existing_hashes.contains(&doc.body_hash_hex)
@@ -79,8 +103,16 @@ pub fn plan_sources(
 
         let source_id = SourceId::try_from(doc.source_id.as_str())
             .map_err(|e| JournalError::Domain(e.to_string()))?;
-        let claims = extract_claims(&doc, &source_id, workspace.as_str(), observed_at_ms)
-            .map_err(|e| JournalError::Domain(e.to_string()))?;
+        let claims = extract_for_doc(
+            config,
+            root,
+            &doc,
+            &source_id,
+            workspace.as_str(),
+            observed_at_ms,
+            extract,
+        )
+        .map_err(|e| JournalError::Domain(e.to_string()))?;
         claims_recorded += claims.len();
         for claim in claims {
             sequence += 1;
@@ -109,6 +141,22 @@ pub fn plan_sources(
         claims_recorded,
         actions,
     })
+}
+
+fn extract_for_doc(
+    config: &WorkspaceConfig,
+    root: &Path,
+    doc: &MarkdownDocument,
+    source_id: &SourceId,
+    workspace_id: &str,
+    observed_at_ms: u64,
+    extract: ExtractClaimsFn,
+) -> Result<Vec<ExtractedClaim>, ExtractError> {
+    if let Some(cmd) = config.extractor_cmd.as_deref() {
+        extract_via_cmd(cmd, doc, source_id, workspace_id, observed_at_ms, root)
+    } else {
+        extract(doc, source_id, workspace_id, observed_at_ms)
+    }
 }
 
 fn claim_view_from_payload(payload: &ClaimRecorded, sequence: u64) -> ClaimView {

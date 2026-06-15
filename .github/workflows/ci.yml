@@ -17,4 +17,5 @@ jobs:
       - run: cargo install cargo-deny --locked
       - run: just verify
       - run: just demo
+      - run: just ext-package
       - run: cargo run -p texo-cli -- verify --json

@@ -43,5 +43,21 @@ demo:
     cargo run -p texo-cli -- check-staleness sample_sources/stale_onboarding.md --json
     cargo run -p texo-cli -- compile --out public
 
+demo-fresh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf .texo
+    rm -f public/*
+    touch public/.gitkeep
+    just demo
+
+ext-package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd extensions/vscode
+    if [[ ! -d node_modules ]]; then npm ci; fi
+    npm run compile
+    npx --yes @vscode/vsce package
+
 mcp:
     cargo run -p texo-cli -- mcp

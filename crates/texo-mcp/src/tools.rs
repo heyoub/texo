@@ -5,7 +5,7 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use texo_core::{
-    build_agent_context, check_staleness, explain_claim, open_journal, ClaimId, TexoError,
+    build_agent_context, check_staleness, explain_claim, open_journal_with, ClaimId, TexoError,
 };
 
 /// Input for `check_staleness`.
@@ -44,12 +44,18 @@ pub struct ExplainClaimInput {
 pub struct ToolContext {
     /// Workspace root directory.
     pub root: std::path::PathBuf,
+    /// Optional BatPak workspace scope id.
+    pub workspace_id: Option<String>,
 }
 
 impl ToolContext {
+    fn open(&self) -> Result<texo_core::Journal<texo_core::Open>, TexoError> {
+        open_journal_with(&self.root, self.workspace_id.as_deref())
+    }
+
     /// Execute check_staleness tool.
     pub fn check_staleness(&self, input: &CheckStalenessInput) -> Result<String, TexoError> {
-        let journal = open_journal(&self.root)?;
+        let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
         let path = Path::new(&input.path);
@@ -65,7 +71,7 @@ impl ToolContext {
 
     /// Execute get_current_claims tool.
     pub fn get_current_claims(&self, input: &GetCurrentClaimsInput) -> Result<String, TexoError> {
-        let journal = open_journal(&self.root)?;
+        let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
         let context = build_agent_context(
@@ -79,7 +85,7 @@ impl ToolContext {
 
     /// Execute get_agent_context tool.
     pub fn get_agent_context(&self, input: &GetAgentContextInput) -> Result<String, TexoError> {
-        let journal = open_journal(&self.root)?;
+        let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
         let mut context = build_agent_context(
@@ -96,7 +102,7 @@ impl ToolContext {
 
     /// Execute explain_claim tool.
     pub fn explain_claim(&self, input: &ExplainClaimInput) -> Result<String, TexoError> {
-        let journal = open_journal(&self.root)?;
+        let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
         let claim_id = ClaimId::try_from(input.claim_id.as_str())

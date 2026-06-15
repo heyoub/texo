@@ -26,9 +26,9 @@ pub struct TexoMcpServer {
 #[tool_router]
 impl TexoMcpServer {
     /// Create server for workspace root.
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, workspace_id: Option<String>) -> Self {
         Self {
-            ctx: ToolContext { root },
+            ctx: ToolContext { root, workspace_id },
             tool_router: Self::tool_router(),
         }
     }
@@ -105,13 +105,13 @@ impl ServerHandler for TexoMcpServer {
 }
 
 /// Run MCP server over stdio. Logs go to stderr.
-pub async fn run_stdio(root: PathBuf) -> anyhow::Result<()> {
+pub async fn run_stdio(root: PathBuf, workspace_id: Option<String>) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("texo_mcp=info".parse()?))
         .with_writer(std::io::stderr)
         .init();
 
-    let server = TexoMcpServer::new(root);
+    let server = TexoMcpServer::new(root, workspace_id);
     let service = server.serve(rmcp::transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -123,6 +123,6 @@ mod tests {
 
     #[test]
     fn tool_router_builds() {
-        let _server = TexoMcpServer::new(std::env::current_dir().expect("cwd"));
+        let _server = TexoMcpServer::new(std::env::current_dir().expect("cwd"), None);
     }
 }

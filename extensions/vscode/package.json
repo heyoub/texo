@@ -4,6 +4,13 @@
   "description": "Context version control for claims — stale markdown diagnostics",
   "version": "0.1.0",
   "publisher": "texo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heyoub/texo.git"
+  },
+  "icon": "icon.png",
+  "keywords": ["claims", "staleness", "context", "markdown", "batpak"],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -61,7 +68,8 @@
   "scripts": {
     "compile": "tsc -p .",
     "test": "npm run compile && node out/diagnostics.test.js",
-    "watch": "tsc -watch -p ."
+    "watch": "tsc -watch -p .",
+    "package": "npm run compile && npx --yes @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

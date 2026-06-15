@@ -31,6 +31,7 @@ fn setup_workspace() -> tempfile::TempDir {
         &dir.path().join("sample_sources"),
         IngestMode::Commit,
         FIXTURE_OBSERVED_AT_MS,
+        dir.path(),
     )
     .expect("ingest");
     journal.close().expect("close");
@@ -42,6 +43,7 @@ fn get_agent_context_returns_current_claims() {
     let dir = setup_workspace();
     let ctx = ToolContext {
         root: dir.path().to_path_buf(),
+        workspace_id: None,
     };
     let json = ctx
         .get_agent_context(&GetAgentContextInput {
@@ -59,6 +61,7 @@ fn check_staleness_flags_stale_onboarding() {
     let dir = setup_workspace();
     let ctx = ToolContext {
         root: dir.path().to_path_buf(),
+        workspace_id: None,
     };
     let json = ctx
         .check_staleness(&texo_mcp::tools::CheckStalenessInput {

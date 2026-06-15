@@ -1,14 +1,14 @@
 //! verify command.
 
 use anyhow::Result;
-use texo_core::{open_journal, verify_journal_receipts, verify_projection};
+use texo_core::{open_journal_with, verify_journal_receipts, verify_projection};
 
-pub fn run(root: &std::path::Path, json: bool) -> Result<()> {
-    let journal = open_journal(root)?;
-    let workspace = journal.config().workspace()?;
-    let replayed = journal.replay(&workspace)?;
+pub fn run(root: &std::path::Path, workspace: Option<&str>, json: bool) -> Result<()> {
+    let journal = open_journal_with(root, workspace)?;
+    let workspace_id = journal.config().workspace()?;
+    let replayed = journal.replay(&workspace_id)?;
     let projection = verify_projection(&replayed.state);
-    let journal_ok = verify_journal_receipts(journal.handle().store(), &workspace);
+    let journal_ok = verify_journal_receipts(journal.handle().store(), &workspace_id);
     journal.close()?;
 
     if json {

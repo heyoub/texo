@@ -31,6 +31,27 @@ Courtroom tests in `crates/texo-core/tests/` prove each step.
 
 All appends go through BatPak; every commit verifies `AppendReceipt` before surfacing `ReceiptView`.
 
+Extractors compose at the ingest seam: default `heuristic-v1`, optional per-workspace `extractor_cmd` (NDJSON subprocess), or test injection via `ExtractClaimsFn` — no trait hierarchy.
+
+## Multi-workspace (v1)
+
+Single [`.texo/config.toml`](.texo/config.toml) holds named scopes:
+
+```toml
+default_workspace = "demo"
+
+[workspaces.demo]
+store_path = ".texo/store"
+docs_glob = "sample_sources/**/*.md"
+
+[workspaces.staging]
+store_path = ".texo/stores/staging"
+docs_glob = "sample_sources/**/*.md"
+# extractor_cmd = "python3 scripts/extract-identity.py"
+```
+
+CLI: global `--workspace <id>`. VS Code: `texo.workspaceId`.
+
 ## Surfaces
 
 - **CLI** (`texo`) — ingest, claims, staleness, compile, verify

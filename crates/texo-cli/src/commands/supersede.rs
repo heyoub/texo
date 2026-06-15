@@ -7,6 +7,7 @@ use crate::observed_at_ms;
 
 pub fn run(
     root: &std::path::Path,
+    workspace: Option<&str>,
     old: &str,
     new: &str,
     reason: &str,
@@ -15,7 +16,15 @@ pub fn run(
 ) -> Result<()> {
     let old_id = ClaimId::try_from(old).map_err(|e| anyhow::anyhow!("{e}"))?;
     let new_id = ClaimId::try_from(new).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let receipt = supersede_claim(root, &old_id, &new_id, reason, decided_by, observed_at_ms())?;
+    let receipt = supersede_claim(
+        root,
+        &old_id,
+        &new_id,
+        reason,
+        decided_by,
+        observed_at_ms(),
+        workspace,
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&receipt)?);
     } else {

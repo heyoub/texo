@@ -15,17 +15,27 @@ export interface StalenessReport {
   }>;
 }
 
+function texoArgs(root: string, extra: string[]): string[] {
+  const cfg = vscode.workspace.getConfiguration("texo");
+  const workspaceId = cfg.get<string>("workspaceId", "demo");
+  return ["--workspace", workspaceId, ...extra];
+}
+
 export async function runCheckStaleness(root: string, path: string): Promise<StalenessReport> {
   const cfg = vscode.workspace.getConfiguration("texo");
   const binary = cfg.get<string>("binaryPath", "texo");
-  const { stdout } = await execFileAsync(binary, ["check-staleness", path, "--json"], {
-    cwd: root,
-  });
+  const { stdout } = await execFileAsync(
+    binary,
+    texoArgs(root, ["check-staleness", path, "--json"]),
+    { cwd: root },
+  );
   return JSON.parse(stdout) as StalenessReport;
 }
 
 export async function runAgentContext(root: string, outPath: string): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("texo");
   const binary = cfg.get<string>("binaryPath", "texo");
-  await execFileAsync(binary, ["agent-context", "--out", outPath], { cwd: root });
+  await execFileAsync(binary, texoArgs(root, ["agent-context", "--out", outPath]), {
+    cwd: root,
+  });
 }

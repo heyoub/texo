@@ -31,6 +31,7 @@ pub fn ingest_sample_sources_report(root: &Path) -> IngestReport {
         &root.join("sample_sources"),
         IngestMode::Commit,
         FIXTURE_OBSERVED_AT_MS,
+        root,
     )
     .expect("ingest");
     journal.close().expect("close");
@@ -48,6 +49,7 @@ pub fn ingest_sample_sources(root: &Path) {
         &root.join("sample_sources"),
         IngestMode::Commit,
         FIXTURE_OBSERVED_AT_MS,
+        root,
     )
     .expect("ingest");
     journal.close().expect("close");

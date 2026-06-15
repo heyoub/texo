@@ -28,4 +28,18 @@ texo is a single-writer local claim-chain. Sequences are per-store. No global or
 
 `detect_conflicts` emits open conflicts only for **contradictory current claims** (replacement keywords, predicate mismatch, deploy/release subject hints). Supersession edges are not reported as conflicts.
 
-See [`INVARIANTS.md`](INVARIANTS.md) and [`SPEC.md`](SPEC.md).
+## Extractor composition (v1)
+
+```txt
+plan_sources_for_config
+  ├─ extractor_cmd set? → extract_via_cmd (NDJSON subprocess)
+  └─ else → extract_claims (heuristic-v1) or injected ExtractClaimsFn in tests
+```
+
+No `Extractor` trait — plain fn pointer at the ingest boundary.
+
+## Multi-workspace
+
+[`TexoRootConfig`](crates/texo-core/src/config.rs) maps workspace ids to store paths. `open_journal_with(root, Some("staging"))` opens the correct BatPak store for that scope.
+
+See [`SPEC.md`](SPEC.md) and [`INVARIANTS.md`](INVARIANTS.md).

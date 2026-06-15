@@ -3,7 +3,7 @@
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use crate::config::TexoConfig;
+use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
 use crate::journal::store::StoreHandle;
 use crate::replay::reducer::ReplayedState;
@@ -26,14 +26,14 @@ impl JournalState for Closed {}
 /// Typestate wrapper around the BatPak store handle.
 pub struct Journal<State: JournalState> {
     pub(crate) handle: Option<StoreHandle>,
-    pub(crate) config: TexoConfig,
+    pub(crate) config: WorkspaceConfig,
     pub(crate) root: PathBuf,
     _state: PhantomData<State>,
 }
 
 impl Journal<Open> {
     /// Open a journal at the configured store path.
-    pub fn open(config: TexoConfig, root: &Path) -> Result<Self, TexoError> {
+    pub fn open(config: WorkspaceConfig, root: &Path) -> Result<Self, TexoError> {
         let store_path = config.store_path_buf(root);
         if let Some(parent) = store_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -55,7 +55,7 @@ impl Journal<Open> {
     }
 
     /// Borrow configuration.
-    pub fn config(&self) -> &TexoConfig {
+    pub fn config(&self) -> &WorkspaceConfig {
         &self.config
     }
 

@@ -3,13 +3,13 @@
 use std::path::Path;
 
 use anyhow::Result;
-use texo_core::{check_staleness, open_journal};
+use texo_core::{check_staleness, open_journal_with};
 
-pub fn run(root: &Path, path: &Path, json: bool) -> Result<()> {
-    let journal = open_journal(root)?;
-    let workspace = journal.config().workspace()?;
-    let replayed = journal.replay(&workspace)?;
-    let report = check_staleness(&replayed.state, workspace.as_str(), path, root)?;
+pub fn run(root: &Path, workspace: Option<&str>, path: &Path, json: bool) -> Result<()> {
+    let journal = open_journal_with(root, workspace)?;
+    let workspace_id = journal.config().workspace()?;
+    let replayed = journal.replay(&workspace_id)?;
+    let report = check_staleness(&replayed.state, workspace_id.as_str(), path, root)?;
     journal.close()?;
 
     if json {

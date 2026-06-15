@@ -28,6 +28,14 @@ Then run the MCP server:
 cargo run -p texo-cli -- mcp
 ```
 
+For a clean demo (wipes local `.texo` and regenerated `public/`):
+
+```sh
+just demo-fresh
+```
+
+Multi-workspace scopes live in `.texo/config.toml` under `[workspaces.<id>]`. Use `--workspace staging` on any CLI command.
+
 ## What this is not
 
 texo is not a database server, consensus system, Slack crawler, Google Docs clone, vector database, or LLM extraction framework.

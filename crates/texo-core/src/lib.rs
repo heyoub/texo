@@ -22,7 +22,7 @@ pub use agent::{
     build_agent_context, explain_claim, AgentClaim, AgentContext, AgentStaleClaim,
     ClaimExplanation, FreshnessView,
 };
-pub use config::{ConfigError, TexoConfig};
+pub use config::{ConfigError, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 pub use conflicts::{
     commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, verify_store,
     VerifyError,
@@ -32,7 +32,10 @@ pub use events::{
     ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, OnboardingCompiled, SourceObserved,
     TexoEvent,
 };
-pub use extract::{extract_claims, ExtractError, ExtractedClaim};
+pub use extract::{
+    extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError, ExtractedClaim,
+    EXTRACTOR_KIND_HEURISTIC_V1,
+};
 pub use fixture::{
     DEFAULT_CONFIG_DIR, DEFAULT_STORE_PATH, DEFAULT_WORKSPACE_ID, FIXTURE_OBSERVED_AT_MS,
 };
@@ -51,15 +54,17 @@ pub use types::{
 
 use std::path::Path;
 
-/// Initialize `.texo/config.toml` and store directory.
-pub fn init_workspace(root: &Path, workspace_id: &str) -> Result<TexoConfig, TexoError> {
-    let config = TexoConfig {
-        workspace_id: workspace_id.to_string(),
-        store_path: fixture::DEFAULT_STORE_PATH.to_string(),
-        docs_glob: "sample_sources/**/*.md".to_string(),
-    };
+/// Initialize `.texo/config.toml` and store directory for one workspace scope.
+pub fn init_workspace(root: &Path, workspace_id: &str) -> Result<WorkspaceConfig, TexoError> {
     let config_path = root.join(fixture::DEFAULT_CONFIG_DIR).join("config.toml");
-    config.save(&config_path)?;
+    let mut root_config = if config_path.exists() {
+        TexoRootConfig::load(&config_path)?
+    } else {
+        TexoRootConfig::demo()
+    };
+    root_config.upsert_workspace(workspace_id, WorkspaceEntry::for_id(workspace_id));
+    root_config.save(&config_path)?;
+    let config = root_config.resolve(Some(workspace_id))?;
     let store_path = config.store_path_buf(root);
     if let Some(parent) = store_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -69,8 +74,17 @@ pub fn init_workspace(root: &Path, workspace_id: &str) -> Result<TexoConfig, Tex
 
 /// Open an on-disk journal using config from `.texo/config.toml`.
 pub fn open_journal(root: &Path) -> Result<Journal<Open>, TexoError> {
+    open_journal_with(root, None)
+}
+
+/// Open a journal for an explicit workspace id (or default when `None`).
+pub fn open_journal_with(
+    root: &Path,
+    workspace_id: Option<&str>,
+) -> Result<Journal<Open>, TexoError> {
     let config_path = root.join(fixture::DEFAULT_CONFIG_DIR).join("config.toml");
-    let config = TexoConfig::load(&config_path)?;
+    let root_config = TexoRootConfig::load(&config_path)?;
+    let config = root_config.resolve(workspace_id)?;
     Journal::open(config, root)
 }
 
@@ -79,8 +93,9 @@ pub fn compile_out(
     root: &Path,
     out: &Path,
     observed_at_ms: u64,
+    workspace_id: Option<&str>,
 ) -> Result<CompileOutput, TexoError> {
-    let journal = open_journal(root)?;
+    let journal = open_journal_with(root, workspace_id)?;
     let workspace = journal.config().workspace()?;
     let replayed = journal.replay(&workspace)?;
     let context = build_agent_context(&replayed.state, workspace.as_str(), None);
@@ -129,8 +144,9 @@ pub fn supersede_claim(
     reason: &str,
     decided_by: &str,
     observed_at_ms: u64,
+    workspace_id: Option<&str>,
 ) -> Result<ReceiptView, TexoError> {
-    let journal = open_journal(root)?;
+    let journal = open_journal_with(root, workspace_id)?;
     let workspace = journal.config().workspace()?;
     let payload = ClaimSuperseded {
         old_claim_id: old_claim_id.to_string(),

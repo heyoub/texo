@@ -16,6 +16,10 @@ struct Cli {
     #[arg(long, global = true, default_value = ".")]
     root: PathBuf,
 
+    /// BatPak workspace scope id (defaults to config default).
+    #[arg(long, global = true)]
+    workspace: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -30,8 +34,6 @@ enum Commands {
     /// Ingest markdown sources.
     Ingest {
         path: PathBuf,
-        #[arg(long)]
-        workspace: Option<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -93,16 +95,16 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let workspace = cli.workspace.as_deref();
     match cli.command {
-        Commands::Init { workspace } => commands::init::run(&cli.root, &workspace),
+        Commands::Init { workspace: init_ws } => commands::init::run(&cli.root, &init_ws),
         Commands::Ingest {
             path,
-            workspace,
             dry_run,
             json,
-        } => commands::ingest::run(&cli.root, &path, workspace.as_deref(), dry_run, json),
+        } => commands::ingest::run(&cli.root, &path, workspace, dry_run, json),
         Commands::Claims { subject, json } => {
-            commands::claims::run(&cli.root, subject.as_deref(), json)
+            commands::claims::run(&cli.root, workspace, subject.as_deref(), json)
         }
         Commands::Supersede {
             old,
@@ -110,19 +112,25 @@ fn main() -> Result<()> {
             reason,
             decided_by,
             json,
-        } => commands::supersede::run(&cli.root, &old, &new, &reason, &decided_by, json),
+        } => commands::supersede::run(&cli.root, workspace, &old, &new, &reason, &decided_by, json),
         Commands::CheckStaleness { path, json } => {
-            commands::check_staleness::run(&cli.root, &path, json)
+            commands::check_staleness::run(&cli.root, workspace, &path, json)
         }
-        Commands::AgentContext { subject, out, json } => {
-            commands::agent_context::run(&cli.root, subject.as_deref(), out.as_deref(), json)
+        Commands::AgentContext { subject, out, json } => commands::agent_context::run(
+            &cli.root,
+            workspace,
+            subject.as_deref(),
+            out.as_deref(),
+            json,
+        ),
+        Commands::Compile { out } => commands::compile::run(&cli.root, workspace, &out),
+        Commands::Conflicts { json, commit } => {
+            commands::conflicts::run(&cli.root, workspace, json, commit)
         }
-        Commands::Compile { out } => commands::compile::run(&cli.root, &out),
-        Commands::Conflicts { json, commit } => commands::conflicts::run(&cli.root, json, commit),
-        Commands::Verify { json } => commands::verify::run(&cli.root, json),
+        Commands::Verify { json } => commands::verify::run(&cli.root, workspace, json),
         Commands::Mcp => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_stdio(cli.root))?;
+            rt.block_on(run_stdio(cli.root, workspace.map(str::to_string)))?;
             Ok(())
         }
     }

@@ -13,7 +13,7 @@ fn compile_appends_onboarding_compiled_event() {
     ingest_sample_sources(dir.path());
 
     let out = dir.path().join("public");
-    compile_out(dir.path(), &out, FIXTURE_OBSERVED_AT_MS).expect("compile");
+    compile_out(dir.path(), &out, FIXTURE_OBSERVED_AT_MS, None).expect("compile");
 
     let journal = open_journal(dir.path()).expect("open");
     let workspace = journal.config().workspace().expect("workspace");

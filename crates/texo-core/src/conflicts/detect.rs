@@ -80,12 +80,21 @@ fn has_contradiction_signal(a: &ClaimView, b: &ClaimView, subject: &str) -> bool
     {
         return true;
     }
+    if negation_mismatch(a, b) {
+        return true;
+    }
     if a.predicate_hint != b.predicate_hint
         && (a.predicate_hint == "changed" || b.predicate_hint == "changed")
     {
         return true;
     }
     if a.predicate_hint == "owns" && b.predicate_hint == "owns" && a.object_hint != b.object_hint {
+        return true;
+    }
+    if schedule_object_clash(a, b, subject) {
+        return true;
+    }
+    if confidence_gap(a, b) {
         return true;
     }
     if CONTRADICTION_SUBJECTS.contains(&subject)
@@ -96,6 +105,33 @@ fn has_contradiction_signal(a: &ClaimView, b: &ClaimView, subject: &str) -> bool
         return true;
     }
     false
+}
+
+fn negation_mismatch(a: &ClaimView, b: &ClaimView) -> bool {
+    let a_neg = a.normalized_text.contains(" not ") || a.normalized_text.starts_with("not ");
+    let b_neg = b.normalized_text.contains(" not ") || b.normalized_text.starts_with("not ");
+    if a_neg == b_neg {
+        return false;
+    }
+    let strip = |s: &str| s.replace(" not ", " ").replace("not ", "");
+    strip(&a.normalized_text) == strip(&b.normalized_text)
+}
+
+const SCHEDULE_DAYS: &[&str] = &["monday", "tuesday", "wednesday", "thursday", "friday"];
+
+fn schedule_object_clash(a: &ClaimView, b: &ClaimView, subject: &str) -> bool {
+    if subject != "deploy-process" && subject != "release-process" {
+        return false;
+    }
+    let a_day = SCHEDULE_DAYS.iter().find(|d| a.object_hint.contains(**d));
+    let b_day = SCHEDULE_DAYS.iter().find(|d| b.object_hint.contains(**d));
+    matches!((a_day, b_day), (Some(da), Some(db)) if da != db)
+}
+
+fn confidence_gap(a: &ClaimView, b: &ClaimView) -> bool {
+    const THRESHOLD: u32 = 250_000;
+    a.confidence_ppm.abs_diff(b.confidence_ppm) > THRESHOLD
+        && a.normalized_text != b.normalized_text
 }
 
 /// Verify replayed projection consistency.
@@ -176,19 +212,42 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_deploy_claims_detect_conflict() {
+    fn negation_pair_detects_conflict() {
         let a = claim(
             "claim_aaaaaaaaaaaa",
             "deploy-process",
-            "Deploys happen on Friday.",
+            "Deploys must happen on Friday.",
+            "must",
+            "friday",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "deploy-process",
+            "Deploys must not happen on Friday.",
+            "must",
+            "friday",
+        );
+        let mut state = ClaimState::default();
+        state.claims.insert(a.claim_id.to_string(), a.clone());
+        state.claims.insert(b.claim_id.to_string(), b);
+        let report = detect_conflicts(&state, "demo");
+        assert_eq!(report.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn schedule_object_clash_without_keyword() {
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "deploy-process",
+            "Deploy window is Friday.",
             "unknown",
             "friday",
         );
         let b = claim(
             "claim_bbbbbbbbbbbb",
             "deploy-process",
-            "Decision: deploys moved to Tuesday.",
-            "changed",
+            "Deploy window is Tuesday.",
+            "unknown",
             "tuesday",
         );
         let mut state = ClaimState::default();

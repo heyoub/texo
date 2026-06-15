@@ -1,9 +1,11 @@
 //! Claim extraction heuristics.
 
+pub mod cmd;
 pub mod heuristics;
 pub mod hints;
 pub mod normalize;
 
+pub use cmd::extract_via_cmd;
 pub use heuristics::is_claim_line;
 pub use hints::ClaimHints;
 pub use normalize::normalize_line;
@@ -12,6 +14,13 @@ use crate::events::payloads::ClaimRecorded;
 use crate::source::markdown::MarkdownDocument;
 use crate::types::ids::{claim_id_from_parts, SourceId};
 
+/// Extractor version tag written to journaled claims.
+pub const EXTRACTOR_KIND_HEURISTIC_V1: &str = "heuristic-v1";
+
+/// Function pointer type for compositional ingest extraction.
+pub type ExtractClaimsFn =
+    fn(&MarkdownDocument, &SourceId, &str, u64) -> Result<Vec<ExtractedClaim>, ExtractError>;
+
 /// One extracted claim prior to journaling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedClaim {
@@ -19,12 +28,29 @@ pub struct ExtractedClaim {
     pub payload: ClaimRecorded,
 }
 
-/// Extract claims from a parsed markdown document.
+/// Extract claims from a parsed markdown document using heuristic-v1 rules.
 pub fn extract_claims(
     doc: &MarkdownDocument,
     source_id: &SourceId,
     workspace_id: &str,
     observed_at_ms: u64,
+) -> Result<Vec<ExtractedClaim>, ExtractError> {
+    extract_with_kind(
+        doc,
+        source_id,
+        workspace_id,
+        observed_at_ms,
+        EXTRACTOR_KIND_HEURISTIC_V1,
+    )
+}
+
+/// Extract claims with an explicit extractor kind tag.
+pub fn extract_with_kind(
+    doc: &MarkdownDocument,
+    source_id: &SourceId,
+    workspace_id: &str,
+    observed_at_ms: u64,
+    extractor_kind: &str,
 ) -> Result<Vec<ExtractedClaim>, ExtractError> {
     let mut claims = Vec::new();
     for line in &doc.lines {
@@ -50,7 +76,7 @@ pub fn extract_claims(
                 predicate_hint: hints.predicate_hint,
                 object_hint: hints.object_hint,
                 confidence_ppm: hints.confidence_ppm,
-                extractor_kind: "heuristic-v0".to_string(),
+                extractor_kind: extractor_kind.to_string(),
                 observed_at_ms,
             },
         });
@@ -67,4 +93,7 @@ pub enum ExtractError {
     /// Domain validation error.
     #[error("{0}")]
     Domain(String),
+    /// External extractor command failed.
+    #[error("extractor cmd: {0}")]
+    Cmd(String),
 }

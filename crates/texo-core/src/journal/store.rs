@@ -5,7 +5,7 @@ use std::path::Path;
 
 use batpak::prelude::*;
 
-use crate::config::TexoConfig;
+use crate::config::WorkspaceConfig;
 use crate::events::envelope::{DecodeError, TexoEvent};
 use crate::events::payloads::{
     ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, OnboardingCompiled, SourceObserved,
@@ -70,7 +70,7 @@ impl StoreHandle {
     pub fn replay_workspace(
         &self,
         workspace: &WorkspaceId,
-        _config: &TexoConfig,
+        _config: &WorkspaceConfig,
     ) -> Result<ReplayedState, JournalError> {
         let events = load_workspace_events(&self.store, workspace)?;
         Ok(ReplayedState::from_events(events)?)
@@ -131,14 +131,22 @@ impl StoreHandle {
 /// Ingest markdown sources under `input` into the journal.
 pub fn ingest_sources(
     handle: &StoreHandle,
-    config: &TexoConfig,
+    config: &WorkspaceConfig,
     workspace: &WorkspaceId,
     input: &Path,
     mode: IngestMode,
     observed_at_ms: u64,
+    root: &Path,
 ) -> Result<IngestCommitted, JournalError> {
     let existing = handle.existing_source_hashes(workspace)?;
-    let plan = crate::ingest::plan_sources(input, config, workspace, observed_at_ms, &existing)?;
+    let plan = crate::ingest::plan_sources_for_config(
+        input,
+        config,
+        workspace,
+        observed_at_ms,
+        &existing,
+        root,
+    )?;
     if matches!(mode, IngestMode::DryRun) {
         return Ok(IngestCommitted {
             sources_observed: plan.sources_observed,
@@ -169,16 +177,23 @@ pub fn ingest_sources(
 /// Plan-only ingest for dry runs.
 pub fn plan_ingest_sources(
     input: &Path,
-    config: &TexoConfig,
+    config: &WorkspaceConfig,
     workspace: &WorkspaceId,
     observed_at_ms: u64,
     existing_hashes: &HashSet<String>,
+    root: &Path,
 ) -> Result<IngestPlan, JournalError> {
-    crate::ingest::plan_sources(input, config, workspace, observed_at_ms, existing_hashes).map(
-        |plan| IngestPlan {
-            sources_observed: plan.sources_observed,
-            claims_recorded: plan.claims_recorded,
-            workspace_id: plan.workspace_id,
-        },
+    crate::ingest::plan_sources_for_config(
+        input,
+        config,
+        workspace,
+        observed_at_ms,
+        existing_hashes,
+        root,
     )
+    .map(|plan| IngestPlan {
+        sources_observed: plan.sources_observed,
+        claims_recorded: plan.claims_recorded,
+        workspace_id: plan.workspace_id,
+    })
 }
