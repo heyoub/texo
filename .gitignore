@@ -2,8 +2,10 @@
 /target/
 **/*.rs.bk
 
-# Local BatPak workspace (created by `texo init` / `just demo`)
-/.texo/
+# Local BatPak workspace + record-once caches (created by `texo init` / `just
+# demo` / the extractor). Matched at any depth: the cmd extractor's cwd is the
+# docs dir, so its default cache would otherwise land under examples/.../.texo/.
+.texo/
 
 # Generated compile output (from `texo compile` / `just demo`)
 /public/*

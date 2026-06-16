@@ -1,1 +1,0 @@
-[{"text":"To roll back Helios, run `helios rollback`.","subject":"Helios rollback","predicate":"command","object":"helios rollback","confidence_ppm":880000},{"text":"Incidents should be posted in `#incident`.","subject":"incidents","predicate":"posted in","object":"#incident","confidence_ppm":850000}]

@@ -1,1 +1,0 @@
-[{"text":"ADR-007 is accepted.","subject":"ADR-007","predicate":"has status","object":"accepted","confidence_ppm":950000},{"text":"ADR-007 supersedes the deploy-day decision in ADR-001.","subject":"ADR-007","predicate":"supersedes","object":"the deploy-day decision in ADR-001","confidence_ppm":960000}]

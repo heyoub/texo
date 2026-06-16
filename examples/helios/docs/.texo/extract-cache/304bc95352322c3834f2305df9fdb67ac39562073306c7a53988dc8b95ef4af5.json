@@ -1,1 +1,0 @@
-[{"text":"The platform uses Postgres for storage.","subject":"platform","predicate":"uses for storage","object":"Postgres","confidence_ppm":950000},{"text":"Connection strings are in Vault.","subject":"connection strings","predicate":"are located in","object":"Vault","confidence_ppm":950000}]
