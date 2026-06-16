@@ -51,7 +51,7 @@ const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
-const PROPOSE_PROMPT_VERSION: u32 = 2;
+const PROPOSE_PROMPT_VERSION: u32 = 3;
 /// Version tag for the claim-relation prompt/output contract. Bump whenever
 /// `RELATION_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates verdicts produced by an older prompt.
@@ -794,11 +794,15 @@ architectural fact, or a policy. Each claim is atomic — ONE subject, one \
 predicate, one value — and copies entities, names, numbers, dates, and values \
 EXACTLY as they appear (never infer, generalize, or add). Preserve update \
 wording such as \"now\", \"moved to\", or \"no longer\" when the span uses it.\n\
+IMPORTANT: when a sentence mixes a durable fact with narrative or a reason, \
+extract the durable fact and DROP the narrative — do not skip the sentence. \
+E.g. \"Deploys moved to Tuesday after we realized Wednesday collided with the \
+all-hands\" yields the claim \"Deploys moved to Tuesday.\"\n\
 Do NOT extract (return fewer, better claims):\n\
 - transient status or progress (\"the migration is 60% done\", \"dual-write is \
 done\");\n\
-- incident narrative or color (\"the rotation revolted\", \"it kept breaking\", \
-\"a Slack thread ensued\");\n\
+- pure incident color with no decision in it (\"the rotation revolted\", \"a \
+Slack thread ensued\");\n\
 - opinions or judgments (\"Alice is a bottleneck\");\n\
 - low-level mechanics that merely ELABORATE a higher-level fact — prefer the \
 single headline statement. If the span says the platform now uses BatPak and \

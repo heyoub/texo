@@ -1,0 +1,1 @@
+[{"text":"ADR-019 is accepted.","subject":"ADR-019","predicate":"has status","object":"Accepted","confidence_ppm":950000},{"text":"ADR-019 supersedes the Postgres-as-event-store assumption.","subject":"ADR-019","predicate":"supersedes","object":"the Postgres-as-event-store assumption","confidence_ppm":900000}]
