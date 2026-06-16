@@ -13,6 +13,7 @@ pub mod ingest;
 pub mod journal;
 pub mod render;
 pub mod replay;
+pub mod semantics;
 pub mod source;
 pub mod stale;
 pub mod state;
@@ -22,7 +23,9 @@ pub use agent::{
     build_agent_context, explain_claim, AgentClaim, AgentContext, AgentStaleClaim,
     ClaimExplanation, FreshnessView,
 };
-pub use config::{ConfigError, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
+pub use config::{
+    ConfigError, SemanticsConfig, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry,
+};
 pub use conflicts::{
     commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, VerifyError,
 };
@@ -41,6 +44,9 @@ pub use fixture::{
 pub use journal::{ingest_sources, plan_ingest_sources, JournalError, StoreHandle};
 pub use render::{compile_artifacts, render_onboarding, CompileOutput};
 pub use replay::{ClaimState, ClaimView, ReplayError, ReplayedState};
+pub use semantics::{
+    cosine_similarity, Embedder, Entailment, Nli, NliVerdict, Reranker, SemanticsError,
+};
 pub use source::{collect_markdown_files, MarkdownDocument, SourceError};
 pub use stale::{check_staleness, StalenessReport};
 pub use state::{

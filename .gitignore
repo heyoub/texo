@@ -24,3 +24,6 @@
 # Env / secrets
 .env
 .env.*
+
+# Local agent worktrees/scratch
+.claude/

@@ -7,8 +7,53 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::ids::WorkspaceId;
 
+/// Default cosine-similarity acceptance threshold for the semantics pipeline.
+const DEFAULT_COSINE_THRESHOLD: f32 = 0.78;
+
+fn default_cosine_threshold() -> f32 {
+    DEFAULT_COSINE_THRESHOLD
+}
+
+/// Optional, disabled-by-default configuration for the semantic ML pipeline.
+///
+/// The semantic pipeline is entirely opt-in: a workspace config without a
+/// `[semantics]` table deserializes to `None`, and even when present the
+/// pipeline only activates when [`SemanticsConfig::enabled`] is `true`. No ML
+/// or model-runtime behavior lives here — this is configuration only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticsConfig {
+    /// Master switch; when `false` (the default) the pipeline is inert.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Pinned revision/identifier for the embedding model.
+    #[serde(default)]
+    pub embed_model_revision: String,
+    /// Pinned revision/identifier for the NLI model.
+    #[serde(default)]
+    pub nli_model_revision: String,
+    /// Cosine-similarity acceptance threshold.
+    #[serde(default = "default_cosine_threshold")]
+    pub cosine_threshold: f32,
+    /// Optional override for the semantic extractor model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extractor_model: Option<String>,
+}
+
+impl Default for SemanticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            embed_model_revision: String::new(),
+            nli_model_revision: String::new(),
+            cosine_threshold: DEFAULT_COSINE_THRESHOLD,
+            extractor_model: None,
+        }
+    }
+}
+
 /// Resolved configuration for one BatPak workspace scope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     /// Workspace identifier for BatPak scope partitioning.
@@ -20,13 +65,16 @@ pub struct WorkspaceConfig {
     /// Optional external extractor command (newline-delimited JSON claims).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extractor_cmd: Option<String>,
+    /// Optional, disabled-by-default semantic ML pipeline configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<SemanticsConfig>,
 }
 
 /// Backward-compatible alias for [`WorkspaceConfig`].
 pub type TexoConfig = WorkspaceConfig;
 
 /// Per-workspace entry in the root config file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceEntry {
     /// Relative or absolute path to the BatPak store directory.
@@ -36,10 +84,13 @@ pub struct WorkspaceEntry {
     /// Optional external extractor command.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extractor_cmd: Option<String>,
+    /// Optional, disabled-by-default semantic ML pipeline configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<SemanticsConfig>,
 }
 
 /// Root `.texo/config.toml` with multiple workspace scopes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TexoRootConfig {
     /// Default workspace id when none is specified on the CLI.
@@ -56,6 +107,8 @@ struct LegacyFlatConfig {
     store_path: String,
     docs_glob: String,
     extractor_cmd: Option<String>,
+    #[serde(default)]
+    semantics: Option<SemanticsConfig>,
 }
 
 impl WorkspaceEntry {
@@ -65,6 +118,7 @@ impl WorkspaceEntry {
             store_path: crate::fixture::DEFAULT_STORE_PATH.to_string(),
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         }
     }
 
@@ -77,6 +131,7 @@ impl WorkspaceEntry {
             store_path: format!(".texo/stores/{workspace_id}"),
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         }
     }
 }
@@ -106,6 +161,7 @@ impl TexoRootConfig {
                     store_path: legacy.store_path,
                     docs_glob: legacy.docs_glob,
                     extractor_cmd: legacy.extractor_cmd,
+                    semantics: legacy.semantics,
                 },
             );
             return Ok(Self {
@@ -137,6 +193,7 @@ impl TexoRootConfig {
             store_path: entry.store_path.clone(),
             docs_glob: entry.docs_glob.clone(),
             extractor_cmd: entry.extractor_cmd.clone(),
+            semantics: entry.semantics.clone(),
         })
     }
 
@@ -158,6 +215,7 @@ impl WorkspaceConfig {
             store_path: crate::fixture::DEFAULT_STORE_PATH.to_string(),
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         }
     }
 
@@ -176,6 +234,7 @@ impl WorkspaceConfig {
                 store_path: self.store_path.clone(),
                 docs_glob: self.docs_glob.clone(),
                 extractor_cmd: self.extractor_cmd.clone(),
+                semantics: self.semantics.clone(),
             },
         );
         root.save(path)
@@ -306,6 +365,7 @@ docs_glob = "docs/**/*.md"
             store_path: ".texo/stores/staging".to_string(),
             docs_glob: "docs/**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         };
         assert_eq!(staging.docs_scan_root(root), root.join("docs"));
     }
@@ -321,6 +381,7 @@ docs_glob = "docs/**/*.md"
             store_path: ".texo/stores/staging".to_string(),
             docs_glob: "docs/**/*.md".to_string(),
             extractor_cmd: Some("./extract.sh".to_string()),
+            semantics: None,
         };
         cfg.save(&path).expect("save");
         assert!(path.exists(), "save must create the parent directories");
@@ -344,6 +405,7 @@ docs_glob = "docs/**/*.md"
             store_path: ".texo/store".to_string(),
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         };
         assert_matches!(bad.workspace(), Err(ConfigError::InvalidWorkspace));
     }
@@ -361,6 +423,7 @@ docs_glob = "docs/**/*.md"
             store_path: "/abs/store".to_string(),
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         };
         // Absolute store paths ignore the root and are returned verbatim.
         assert_eq!(
@@ -376,6 +439,7 @@ docs_glob = "docs/**/*.md"
             store_path: ".texo/store".to_string(),
             docs_glob: "/srv/docs/**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         };
         // An absolute non-wildcard prefix is returned without joining root.
         assert_eq!(
@@ -481,6 +545,7 @@ docs_glob = "docs/**/*.md"
             store_path: ".texo/store".to_string(),
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
+            semantics: None,
         };
         assert_eq!(cfg.docs_scan_root(root), root.to_path_buf());
     }

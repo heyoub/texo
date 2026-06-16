@@ -25,6 +25,7 @@ fn open_heuristic_journal(root: &Path) -> Journal<Open> {
         store_path: ".texo/store".to_string(),
         docs_glob: "docs/**/*.md".to_string(),
         extractor_cmd: None,
+        semantics: None,
     };
     Journal::<Open>::open(config, root).expect("open journal")
 }
@@ -168,6 +169,7 @@ fn external_extractor_cmd_path_records_its_claims() {
             r#"printf '{"line_start": 1, "text": "Deploys moved to Tuesday.", "subject_hint": "deploy-process"}\n'; :"#
                 .to_string(),
         ),
+        semantics: None,
     };
     let journal = Journal::<Open>::open(config, root).expect("open journal");
     let workspace = journal.config().workspace().expect("workspace");
@@ -226,6 +228,7 @@ fn failing_external_extractor_surfaces_error_through_ingest() {
         docs_glob: "docs/**/*.md".to_string(),
         // No JSON emitted and a non-zero exit -> the extractor reports failure.
         extractor_cmd: Some(r"exit 7; :".to_string()),
+        semantics: None,
     };
     let journal = Journal::<Open>::open(config, root).expect("open journal");
     let workspace = journal.config().workspace().expect("workspace");
@@ -394,6 +397,7 @@ fn ingest_of_file_at_root_uses_dot_parent() {
         store_path: ".texo/store".to_string(),
         docs_glob: "**/*.md".to_string(),
         extractor_cmd: None,
+        semantics: None,
     };
     let journal = Journal::<Open>::open(config, root).expect("open journal");
     let workspace = WorkspaceId::new("demo").expect("workspace");
