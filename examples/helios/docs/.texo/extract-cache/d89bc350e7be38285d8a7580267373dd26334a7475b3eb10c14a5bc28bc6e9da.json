@@ -1,0 +1,1 @@
+[{"text":"Deploys happen on Friday.","subject":"deploys","predicate":"happen on","object":"Friday","confidence_ppm":950000},{"text":"A PR must be reviewed by Thursday EOD or it waits a week.","subject":"PR review","predicate":"deadline is","object":"Thursday EOD","confidence_ppm":900000}]

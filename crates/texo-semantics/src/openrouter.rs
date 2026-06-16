@@ -51,11 +51,11 @@ const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
-const PROPOSE_PROMPT_VERSION: u32 = 1;
+const PROPOSE_PROMPT_VERSION: u32 = 2;
 /// Version tag for the claim-relation prompt/output contract. Bump whenever
 /// `RELATION_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates verdicts produced by an older prompt.
-const RELATION_PROMPT_VERSION: u32 = 1;
+const RELATION_PROMPT_VERSION: u32 = 2;
 
 /// Per-request timeout. Generous because a reasoning judge model can spend many
 /// seconds on a hard pair before emitting its verdict.
@@ -643,6 +643,9 @@ detail of the same system; it does not state a different value for the first's \
 attribute, so it does not supersede it).\n\
 - older \"Backups run nightly.\" / newer \"The staging cluster has 3 nodes.\" -> \
 unrelated (different subjects).\n\
+- older \"The service exposes a REST API.\" / newer \"The service emits metrics \
+to Prometheus.\" -> unrelated (two DIFFERENT facts about the same system, each \
+still true — different attributes, so neither replaces the other).\n\
 Reply with ONLY a single JSON object: {\"relation\": \"supersedes\" | \
 \"conflict\" | \"duplicate\" | \"unrelated\", \"score\": <number between 0 and \
 1>}. Output no prose, no markdown, no code fences.";
@@ -783,18 +786,30 @@ impl ClaimRelater for OpenRouterRelater {
 /// System prompt for the Stage-1 proposer. It must extract *atomic* claims and
 /// copy values verbatim — the deterministic faithfulness gate downstream rejects
 /// anything ungrounded, so faithfulness here is cheaper than a later rejection.
-const PROPOSE_SYSTEM_PROMPT: &str = "You extract atomic factual claims from one \
-span of a team's engineering documentation. An atomic claim states ONE fact: a \
-single subject, a single predicate, and a single value. Rules: copy entities, \
-names, numbers, dates, and values EXACTLY as they appear in the span — never \
-infer, generalize, or add anything not present. Preserve update wording such as \
-\"now\", \"moved to\", or \"no longer\" when the span uses it. Skip questions, \
-opinions, tasks, greetings, and meta-commentary. If the span states no factual \
-claim, return an empty list. For each claim provide: text (one faithful \
-declarative sentence), subject, predicate, object, and confidence (an integer \
-from 0 to 100). Respond with ONLY a JSON object of the form {\"claims\": \
-[{\"text\": ..., \"subject\": ..., \"predicate\": ..., \"object\": ..., \
-\"confidence\": ...}]}. No prose, no markdown, no code fences.";
+const PROPOSE_SYSTEM_PROMPT: &str = "You extract DURABLE claims from one span of \
+a team's engineering documentation. A durable claim states a fact about how the \
+system or team CURRENTLY operates and that a teammate would still need to know \
+months later: a decision, an owner, a schedule, a configuration value, an \
+architectural fact, or a policy. Each claim is atomic — ONE subject, one \
+predicate, one value — and copies entities, names, numbers, dates, and values \
+EXACTLY as they appear (never infer, generalize, or add). Preserve update \
+wording such as \"now\", \"moved to\", or \"no longer\" when the span uses it.\n\
+Do NOT extract (return fewer, better claims):\n\
+- transient status or progress (\"the migration is 60% done\", \"dual-write is \
+done\");\n\
+- incident narrative or color (\"the rotation revolted\", \"it kept breaking\", \
+\"a Slack thread ensued\");\n\
+- opinions or judgments (\"Alice is a bottleneck\");\n\
+- low-level mechanics that merely ELABORATE a higher-level fact — prefer the \
+single headline statement. If the span says the platform now uses BatPak and \
+also describes the table-level mechanics of that migration, extract only the \
+headline (\"uses BatPak now\"), not the mechanics.\n\
+Skip questions, tasks, and greetings. If the span states no durable claim, \
+return an empty list. For each claim provide: text (one faithful declarative \
+sentence), subject, predicate, object, and confidence (an integer from 0 to \
+100). Respond with ONLY a JSON object of the form {\"claims\": [{\"text\": ..., \
+\"subject\": ..., \"predicate\": ..., \"object\": ..., \"confidence\": ...}]}. \
+No prose, no markdown, no code fences.";
 
 /// Default Stage-1 extractor model. A capable instruction-follower for prod;
 /// override with `OPENROUTER_EXTRACTOR_MODEL` (e.g. a free model for testing).
