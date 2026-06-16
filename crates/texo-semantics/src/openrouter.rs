@@ -65,8 +65,11 @@ const MAX_ERROR_BODY: usize = 2048;
 /// Completion-token ceiling for the chat-completions judges. Reasoning models
 /// spend completion budget on a hidden reasoning trace *before* emitting the
 /// JSON answer; without ample headroom a long trace truncates the answer to empty
-/// content. Sized well above observed reasoning lengths so the verdict always fits.
-const MAX_COMPLETION_TOKENS: u32 = 1024;
+/// content. This is a ceiling, not a target — only verbose pairs approach it — so
+/// it is sized well above the longest observed reasoning trace (a hard
+/// supersede-vs-conflict call on a marginal pair can run ~1.5k tokens before the
+/// JSON) to guarantee the verdict is never truncated away.
+const MAX_COMPLETION_TOKENS: u32 = 4096;
 /// Completion-token ceiling for the Stage-1 proposer. A single span can yield
 /// several atomic claims plus a reasoning trace, so it needs more room than the
 /// single-verdict judges.
@@ -593,6 +596,9 @@ WHEN releases ship) are unrelated.\n\
 Examples (these are illustrations, not the claims you will judge):\n\
 - older \"The API runs on port 8080.\" / newer \"The API now listens on port \
 9090.\" -> supersedes (the word \"now\" explicitly marks the change).\n\
+- older \"The all-hands moved to Monday.\" / newer \"The all-hands moved to \
+Thursday.\" -> supersedes (a later move of the SAME thing replaces the earlier \
+move; the most recent change wins — this is NOT a conflict).\n\
 - older \"The cache TTL is 60 seconds.\" / newer \"The cache TTL is 300 \
 seconds.\" -> conflict (a different value, but no wording signals an update).\n\
 - older \"Backups run nightly.\" / newer \"The staging cluster has 3 nodes.\" -> \
@@ -1080,7 +1086,7 @@ mod tests {
             body["response_format"]["json_schema"]["name"],
             "claim_relation"
         );
-        assert_eq!(body["max_tokens"], 1024);
+        assert_eq!(body["max_tokens"], 4096);
         let messages = body["messages"].as_array().expect("messages array");
         assert_eq!(messages.len(), 2);
         let user = messages[1]["content"].as_str().expect("user content");
