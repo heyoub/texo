@@ -14,8 +14,7 @@ pub fn verify_journal_receipts(
     store: &Store<Open>,
     workspace: &WorkspaceId,
 ) -> Result<(), VerifyError> {
-    let events =
-        load_workspace_events(store, workspace).map_err(|e| VerifyError::Journal(e.to_string()))?;
+    let events = load_workspace_events(store, workspace)?;
     for event in events {
         verify_event_receipt(store, &event)?;
     }
@@ -24,7 +23,7 @@ pub fn verify_journal_receipts(
 
 fn verify_event_receipt(store: &Store<Open>, event: &TexoEvent) -> Result<(), VerifyError> {
     let receipt = event_receipt_view(event);
-    verify_receipt_view(store, receipt).map_err(|e| VerifyError::Journal(e.to_string()))
+    Ok(verify_receipt_view(store, receipt)?)
 }
 
 fn event_receipt_view(event: &TexoEvent) -> &crate::types::receipt::ReceiptView {

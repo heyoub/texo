@@ -1,5 +1,7 @@
 //! Claim line detection heuristics.
 
+use super::word_match::contains_any;
+
 /// Returns true when a markdown line should become a claim in v1.
 pub fn is_claim_line(line: &str) -> bool {
     let trimmed = line.trim();
@@ -45,35 +47,37 @@ pub fn is_claim_line(line: &str) -> bool {
 }
 
 fn has_claim_signal(line: &str) -> bool {
-    let lower = format!(" {} ", line.to_ascii_lowercase());
-    [
-        " is ",
-        " are ",
-        " uses ",
-        " use ",
-        " must ",
-        " should ",
-        "owner",
-        "owns",
-        "process",
-        "decided",
-        "decision",
-        "moved",
-        "changed",
-        "replaced",
-        " no longer",
-        " deprecated",
-        " deploy",
-        " release",
-        " approval",
-        " friday",
-        " tuesday",
-        " monday",
-        " wednesday",
-        " thursday",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+    contains_any(
+        line,
+        &[
+            "is",
+            "are",
+            "uses",
+            "use",
+            "must",
+            "should",
+            "owner",
+            "owns",
+            "process",
+            "decided",
+            "decision",
+            "moved",
+            "changed",
+            "replaced",
+            "no longer",
+            "deprecated",
+            "deploy",
+            "deploys",
+            "release",
+            "releases",
+            "approval",
+            "friday",
+            "tuesday",
+            "monday",
+            "wednesday",
+            "thursday",
+        ],
+    )
 }
 
 fn is_list_marker_only(line: &str) -> bool {

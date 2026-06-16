@@ -24,8 +24,7 @@ pub use agent::{
 };
 pub use config::{ConfigError, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 pub use conflicts::{
-    commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, verify_store,
-    VerifyError,
+    commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, VerifyError,
 };
 pub use error::TexoError;
 pub use events::{
@@ -98,10 +97,10 @@ pub fn compile_out(
     let journal = open_journal_with(root, workspace_id)?;
     let workspace = journal.config().workspace()?;
     let replayed = journal.replay(&workspace)?;
-    let context = build_agent_context(&replayed.state, workspace.as_str(), None);
+    let context = build_agent_context(&replayed.state, &workspace, None);
     let docs_root = journal.config().docs_scan_root(root);
-    let stale = check_staleness(&replayed.state, workspace.as_str(), &docs_root, root)?;
-    let conflicts = detect_conflicts(&replayed.state, workspace.as_str());
+    let stale = check_staleness(&replayed.state, &workspace, &docs_root, root)?;
+    let conflicts = detect_conflicts(&replayed.state, &workspace);
     let output = compile_artifacts(&context, &replayed.state, &stale, &conflicts)?;
 
     std::fs::create_dir_all(out)?;

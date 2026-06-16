@@ -1,9 +1,10 @@
 //! Read-only conflict detection.
 
+use crate::extract::word_match::contains_word;
 use crate::replay::state::{ClaimState, ClaimView};
 use crate::stale::check::has_replacement_keyword;
 use crate::state::conflict_lifecycle::{ConflictEntry, ConflictReport};
-use crate::types::ids::{conflict_id_from_pair, ClaimId};
+use crate::types::ids::{conflict_id_from_pair, ClaimId, WorkspaceId};
 use crate::types::status::{ClaimStatus, ConflictStatus};
 
 const CONTRADICTION_SUBJECTS: &[&str] = &[
@@ -14,7 +15,7 @@ const CONTRADICTION_SUBJECTS: &[&str] = &[
 ];
 
 /// Detect conflicts from current replayed state (read-only).
-pub fn detect_conflicts(state: &ClaimState, workspace_id: &str) -> ConflictReport {
+pub fn detect_conflicts(state: &ClaimState, workspace_id: &WorkspaceId) -> ConflictReport {
     let mut by_subject: std::collections::HashMap<String, Vec<&ClaimView>> =
         std::collections::HashMap::new();
     for claim in state
@@ -63,13 +64,13 @@ pub fn detect_conflicts(state: &ClaimState, workspace_id: &str) -> ConflictRepor
     }
 
     ConflictReport {
-        workspace_id: workspace_id.to_string(),
+        workspace_id: workspace_id.clone(),
         conflicts,
     }
 }
 
 fn already_superseded_pair(state: &ClaimState, a: &ClaimId, b: &ClaimId) -> bool {
-    state.superseded.contains_key(a.as_str()) || state.superseded.contains_key(b.as_str())
+    state.superseded.contains_key(a) || state.superseded.contains_key(b)
 }
 
 fn has_contradiction_signal(a: &ClaimView, b: &ClaimView, subject: &str) -> bool {
@@ -108,8 +109,8 @@ fn has_contradiction_signal(a: &ClaimView, b: &ClaimView, subject: &str) -> bool
 }
 
 fn negation_mismatch(a: &ClaimView, b: &ClaimView) -> bool {
-    let a_neg = a.normalized_text.contains(" not ") || a.normalized_text.starts_with("not ");
-    let b_neg = b.normalized_text.contains(" not ") || b.normalized_text.starts_with("not ");
+    let a_neg = contains_word(&a.normalized_text, "not");
+    let b_neg = contains_word(&b.normalized_text, "not");
     if a_neg == b_neg {
         return false;
     }
@@ -123,8 +124,12 @@ fn schedule_object_clash(a: &ClaimView, b: &ClaimView, subject: &str) -> bool {
     if subject != "deploy-process" && subject != "release-process" {
         return false;
     }
-    let a_day = SCHEDULE_DAYS.iter().find(|d| a.object_hint.contains(**d));
-    let b_day = SCHEDULE_DAYS.iter().find(|d| b.object_hint.contains(**d));
+    let a_day = SCHEDULE_DAYS
+        .iter()
+        .find(|d| contains_word(&a.object_hint, d));
+    let b_day = SCHEDULE_DAYS
+        .iter()
+        .find(|d| contains_word(&b.object_hint, d));
     matches!((a_day, b_day), (Some(da), Some(db)) if da != db)
 }
 
@@ -142,7 +147,7 @@ pub fn verify_projection(state: &ClaimState) -> Result<(), VerifyError> {
         ));
     }
     for claim in state.claims.values() {
-        if !state.sources.contains_key(claim.source_id.as_str()) {
+        if !state.sources.contains_key(&claim.source_id) {
             return Err(VerifyError::Projection(format!(
                 "claim {} references unknown source {}",
                 claim.claim_id, claim.source_id
@@ -150,13 +155,13 @@ pub fn verify_projection(state: &ClaimState) -> Result<(), VerifyError> {
         }
     }
     for sup in state.superseded.values() {
-        if !state.claims.contains_key(sup.old_claim_id.as_str()) {
+        if !state.claims.contains_key(&sup.old_claim_id) {
             return Err(VerifyError::Projection(format!(
                 "supersession references unknown old claim {}",
                 sup.old_claim_id
             )));
         }
-        if !state.claims.contains_key(sup.new_claim_id.as_str()) {
+        if !state.claims.contains_key(&sup.new_claim_id) {
             return Err(VerifyError::Projection(format!(
                 "supersession references unknown new claim {}",
                 sup.new_claim_id
@@ -166,20 +171,18 @@ pub fn verify_projection(state: &ClaimState) -> Result<(), VerifyError> {
     Ok(())
 }
 
-/// Deprecated alias for [`verify_projection`].
-pub fn verify_store(state: &ClaimState) -> Result<(), String> {
-    verify_projection(state).map_err(|e| e.to_string())
-}
-
 /// Verification errors for projection and journal receipts.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
     /// Projection invariant violation.
     #[error("projection: {0}")]
     Projection(String),
-    /// Journal receipt verification failure.
+    /// Journal event decode failure during receipt verification.
     #[error("journal: {0}")]
-    Journal(String),
+    Decode(#[from] crate::events::envelope::DecodeError),
+    /// Journal receipt re-verification failure.
+    #[error("journal: {0}")]
+    Journal(#[from] crate::journal::JournalError),
 }
 
 #[cfg(test)]
@@ -228,10 +231,32 @@ mod tests {
             "friday",
         );
         let mut state = ClaimState::default();
-        state.claims.insert(a.claim_id.to_string(), a.clone());
-        state.claims.insert(b.claim_id.to_string(), b);
-        let report = detect_conflicts(&state, "demo");
+        state.claims.insert(a.claim_id.clone(), a.clone());
+        state.claims.insert(b.claim_id.clone(), b);
+        let workspace = WorkspaceId::new("demo").expect("workspace");
+        let report = detect_conflicts(&state, &workspace);
         assert_eq!(report.conflicts.len(), 1);
+        let entry = &report.conflicts[0];
+        // The conflict must name exactly the two contradictory claims (order
+        // independent) on the deploy-process subject, flagged Open.
+        let pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        assert!(
+            pair.contains(&"claim_aaaaaaaaaaaa") && pair.contains(&"claim_bbbbbbbbbbbb"),
+            "conflict must reference both claims, got {pair:?}"
+        );
+        assert_eq!(entry.subject_hint, "deploy-process");
+        assert_eq!(entry.status, ConflictStatus::Open);
+        assert!(
+            entry.reason.contains("contradictory") && entry.reason.contains("deploy-process"),
+            "reason must explain the contradiction: {}",
+            entry.reason
+        );
+        // The conflict id must be the deterministic pair id (stable regardless of
+        // detection order) so commit/dedup downstream is reproducible.
+        assert_eq!(
+            entry.conflict_id,
+            conflict_id_from_pair(&entry.claim_a, &entry.claim_b)
+        );
     }
 
     #[test]
@@ -251,9 +276,20 @@ mod tests {
             "tuesday",
         );
         let mut state = ClaimState::default();
-        state.claims.insert(a.claim_id.to_string(), a.clone());
-        state.claims.insert(b.claim_id.to_string(), b);
-        let report = detect_conflicts(&state, "demo");
+        state.claims.insert(a.claim_id.clone(), a.clone());
+        state.claims.insert(b.claim_id.clone(), b);
+        let workspace = WorkspaceId::new("demo").expect("workspace");
+        let report = detect_conflicts(&state, &workspace);
         assert_eq!(report.conflicts.len(), 1);
+        let entry = &report.conflicts[0];
+        // Friday-vs-Tuesday must be flagged on the deploy-process subject even
+        // with no replacement keyword present (pure schedule-object clash path).
+        let pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        assert!(
+            pair.contains(&"claim_aaaaaaaaaaaa") && pair.contains(&"claim_bbbbbbbbbbbb"),
+            "schedule clash must reference both claims, got {pair:?}"
+        );
+        assert_eq!(entry.subject_hint, "deploy-process");
+        assert_eq!(entry.status, ConflictStatus::Open);
     }
 }

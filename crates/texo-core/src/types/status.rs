@@ -28,14 +28,24 @@ pub enum ConflictStatus {
     Ignored,
 }
 
+/// Unrecognized conflict status string encountered while parsing a journal event.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{value}")]
+pub struct ConflictStatusParseError {
+    /// The offending status string that did not match a known conflict status.
+    pub value: String,
+}
+
 impl ConflictStatus {
     /// Parse status from journal event string.
-    pub fn parse_str(value: &str) -> Option<Self> {
+    pub fn parse_str(value: &str) -> Result<Self, ConflictStatusParseError> {
         match value {
-            "open" => Some(Self::Open),
-            "resolved" => Some(Self::Resolved),
-            "ignored" => Some(Self::Ignored),
-            _ => None,
+            "open" => Ok(Self::Open),
+            "resolved" => Ok(Self::Resolved),
+            "ignored" => Ok(Self::Ignored),
+            _ => Err(ConflictStatusParseError {
+                value: value.to_string(),
+            }),
         }
     }
 
@@ -46,5 +56,58 @@ impl ConflictStatus {
             Self::Resolved => "resolved",
             Self::Ignored => "ignored",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflict_status_parse_accepts_every_known_string() {
+        assert_eq!(
+            ConflictStatus::parse_str("open").expect("open"),
+            ConflictStatus::Open
+        );
+        assert_eq!(
+            ConflictStatus::parse_str("resolved").expect("resolved"),
+            ConflictStatus::Resolved
+        );
+        assert_eq!(
+            ConflictStatus::parse_str("ignored").expect("ignored"),
+            ConflictStatus::Ignored
+        );
+    }
+
+    #[test]
+    fn conflict_status_parse_rejects_unknown_string() {
+        let err = ConflictStatus::parse_str("bogus").expect_err("unknown must error");
+        assert_eq!(err.value, "bogus");
+        // The Display impl must surface the offending value verbatim so a
+        // malformed journal entry is diagnosable.
+        assert_eq!(err.to_string(), "bogus");
+    }
+
+    #[test]
+    fn conflict_status_round_trips_through_as_str_and_parse() {
+        for status in [
+            ConflictStatus::Open,
+            ConflictStatus::Resolved,
+            ConflictStatus::Ignored,
+        ] {
+            assert_eq!(
+                ConflictStatus::parse_str(status.as_str()).expect("round trip"),
+                status
+            );
+        }
+    }
+
+    #[test]
+    fn claim_status_serde_uses_snake_case() {
+        // Golden serde shape: the journal/JSON surface must stay snake_case.
+        let json = serde_json::to_string(&ClaimStatus::Conflicting).expect("serialize");
+        assert_eq!(json, "\"conflicting\"");
+        let parsed: ClaimStatus = serde_json::from_str("\"superseded\"").expect("deserialize");
+        assert_eq!(parsed, ClaimStatus::Superseded);
     }
 }

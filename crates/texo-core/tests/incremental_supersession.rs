@@ -51,7 +51,7 @@ fn second_session_supersedes_first_session_claim() {
         .claims
         .values()
         .find(|c| c.subject_hint == "deploy-process" && c.normalized_text.contains("friday"))
-        .map(|c| c.claim_id.to_string())
+        .map(|c| c.claim_id.clone())
         .expect("session 1 must record a Friday deploy claim");
 
     // The Friday deploy claim is the only deploy-process claim in session 1, so
@@ -92,8 +92,7 @@ fn second_session_supersedes_first_session_claim() {
         .get(&friday_claim_id)
         .expect("F1: session-1 Friday claim must be superseded by a session-2 claim");
     assert_ne!(
-        superseded.new_claim_id.to_string(),
-        friday_claim_id,
+        superseded.new_claim_id, friday_claim_id,
         "supersession edge must point to a different (new) claim"
     );
 

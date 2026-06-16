@@ -1,6 +1,11 @@
 //! Journal typestate markers.
+//!
+//! The journal's open/closed status is encoded structurally: each state type
+//! OWNS the data that state requires. `Open(StoreHandle)` carries a
+//! non-optional store handle, so an open-without-handle state is simply not
+//! representable and no runtime check is needed to borrow it. `Closed` carries
+//! no handle.
 
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use crate::config::WorkspaceConfig;
@@ -9,11 +14,10 @@ use crate::journal::store::StoreHandle;
 use crate::replay::reducer::ReplayedState;
 use crate::types::ids::WorkspaceId;
 
-/// Marker: journal is open for reads and writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Open;
+/// State: journal is open for reads and writes, holding its store handle.
+pub struct Open(StoreHandle);
 
-/// Marker: journal is closed.
+/// State: journal is closed; no store handle is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Closed;
 
@@ -24,11 +28,14 @@ impl JournalState for Open {}
 impl JournalState for Closed {}
 
 /// Typestate wrapper around the BatPak store handle.
+///
+/// The `state` field carries the state-specific data: `Open` owns the
+/// [`StoreHandle`], `Closed` owns nothing. This makes the open invariant
+/// structural rather than checked at runtime.
 pub struct Journal<State: JournalState> {
-    pub(crate) handle: Option<StoreHandle>,
+    pub(crate) state: State,
     pub(crate) config: WorkspaceConfig,
     pub(crate) root: PathBuf,
-    _state: PhantomData<State>,
 }
 
 impl Journal<Open> {
@@ -40,18 +47,17 @@ impl Journal<Open> {
         }
         let handle = StoreHandle::open(&store_path)?;
         Ok(Self {
-            handle: Some(handle),
+            state: Open(handle),
             config,
             root: root.to_path_buf(),
-            _state: PhantomData,
         })
     }
 
     /// Borrow the underlying store handle.
+    ///
+    /// Infallible: `Journal<Open>` structurally owns a [`StoreHandle`].
     pub fn handle(&self) -> &StoreHandle {
-        self.handle
-            .as_ref()
-            .expect("open journal must hold a store handle")
+        &self.state.0
     }
 
     /// Borrow configuration.
@@ -71,14 +77,11 @@ impl Journal<Open> {
 
     /// Close the journal cleanly.
     pub fn close(self) -> Result<Journal<Closed>, TexoError> {
-        if let Some(handle) = self.handle {
-            handle.close()?;
-        }
+        self.state.0.close()?;
         Ok(Journal {
-            handle: None,
+            state: Closed,
             config: self.config,
             root: self.root,
-            _state: PhantomData,
         })
     }
 }

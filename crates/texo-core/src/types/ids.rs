@@ -105,12 +105,22 @@ impl TryFrom<&str> for WorkspaceId {
     }
 }
 
+/// Number of body-hash hex characters carried in a derived source id.
+const SOURCE_ID_HASH_LEN: usize = 12;
+
 /// Compute deterministic source id from body hash hex.
-pub fn source_id_from_hash(body_hash_hex: &str) -> SourceId {
-    SourceId::new_unchecked(format!(
-        "src_{}",
-        &body_hash_hex[..12.min(body_hash_hex.len())]
-    ))
+///
+/// Requires at least [`SOURCE_ID_HASH_LEN`] hex characters of input; a shorter
+/// hash would be silently truncated to a different, ambiguous id, so it is
+/// rejected instead. Callers derive the input from [`blake3_bytes_hex`], which
+/// always yields 64 characters, so this error path is unreachable in practice.
+pub fn source_id_from_hash(body_hash_hex: &str) -> Result<SourceId, IdParseError> {
+    let prefix = body_hash_hex
+        .get(..SOURCE_ID_HASH_LEN)
+        .ok_or(IdParseError::HashTooShort {
+            min: SOURCE_ID_HASH_LEN,
+        })?;
+    Ok(SourceId::new_unchecked(format!("src_{prefix}")))
 }
 
 /// Compute deterministic claim id.
@@ -152,8 +162,8 @@ mod tests {
     #[test]
     fn source_id_is_deterministic() {
         let hash = blake3_bytes_hex(b"hello");
-        let a = source_id_from_hash(&hash);
-        let b = source_id_from_hash(&hash);
+        let a = source_id_from_hash(&hash).expect("source id");
+        let b = source_id_from_hash(&hash).expect("source id");
         assert_eq!(a, b);
         assert!(a.as_str().starts_with("src_"));
     }
@@ -171,5 +181,54 @@ mod tests {
         let a = ClaimId::try_from("claim_aaaaaaaaaaaa").expect("claim a");
         let b = ClaimId::try_from("claim_bbbbbbbbbbbb").expect("claim b");
         assert_eq!(conflict_id_from_pair(&a, &b), conflict_id_from_pair(&b, &a));
+    }
+
+    #[test]
+    fn source_id_from_hash_rejects_short_input() {
+        // Fewer than SOURCE_ID_HASH_LEN (12) hex chars would silently truncate to
+        // an ambiguous id, so it must error instead.
+        let err = source_id_from_hash("abc").expect_err("short hash must error");
+        assert_eq!(err, IdParseError::HashTooShort { min: 12 });
+    }
+
+    #[test]
+    fn source_id_from_hash_accepts_exact_minimum_length() {
+        let id = source_id_from_hash("0123456789ab").expect("exactly 12 chars");
+        assert_eq!(id.as_str(), "src_0123456789ab");
+    }
+
+    #[test]
+    fn branded_id_try_from_rejects_bad_prefix_and_empty() {
+        assert_eq!(
+            ClaimId::try_from("src_xyz"),
+            Err(IdParseError::BadPrefix {
+                expected: "claim_".to_string()
+            })
+        );
+        assert_eq!(SourceId::try_from(""), Err(IdParseError::Empty));
+    }
+
+    #[test]
+    fn branded_id_from_str_matches_try_from() {
+        use std::str::FromStr;
+        let via_from_str = ClaimId::from_str("claim_abc").expect("from_str");
+        let via_try_from = ClaimId::try_from("claim_abc").expect("try_from");
+        assert_eq!(via_from_str, via_try_from);
+        assert_eq!(via_from_str.as_str(), "claim_abc");
+        assert_eq!(via_from_str.as_ref(), "claim_abc");
+        assert_eq!(via_from_str.to_string(), "claim_abc");
+    }
+
+    #[test]
+    fn workspace_id_validates_and_builds_scope() {
+        let ws = WorkspaceId::new("demo").expect("workspace");
+        assert_eq!(ws.scope(), "workspace:demo");
+        assert_eq!(ws.as_str(), "demo");
+        assert_eq!(ws.as_ref(), "demo");
+        assert_eq!(ws.to_string(), "demo");
+        assert_eq!(
+            WorkspaceId::try_from("bad/ws"),
+            Err(IdParseError::InvalidWorkspace)
+        );
     }
 }

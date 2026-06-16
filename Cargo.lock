@@ -1570,6 +1570,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "texo-core",
+ "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",

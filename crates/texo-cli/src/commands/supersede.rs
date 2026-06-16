@@ -14,8 +14,8 @@ pub fn run(
     decided_by: &str,
     json: bool,
 ) -> Result<()> {
-    let old_id = ClaimId::try_from(old).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let new_id = ClaimId::try_from(new).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let old_id = ClaimId::try_from(old)?;
+    let new_id = ClaimId::try_from(new)?;
     let receipt = supersede_claim(
         root,
         &old_id,

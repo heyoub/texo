@@ -6,6 +6,7 @@ use crate::journal::JournalError;
 use crate::replay::ReplayError;
 use crate::source::SourceError;
 use crate::state::TransitionError;
+use crate::types::IdParseError;
 
 /// Unified error surface for the texo core library.
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +35,9 @@ pub enum TexoError {
     /// JSON serialization errors.
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// Identifier parse errors.
+    #[error("{0}")]
+    IdParse(#[from] IdParseError),
     /// Generic domain error with context.
     #[error("{0}")]
     Domain(String),

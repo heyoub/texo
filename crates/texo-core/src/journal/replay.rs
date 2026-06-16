@@ -24,19 +24,18 @@ pub fn load_workspace_events(
 
     loop {
         let page = store.query_entries_after(&region, after, PAGE_SIZE);
-        if page.is_empty() {
-            break;
-        }
+        // An empty page ends pagination; a non-empty page's last entry advances
+        // the cursor. Binding `last` here makes the non-empty invariant
+        // structural — no `.last().expect(...)` is needed.
+        let Some(last) = page.last() else { break };
+        after = Some(last.global_sequence());
         for entry in &page {
             let event_id = EventId::from(entry.event_id());
-            let stored = store
-                .get(event_id)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            let stored = store.get(event_id)?;
             // Strict policy: an unknown kind propagates as an error here rather
             // than being silently skipped (SPEC.md:73 — no silent partial state).
             events.push(decode_stored_event(&stored, entry.global_sequence())?);
         }
-        after = Some(page.last().expect("non-empty page").global_sequence());
     }
 
     Ok(events)
@@ -53,14 +52,13 @@ pub fn load_source_body_hashes(
 
     loop {
         let page = store.query_entries_after(&region, after, PAGE_SIZE);
-        if page.is_empty() {
-            break;
-        }
+        // See `load_workspace_events`: binding the last entry expresses the
+        // non-empty invariant structurally instead of asserting it.
+        let Some(last) = page.last() else { break };
+        after = Some(last.global_sequence());
         for entry in &page {
             let event_id = EventId::from(entry.event_id());
-            let stored = store
-                .get(event_id)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
+            let stored = store.get(event_id)?;
             // Decode against all five known kinds so a truly unknown kind still
             // errors (no silent skip), then filter to the SOURCE kind we want.
             // Other KNOWN kinds are intentionally ignored here.
@@ -70,24 +68,9 @@ pub fn load_source_body_hashes(
                 hashes.insert(payload.body_hash_hex);
             }
         }
-        after = Some(page.last().expect("non-empty page").global_sequence());
     }
 
     Ok(hashes)
-}
-
-fn map_typed_decode_error(error: TypedDecodeError) -> DecodeError {
-    match error {
-        // `route_typed` (the only producer reaching this mapper) returns
-        // `Ok(None)` on a kind mismatch and never `TypedDecodeError::KindMismatch`,
-        // so only the genuine decode-failure case is reachable here. A truly
-        // unknown kind is reported by the explicit `Err(UnsupportedKind)`
-        // fallthrough in `decode_stored_event`, not from this mapping.
-        TypedDecodeError::DecodeFailure { source, .. } => DecodeError::Decode(source.to_string()),
-        TypedDecodeError::KindMismatch { .. } => {
-            DecodeError::Decode("unexpected kind mismatch from route_typed".to_string())
-        }
-    }
 }
 
 /// Decode one stored entry into a known texo event.
@@ -104,47 +87,27 @@ fn decode_stored_event(
     let event_id = stored.event.header.event_id;
     let base_receipt = receipt_view(event_id.into(), sequence, "", &scope, &entity);
 
-    if let Some(payload) = stored
-        .event
-        .route_typed::<SourceObserved>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<SourceObserved>()? {
         let mut receipt = base_receipt;
         receipt.kind = "SourceObserved".to_string();
         return Ok(TexoEvent::SourceObserved { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimRecorded>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimRecorded>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimRecorded".to_string();
         return Ok(TexoEvent::ClaimRecorded { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimSuperseded>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimSuperseded>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimSuperseded".to_string();
         return Ok(TexoEvent::ClaimSuperseded { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimConflictDetected>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimConflictDetected>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimConflictDetected".to_string();
         return Ok(TexoEvent::ClaimConflictDetected { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<OnboardingCompiled>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<OnboardingCompiled>()? {
         let mut receipt = base_receipt;
         receipt.kind = "OnboardingCompiled".to_string();
         return Ok(TexoEvent::OnboardingCompiled { payload, receipt });

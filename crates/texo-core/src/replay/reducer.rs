@@ -133,4 +133,103 @@ mod tests {
             "REPLAY TRUTH VIOLATED: invalid claim id must fail replay"
         );
     }
+
+    fn valid_recorded(claim_id: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimRecorded {
+            payload: ClaimRecorded {
+                claim_id: claim_id.to_string(),
+                workspace_id: "demo".to_string(),
+                source_id: "src_abc123def456".to_string(),
+                source_path: "x.md".to_string(),
+                line_start: 1,
+                line_end: 1,
+                text: "x".to_string(),
+                normalized_text: "x".to_string(),
+                subject_hint: "s".to_string(),
+                predicate_hint: "unknown".to_string(),
+                object_hint: "x".to_string(),
+                confidence_ppm: 500_000,
+                extractor_kind: "test".to_string(),
+                observed_at_ms: 1,
+            },
+            receipt: receipt_view(
+                sequence.into(),
+                sequence,
+                "ClaimRecorded",
+                "workspace:demo",
+                claim_id,
+            ),
+        }
+    }
+
+    #[test]
+    fn typestate_reducer_folds_and_reports_frontier() {
+        // Exercise the typestate path (new -> fold -> into_state), not just the
+        // free fold_events helper. The frontier must equal the max sequence seen.
+        let events = [
+            valid_recorded("claim_aaaaaaaaaaaa", 4),
+            valid_recorded("claim_bbbbbbbbbbbb", 9),
+        ];
+        let replayed = ReplayReducer::new()
+            .fold(events.iter().cloned())
+            .expect("fold")
+            .into_state();
+        assert_eq!(replayed.state.claims.len(), 2);
+        assert_eq!(replayed.frontier.sequence().get(), 9);
+    }
+
+    #[test]
+    fn default_reducer_matches_new() {
+        let events = [valid_recorded("claim_aaaaaaaaaaaa", 1)];
+        let from_default = ReplayReducer::<Unreplayed>::default()
+            .fold(events.iter().cloned())
+            .expect("fold default")
+            .into_state();
+        let from_new = ReplayReducer::new()
+            .fold(events.iter().cloned())
+            .expect("fold new")
+            .into_state();
+        assert_eq!(from_default, from_new);
+    }
+
+    #[test]
+    fn from_events_matches_typestate_path() {
+        let events = [
+            valid_recorded("claim_aaaaaaaaaaaa", 2),
+            valid_recorded("claim_bbbbbbbbbbbb", 5),
+        ];
+        let via_helper = ReplayedState::from_events(events.iter().cloned()).expect("from_events");
+        let via_typestate = ReplayReducer::new()
+            .fold(events.iter().cloned())
+            .expect("fold")
+            .into_state();
+        assert_eq!(via_helper, via_typestate);
+    }
+
+    #[test]
+    fn typestate_fold_propagates_errors() {
+        // The fold() path must surface the same error the free helper does.
+        let receipt = receipt_view(1, 1, "ClaimRecorded", "workspace:demo", "claim:bad");
+        let event = TexoEvent::ClaimRecorded {
+            payload: ClaimRecorded {
+                claim_id: "not_valid".to_string(),
+                workspace_id: "demo".to_string(),
+                source_id: "src_abc123def456".to_string(),
+                source_path: "x.md".to_string(),
+                line_start: 1,
+                line_end: 1,
+                text: "x".to_string(),
+                normalized_text: "x".to_string(),
+                subject_hint: "s".to_string(),
+                predicate_hint: "unknown".to_string(),
+                object_hint: "x".to_string(),
+                confidence_ppm: 500_000,
+                extractor_kind: "test".to_string(),
+                observed_at_ms: 1,
+            },
+            receipt,
+        };
+        let result = ReplayReducer::new().fold([event]);
+        assert!(matches!(result, Err(ReplayError::InvalidId(_))));
+    }
 }

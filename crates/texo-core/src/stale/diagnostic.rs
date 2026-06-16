@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::ids::ClaimId;
+use crate::types::ids::{ClaimId, WorkspaceId};
 use crate::types::receipt::ReceiptView;
 
 /// Severity of a staleness diagnostic.
@@ -55,7 +55,7 @@ pub struct StaleDiagnostic {
 #[serde(deny_unknown_fields)]
 pub struct StalenessReport {
     /// Workspace id.
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     /// Checked path.
     pub checked_path: String,
     /// Replay frontier sequence.

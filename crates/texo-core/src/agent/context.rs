@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::freshness::FreshnessView;
 use crate::replay::state::ClaimState;
-use crate::types::ids::ClaimId;
+use crate::types::ids::{ClaimId, WorkspaceId};
 use crate::types::receipt::ReceiptView;
 use crate::types::status::ClaimStatus;
 
@@ -68,7 +68,7 @@ pub struct AgentStaleClaim {
 #[serde(deny_unknown_fields)]
 pub struct AgentContext {
     /// Workspace id.
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     /// Replay frontier.
     pub replayed_through_sequence: u64,
     /// Freshness metadata.
@@ -82,7 +82,7 @@ pub struct AgentContext {
 /// Build agent context from replayed state.
 pub fn build_agent_context(
     state: &ClaimState,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     subject_filter: Option<&str>,
 ) -> AgentContext {
     let mut claims = Vec::new();
@@ -121,7 +121,7 @@ pub fn build_agent_context(
     stale_claims.sort_by(|a, b| a.claim_id.as_str().cmp(b.claim_id.as_str()));
 
     AgentContext {
-        workspace_id: workspace_id.to_string(),
+        workspace_id: workspace_id.clone(),
         replayed_through_sequence: state.replayed_through_sequence,
         freshness: FreshnessView::batpak_local(state.replayed_through_sequence),
         claims,

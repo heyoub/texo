@@ -41,9 +41,8 @@ impl MarkdownDocument {
     /// Parse markdown bytes.
     pub fn from_bytes(path: &str, bytes: &[u8]) -> Result<Self, SourceError> {
         let body_hash_hex = blake3_bytes_hex(bytes);
-        let source_id = source_id_from_hash(&body_hash_hex).to_string();
-        let text =
-            String::from_utf8(bytes.to_vec()).map_err(|e| SourceError::Utf8(e.to_string()))?;
+        let source_id = source_id_from_hash(&body_hash_hex)?.to_string();
+        let text = String::from_utf8(bytes.to_vec())?;
         let lines = parse_lines(&text);
         Ok(Self {
             path: path.to_string(),
@@ -98,7 +97,10 @@ pub enum SourceError {
     Io(#[from] std::io::Error),
     /// Invalid UTF-8.
     #[error("utf8: {0}")]
-    Utf8(String),
+    Utf8(#[from] std::string::FromUtf8Error),
+    /// Failed to derive a source id from the body hash.
+    #[error("id: {0}")]
+    Id(#[from] crate::types::IdParseError),
 }
 
 /// Collect markdown files under a directory.
@@ -135,12 +137,107 @@ mod tests {
 
     #[test]
     fn skips_code_fence() {
+        // Lines (1-based):
+        //   1 `# Title`      kept
+        //   2 ``            kept (blank)
+        //   3 ```` ``` ````  fence open  -> dropped
+        //   4 `code`         inside fence -> dropped
+        //   5 ```` ``` ````  fence close -> dropped
+        //   6 ``            kept (blank)
+        //   7 `Deploys...`   kept
         let doc = MarkdownDocument::from_bytes(
             "test.md",
             b"# Title\n\n```\ncode\n```\n\nDeploys happen on Friday.\n",
         )
         .expect("parse");
-        assert_eq!(doc.lines.len(), 4);
-        assert!(doc.lines.iter().all(|l| !l.text.contains("code")));
+
+        // Exactly the four non-fenced lines survive, with their ORIGINAL 1-based
+        // numbers preserved (so claim provenance points at the real file line).
+        let surviving: Vec<(u32, &str)> = doc
+            .lines
+            .iter()
+            .map(|l| (l.number, l.text.as_str()))
+            .collect();
+        assert_eq!(
+            surviving,
+            vec![
+                (1, "# Title"),
+                (2, ""),
+                (6, ""),
+                (7, "Deploys happen on Friday.")
+            ],
+            "must keep non-fenced lines with original numbering and drop the fence"
+        );
+
+        // The fence delimiters themselves and the fenced body must all be gone.
+        let kept_numbers: Vec<u32> = doc.lines.iter().map(|l| l.number).collect();
+        for fenced in [3u32, 4, 5] {
+            assert!(
+                !kept_numbers.contains(&fenced),
+                "fenced/delimiter line {fenced} must be excluded"
+            );
+        }
+        assert!(
+            doc.lines
+                .iter()
+                .all(|l| !l.text.contains("code") && !l.text.trim_start().starts_with("```")),
+            "no fence delimiter or fenced content may leak through"
+        );
+    }
+
+    #[test]
+    fn skips_yaml_frontmatter_block_and_preserves_line_numbers() {
+        // Frontmatter occupies lines 1-3; body starts at line 4. The parser must
+        // drop the entire `---`-delimited block (including its delimiters) yet
+        // keep the surviving body lines at their true file line numbers.
+        let doc = MarkdownDocument::from_bytes(
+            "fm.md",
+            b"---\ntitle: X\n---\n# Heading\n\nDeploys happen on Friday.\n",
+        )
+        .expect("parse");
+
+        let surviving: Vec<(u32, &str)> = doc
+            .lines
+            .iter()
+            .map(|l| (l.number, l.text.as_str()))
+            .collect();
+        assert_eq!(
+            surviving,
+            vec![(4, "# Heading"), (5, ""), (6, "Deploys happen on Friday.")],
+            "frontmatter (lines 1-3) must be excluded; body keeps real numbers"
+        );
+        assert!(
+            doc.lines
+                .iter()
+                .all(|l| l.text != "title: X" && l.text != "---"),
+            "no frontmatter key or `---` delimiter may survive"
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_invalid_utf8_with_source_error() {
+        // A lone 0xFF byte is never valid UTF-8. The hash and source id are
+        // derived from raw bytes (so they succeed), but decoding to text must
+        // fail with SourceError::Utf8 rather than panicking or lossily decoding.
+        let err = MarkdownDocument::from_bytes("bad.md", &[0xFF, 0xFE, 0x00])
+            .expect_err("invalid utf-8 must error");
+        match &err {
+            SourceError::Utf8(_) => {}
+            other => panic!("expected SourceError::Utf8, got {other:?}"),
+        }
+        // The Display impl must label the variant for diagnosability.
+        assert!(err.to_string().starts_with("utf8: "));
+    }
+
+    #[test]
+    fn from_path_missing_file_is_io_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does_not_exist.md");
+        let err =
+            MarkdownDocument::from_path(&missing, dir.path()).expect_err("missing file must error");
+        match err {
+            SourceError::Io(_) => {}
+            other => panic!("expected SourceError::Io, got {other:?}"),
+        }
     }
 }

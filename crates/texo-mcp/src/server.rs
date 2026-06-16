@@ -9,18 +9,21 @@ use rmcp::{
 };
 use tracing_subscriber::{self, EnvFilter};
 
+use crate::error::McpToolError;
 use crate::tools::{
     CheckStalenessInput, ExplainClaimInput, GetAgentContextInput, GetCurrentClaimsInput,
     ToolContext,
 };
 
 /// texo MCP server handler.
+///
+/// No `tool_router` field is stored: the `#[tool_router]` macro emits a
+/// `Self::tool_router()` associated function, and `#[tool_handler]` dispatches
+/// through that function (its default `router` expression) rather than through a
+/// struct field.
 #[derive(Clone)]
 pub struct TexoMcpServer {
     ctx: ToolContext,
-    // justify: rmcp `tool_router` macro reads this field via generated dispatch code
-    #[allow(dead_code)]
-    tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
 #[tool_router]
@@ -29,7 +32,6 @@ impl TexoMcpServer {
     pub fn new(root: PathBuf, workspace_id: Option<String>) -> Self {
         Self {
             ctx: ToolContext { root, workspace_id },
-            tool_router: Self::tool_router(),
         }
     }
 
@@ -39,11 +41,10 @@ impl TexoMcpServer {
     async fn check_staleness(
         &self,
         Parameters(input): Parameters<CheckStalenessInput>,
-    ) -> Result<String, String> {
+    ) -> Result<String, McpToolError> {
         let ctx = self.ctx.clone();
-        tokio::task::spawn_blocking(move || ctx.check_staleness(&input).map_err(|e| e.to_string()))
-            .await
-            .map_err(|e| e.to_string())?
+        let output = tokio::task::spawn_blocking(move || ctx.check_staleness(&input)).await??;
+        Ok(output)
     }
 
     #[tool(
@@ -52,13 +53,10 @@ impl TexoMcpServer {
     async fn get_current_claims(
         &self,
         Parameters(input): Parameters<GetCurrentClaimsInput>,
-    ) -> Result<String, String> {
+    ) -> Result<String, McpToolError> {
         let ctx = self.ctx.clone();
-        tokio::task::spawn_blocking(move || {
-            ctx.get_current_claims(&input).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        let output = tokio::task::spawn_blocking(move || ctx.get_current_claims(&input)).await??;
+        Ok(output)
     }
 
     #[tool(
@@ -67,13 +65,10 @@ impl TexoMcpServer {
     async fn get_agent_context(
         &self,
         Parameters(input): Parameters<GetAgentContextInput>,
-    ) -> Result<String, String> {
+    ) -> Result<String, McpToolError> {
         let ctx = self.ctx.clone();
-        tokio::task::spawn_blocking(move || {
-            ctx.get_agent_context(&input).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        let output = tokio::task::spawn_blocking(move || ctx.get_agent_context(&input)).await??;
+        Ok(output)
     }
 
     #[tool(
@@ -82,11 +77,10 @@ impl TexoMcpServer {
     async fn explain_claim(
         &self,
         Parameters(input): Parameters<ExplainClaimInput>,
-    ) -> Result<String, String> {
+    ) -> Result<String, McpToolError> {
         let ctx = self.ctx.clone();
-        tokio::task::spawn_blocking(move || ctx.explain_claim(&input).map_err(|e| e.to_string()))
-            .await
-            .map_err(|e| e.to_string())?
+        let output = tokio::task::spawn_blocking(move || ctx.explain_claim(&input)).await??;
+        Ok(output)
     }
 }
 
@@ -121,8 +115,57 @@ pub async fn run_stdio(root: PathBuf, workspace_id: Option<String>) -> anyhow::R
 mod tests {
     use super::*;
 
+    /// The `#[tool_router]` macro must register every annotated handler. Assert
+    /// the router exposes exactly the four read-only tools by name, not merely
+    /// that the server constructs (the old, tautological assertion).
     #[test]
-    fn tool_router_builds() {
-        let _server = TexoMcpServer::new(std::env::current_dir().expect("cwd"), None);
+    fn tool_router_registers_all_tools() {
+        let router = TexoMcpServer::tool_router();
+        let mut names: Vec<String> = router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "check_staleness".to_string(),
+                "explain_claim".to_string(),
+                "get_agent_context".to_string(),
+                "get_current_claims".to_string(),
+            ],
+            "tool_router must register exactly the four read-only tools"
+        );
+        for tool in [
+            "check_staleness",
+            "explain_claim",
+            "get_agent_context",
+            "get_current_claims",
+        ] {
+            assert!(
+                router.has_route(tool),
+                "router must have a route for `{tool}`"
+            );
+        }
+    }
+
+    /// `get_info` must advertise the texo server identity and enable the tools
+    /// capability so MCP clients discover the read-only tool surface.
+    #[test]
+    fn get_info_advertises_tools_capability() {
+        let server = TexoMcpServer::new(std::env::current_dir().expect("cwd"), None);
+        let info = server.get_info();
+        assert_eq!(info.server_info.name, "texo");
+        assert!(
+            info.capabilities.tools.is_some(),
+            "server must advertise the tools capability"
+        );
+        assert!(
+            info.instructions
+                .as_deref()
+                .is_some_and(|i| i.contains("texo claim-chain")),
+            "server instructions must steer agents to the claim-chain"
+        );
     }
 }

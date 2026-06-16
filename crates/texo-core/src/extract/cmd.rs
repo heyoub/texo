@@ -93,9 +93,10 @@ fn extract_via_cmd_with_timeout(
     #[cfg(unix)]
     command.process_group(0);
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| ExtractError::Cmd(format!("spawn failed: {e}")))?;
+    let mut child = command.spawn().map_err(|e| ExtractError::CmdIo {
+        context: "spawn failed",
+        source: e,
+    })?;
 
     let stdout = child
         .stdout
@@ -191,8 +192,7 @@ fn parse_claims(
     observed_at_ms: u64,
     extractor_kind: &str,
 ) -> Result<Vec<ExtractedClaim>, ExtractError> {
-    let text = std::str::from_utf8(stdout_bytes)
-        .map_err(|e| ExtractError::Cmd(format!("stdout not utf-8: {e}")))?;
+    let text = std::str::from_utf8(stdout_bytes)?;
 
     let mut claims = Vec::new();
     for line in text.lines() {
@@ -200,8 +200,7 @@ fn parse_claims(
         if trimmed.is_empty() {
             continue;
         }
-        let parsed: CmdClaimLine = serde_json::from_str(trimmed)
-            .map_err(|e| ExtractError::Cmd(format!("invalid json line: {e}")))?;
+        let parsed: CmdClaimLine = serde_json::from_str(trimmed)?;
         let claim = build_claim(
             parsed,
             max_line,
@@ -249,7 +248,10 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus,
             Err(e) => {
                 kill_tree(child);
                 let _ = child.wait();
-                return Err(ExtractError::Cmd(format!("wait failed: {e}")));
+                return Err(ExtractError::CmdIo {
+                    context: "wait failed",
+                    source: e,
+                });
             }
         }
     }
@@ -314,7 +316,7 @@ fn build_claim(
             )));
         }
         Some(ppm) => ppm,
-        None => 700_000,
+        None => super::DEFAULT_CONFIDENCE_PPM,
     };
 
     let normalized = parsed
@@ -433,12 +435,75 @@ mod tests {
     }
 
     #[test]
+    fn missing_confidence_ppm_uses_shared_default() {
+        // A JSON line omitting confidence_ppm must fall back to the single shared
+        // extraction default, matching the heuristic path (not an ad-hoc value).
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x"}\n'"#;
+        let claims = run(cmd, &doc, Duration::from_secs(5)).expect("should accept");
+        assert_eq!(claims.len(), 1);
+        assert_eq!(
+            claims[0].payload.confidence_ppm,
+            super::super::DEFAULT_CONFIDENCE_PPM
+        );
+    }
+
+    #[test]
     fn confidence_ppm_at_max_is_accepted() {
         let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
         let cmd = r#"printf '{"line_start": 1, "text": "x", "confidence_ppm": 1000000}\n'"#;
         let claims = run(cmd, &doc, Duration::from_secs(5)).expect("should accept");
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].payload.confidence_ppm, 1_000_000);
+    }
+
+    #[test]
+    fn invalid_json_line_surfaces_cmd_json_error() {
+        // A non-JSON stdout line must fail as ExtractError::CmdJson, not be
+        // silently dropped.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r"printf 'not-json\n'";
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
+        match err {
+            ExtractError::CmdJson(_) => {}
+            other => panic!("expected CmdJson, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_in_missing_directory_surfaces_cmd_io_error() {
+        // Running with a non-existent working directory makes the process spawn
+        // fail; the adapter must surface ExtractError::CmdIo with the spawn
+        // context, not panic.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\n").expect("doc");
+        let missing = Path::new("/nonexistent/texo/working/dir/should/not/exist");
+        let err = extract_via_cmd_with_timeout(
+            "true",
+            &doc,
+            &source_id(),
+            "demo",
+            0,
+            missing,
+            Duration::from_secs(5),
+        )
+        .expect_err("spawn in missing dir must fail");
+        match err {
+            ExtractError::CmdIo { context, .. } => assert_eq!(context, "spawn failed"),
+            other => panic!("expected CmdIo spawn failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nonzero_exit_surfaces_cmd_error() {
+        // An extractor that emits valid claims but exits non-zero must still be
+        // reported as a failure (Cmd error), not silently accepted.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x"}\n'; exit 3; :"#;
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("nonzero exit must error");
+        match err {
+            ExtractError::Cmd(msg) => assert!(msg.contains("exited"), "got: {msg}"),
+            other => panic!("expected Cmd exit error, got {other:?}"),
+        }
     }
 
     #[test]

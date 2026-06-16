@@ -5,7 +5,7 @@ mod commands;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use texo_mcp::run_stdio;
 
@@ -129,8 +129,10 @@ fn main() -> Result<()> {
         }
         Commands::Verify { json } => commands::verify::run(&cli.root, workspace, json),
         Commands::Mcp => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_stdio(cli.root, workspace.map(str::to_string)))?;
+            let rt = tokio::runtime::Runtime::new()
+                .context("failed to create tokio runtime for MCP server")?;
+            rt.block_on(run_stdio(cli.root, workspace.map(str::to_string)))
+                .context("MCP stdio server failed")?;
             Ok(())
         }
     }

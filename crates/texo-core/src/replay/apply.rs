@@ -6,10 +6,12 @@ use crate::events::payloads::{
 };
 use crate::replay::state::{ClaimState, ClaimView, ConflictView, SourceView, SupersessionView};
 use crate::state::claim_lifecycle::{
-    initial_claim_status, transition, validate_supersession, ClaimLifecycleEvent,
+    apply_open_conflict, initial_claim_status, transition, validate_supersession,
+    ClaimLifecycleEvent,
 };
+use crate::state::TransitionError;
 use crate::types::ids::{ClaimId, ConflictId, SourceId};
-use crate::types::status::{ClaimStatus, ConflictStatus};
+use crate::types::status::{ConflictStatus, ConflictStatusParseError};
 use crate::types::IdParseError;
 
 /// Apply one journal event to replay state.
@@ -33,10 +35,9 @@ fn apply_source(
     payload: &SourceObserved,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let source_id = SourceId::try_from(payload.source_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let source_id = SourceId::try_from(payload.source_id.as_str())?;
     state.sources.insert(
-        payload.source_id.clone(),
+        source_id.clone(),
         SourceView {
             source_id,
             workspace_id: payload.workspace_id.clone(),
@@ -55,10 +56,8 @@ fn apply_claim(
     payload: &ClaimRecorded,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let claim_id = ClaimId::try_from(payload.claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let source_id = SourceId::try_from(payload.source_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let claim_id = ClaimId::try_from(payload.claim_id.as_str())?;
+    let source_id = SourceId::try_from(payload.source_id.as_str())?;
     let view = ClaimView {
         claim_id: claim_id.clone(),
         workspace_id: payload.workspace_id.clone(),
@@ -73,13 +72,13 @@ fn apply_claim(
         object_hint: payload.object_hint.clone(),
         confidence_ppm: payload.confidence_ppm,
         extractor_kind: payload.extractor_kind.clone(),
-        status: transition(ClaimStatus::Unknown, ClaimLifecycleEvent::Recorded)
-            .unwrap_or(initial_claim_status()),
+        // `Recorded` is total: a newly recorded claim is always `Current`.
+        status: initial_claim_status(),
         receipt: receipt.clone(),
         supersedes: Vec::new(),
         superseded_by: None,
     };
-    state.claims.insert(payload.claim_id.clone(), view);
+    state.claims.insert(claim_id, view);
     state.rebuild_subject_index();
     Ok(())
 }
@@ -89,32 +88,29 @@ fn apply_supersession_event(
     payload: &ClaimSuperseded,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let old_id = ClaimId::try_from(payload.old_claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let new_id = ClaimId::try_from(payload.new_claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let old_id = ClaimId::try_from(payload.old_claim_id.as_str())?;
+    let new_id = ClaimId::try_from(payload.new_claim_id.as_str())?;
 
-    validate_supersession(payload).map_err(|e| ReplayError::Transition(e.to_string()))?;
+    validate_supersession(payload)?;
 
-    if !state.claims.contains_key(&payload.old_claim_id) {
-        return Err(ReplayError::MissingClaim(payload.old_claim_id.clone()));
+    if !state.claims.contains_key(&old_id) {
+        return Err(ReplayError::MissingClaim(old_id));
     }
-    if !state.claims.contains_key(&payload.new_claim_id) {
-        return Err(ReplayError::MissingClaim(payload.new_claim_id.clone()));
+    if !state.claims.contains_key(&new_id) {
+        return Err(ReplayError::MissingClaim(new_id));
     }
 
-    if let Some(old) = state.claims.get_mut(&payload.old_claim_id) {
-        old.status = transition(old.status, ClaimLifecycleEvent::Superseded)
-            .map_err(|e| ReplayError::Transition(e.to_string()))?;
+    if let Some(old) = state.claims.get_mut(&old_id) {
+        old.status = transition(old.status, ClaimLifecycleEvent::Superseded)?;
         old.superseded_by = Some(new_id.clone());
     }
 
-    if let Some(new) = state.claims.get_mut(&payload.new_claim_id) {
+    if let Some(new) = state.claims.get_mut(&new_id) {
         new.supersedes.push(old_id.clone());
     }
 
     state.superseded.insert(
-        payload.old_claim_id.clone(),
+        old_id.clone(),
         SupersessionView {
             old_claim_id: old_id,
             new_claim_id: new_id,
@@ -132,26 +128,23 @@ fn apply_conflict(
     payload: &ClaimConflictDetected,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let conflict_id = ConflictId::try_from(payload.conflict_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let claim_a = ClaimId::try_from(payload.claim_a.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let claim_b = ClaimId::try_from(payload.claim_b.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let status = ConflictStatus::parse_str(&payload.status)
-        .ok_or_else(|| ReplayError::InvalidStatus(payload.status.clone()))?;
+    let conflict_id = ConflictId::try_from(payload.conflict_id.as_str())?;
+    let claim_a = ClaimId::try_from(payload.claim_a.as_str())?;
+    let claim_b = ClaimId::try_from(payload.claim_b.as_str())?;
+    let status = ConflictStatus::parse_str(&payload.status)?;
 
     if status == ConflictStatus::Open {
-        for id in [&payload.claim_a, &payload.claim_b] {
-            if let Some(claim) = state.claims.get_mut(id.as_str()) {
-                claim.status = transition(claim.status, ClaimLifecycleEvent::OpenConflict)
-                    .unwrap_or(claim.status);
+        for id in [&claim_a, &claim_b] {
+            if let Some(claim) = state.claims.get_mut(id) {
+                // `OpenConflict` is total; call the total function directly so no
+                // error can be swallowed and a stale status silently kept.
+                claim.status = apply_open_conflict(claim.status);
             }
         }
     }
 
     state.conflicts.insert(
-        payload.conflict_id.clone(),
+        conflict_id.clone(),
         ConflictView {
             conflict_id,
             claim_a,
@@ -170,16 +163,16 @@ fn apply_conflict(
 pub enum ReplayError {
     /// Invalid identifier in event payload.
     #[error("invalid id: {0}")]
-    InvalidId(String),
+    InvalidId(#[from] IdParseError),
     /// Illegal lifecycle transition.
     #[error("transition: {0}")]
-    Transition(String),
+    Transition(#[from] TransitionError),
     /// Referenced claim is absent from replay state.
     #[error("missing claim: {0}")]
-    MissingClaim(String),
+    MissingClaim(ClaimId),
     /// Unrecognized conflict status string in event payload.
     #[error("invalid conflict status: {0}")]
-    InvalidStatus(String),
+    InvalidStatus(#[from] ConflictStatusParseError),
 }
 
 #[cfg(test)]
@@ -263,7 +256,7 @@ mod tests {
         ];
         let result = fold_events(&events);
         match result {
-            Err(ReplayError::MissingClaim(id)) => assert_eq!(id, old_id),
+            Err(ReplayError::MissingClaim(id)) => assert_eq!(id.as_str(), old_id),
             other => panic!("expected MissingClaim({old_id}), got {other:?}"),
         }
     }
@@ -279,7 +272,7 @@ mod tests {
         ];
         let result = fold_events(&events);
         match result {
-            Err(ReplayError::MissingClaim(id)) => assert_eq!(id, new_id),
+            Err(ReplayError::MissingClaim(id)) => assert_eq!(id.as_str(), new_id),
             other => panic!("expected MissingClaim({new_id}), got {other:?}"),
         }
     }
@@ -307,7 +300,7 @@ mod tests {
         ];
         let result = fold_events(&events);
         match result {
-            Err(ReplayError::InvalidStatus(s)) => assert_eq!(s, "not_a_status"),
+            Err(ReplayError::InvalidStatus(s)) => assert_eq!(s.value, "not_a_status"),
             other => panic!("expected InvalidStatus(not_a_status), got {other:?}"),
         }
     }

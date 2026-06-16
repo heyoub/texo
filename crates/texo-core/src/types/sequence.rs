@@ -117,4 +117,58 @@ mod tests {
         assert!(ConfidencePpm::new(1_000_001).is_err());
         assert_eq!(ConfidencePpm::new(900_000).expect("ppm").get(), 900_000);
     }
+
+    #[test]
+    fn confidence_accepts_inclusive_max_and_zero() {
+        assert_eq!(
+            ConfidencePpm::new(ConfidencePpm::MAX).expect("max").get(),
+            1_000_000
+        );
+        assert_eq!(ConfidencePpm::new(0).expect("zero").get(), 0);
+    }
+
+    #[test]
+    fn invalid_confidence_carries_offending_value() {
+        let err = ConfidencePpm::new(2_000_000).expect_err("out of range");
+        assert_eq!(err, InvalidConfidence(2_000_000));
+    }
+
+    #[test]
+    fn local_sequence_max_keeps_greater_and_display_formats() {
+        let a = LocalSequence::new(3);
+        let b = LocalSequence::new(7);
+        assert_eq!(a.max(b), b);
+        assert_eq!(b.max(a), b);
+        assert_eq!(a.get(), 3);
+        assert_eq!(a.to_string(), "local seq 3");
+    }
+
+    #[test]
+    fn replay_frontier_advances_monotonically() {
+        let mut frontier = ReplayFrontier::ZERO;
+        assert_eq!(frontier.sequence().get(), 0);
+
+        frontier.advance(LocalSequence::new(5));
+        assert_eq!(frontier.sequence().get(), 5);
+
+        // A smaller sequence must NOT move the frontier backward.
+        frontier.advance(LocalSequence::new(2));
+        assert_eq!(frontier.sequence().get(), 5);
+
+        frontier.advance(LocalSequence::new(9));
+        assert_eq!(frontier.sequence().get(), 9);
+        assert_eq!(frontier.to_string(), "replayed through seq 9");
+    }
+
+    #[test]
+    fn replay_frontier_new_wraps_a_sequence() {
+        let frontier = ReplayFrontier::new(LocalSequence::new(42));
+        assert_eq!(frontier.sequence().get(), 42);
+    }
+
+    #[test]
+    fn observed_at_ms_round_trips_raw_value() {
+        let ts = ObservedAtMs::new(1_700_000_000_000);
+        assert_eq!(ts.get(), 1_700_000_000_000);
+    }
 }

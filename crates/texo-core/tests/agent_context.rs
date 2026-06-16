@@ -15,7 +15,7 @@ fn agent_context_includes_frontier_and_current_claims() {
     let journal = texo_core::open_journal(dir.path()).expect("open");
     let workspace = journal.config().workspace().expect("workspace");
     let replayed = journal.replay(&workspace).expect("replay");
-    let context = build_agent_context(&replayed.state, workspace.as_str(), None);
+    let context = build_agent_context(&replayed.state, &workspace, None);
     journal.close().expect("close");
 
     assert!(context.replayed_through_sequence > 0);

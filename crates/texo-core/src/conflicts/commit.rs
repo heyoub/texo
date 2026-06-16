@@ -6,19 +6,20 @@ use crate::journal::store::StoreHandle;
 use crate::journal::JournalError;
 use crate::replay::state::ClaimState;
 use crate::state::conflict_lifecycle::{CommittedConflict, ConflictReport};
+use crate::types::ids::WorkspaceId;
 use crate::types::status::ConflictStatus;
 
 /// Append open conflicts from a read-only report.
 pub fn commit_conflicts(
     handle: &StoreHandle,
     state: &ClaimState,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     observed_at_ms: u64,
 ) -> Result<Vec<CommittedConflict>, JournalError> {
     let report = detect_conflicts(state, workspace_id);
     let mut committed = Vec::new();
     for entry in report.conflicts {
-        if state.conflicts.contains_key(entry.conflict_id.as_str()) {
+        if state.conflicts.contains_key(&entry.conflict_id) {
             continue;
         }
         let payload = ClaimConflictDetected {

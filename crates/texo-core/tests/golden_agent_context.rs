@@ -43,11 +43,11 @@ fn agent_context_demo_snapshot() {
     let journal = texo_core::open_journal(dir.path()).expect("open");
     let workspace = journal.config().workspace().expect("workspace");
     let replayed = journal.replay(&workspace).expect("replay");
-    let context = build_agent_context(&replayed.state, workspace.as_str(), None);
+    let context = build_agent_context(&replayed.state, &workspace, None);
     journal.close().expect("close");
 
     let golden = AgentContextGolden {
-        workspace_id: context.workspace_id,
+        workspace_id: context.workspace_id.to_string(),
         replayed_through_sequence: context.replayed_through_sequence,
         freshness_kind: context.freshness.kind,
         claims: context

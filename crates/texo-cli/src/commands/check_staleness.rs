@@ -9,7 +9,7 @@ pub fn run(root: &Path, workspace: Option<&str>, path: &Path, json: bool) -> Res
     let journal = open_journal_with(root, workspace)?;
     let workspace_id = journal.config().workspace()?;
     let replayed = journal.replay(&workspace_id)?;
-    let report = check_staleness(&replayed.state, workspace_id.as_str(), path, root)?;
+    let report = check_staleness(&replayed.state, &workspace_id, path, root)?;
     journal.close()?;
 
     if json {

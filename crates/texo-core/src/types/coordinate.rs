@@ -25,27 +25,19 @@ pub fn entity_for_projection(name: &str) -> String {
     format!("projection:{name}")
 }
 
-/// Entity stream kind prefix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityKind {
-    /// Source document stream.
-    Source,
-    /// Claim stream.
-    Claim,
-    /// Conflict stream.
-    Conflict,
-    /// Projection stream.
-    Projection,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl EntityKind {
-    /// Prefix string for this entity kind.
-    pub fn prefix(self) -> &'static str {
-        match self {
-            Self::Source => "source",
-            Self::Claim => "claim",
-            Self::Conflict => "conflict",
-            Self::Projection => "projection",
-        }
+    #[test]
+    fn scope_and_entity_builders_use_the_expected_prefixes() {
+        // These prefixes are load-bearing: replay scopes events by
+        // `workspace:{id}` and BatPak entity streams are keyed by these strings.
+        // A drift here would silently split or merge event streams.
+        assert_eq!(scope_for_workspace("demo"), "workspace:demo");
+        assert_eq!(entity_for_source("src_abc"), "source:src_abc");
+        assert_eq!(entity_for_claim("claim_abc"), "claim:claim_abc");
+        assert_eq!(entity_for_conflict("conflict_abc"), "conflict:conflict_abc");
+        assert_eq!(entity_for_projection("onboarding"), "projection:onboarding");
     }
 }

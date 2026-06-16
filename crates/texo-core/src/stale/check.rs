@@ -4,14 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::extract::normalize::normalize_line;
+use crate::extract::word_match::{contains_phrase, contains_word};
 use crate::replay::state::{ClaimState, ClaimView};
 use crate::source::{collect_markdown_files, MarkdownDocument};
 use crate::stale::diagnostic::{
     DiagnosticSeverity, DiagnosticSource, StaleDiagnostic, StalenessReport,
 };
-use crate::types::ids::{claim_id_from_parts, ClaimId, SourceId};
+use crate::types::ids::{claim_id_from_parts, ClaimId, SourceId, WorkspaceId};
 use crate::types::status::ClaimStatus;
-use crate::types::IdParseError;
 use crate::TexoError;
 
 const REPLACEMENT_KEYWORDS: &[&str] = &[
@@ -29,7 +29,7 @@ const REPLACEMENT_KEYWORDS: &[&str] = &[
 /// Check markdown paths for stale claims relative to replayed state.
 pub fn check_staleness(
     state: &ClaimState,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     input: &Path,
     root: &Path,
 ) -> Result<StalenessReport, TexoError> {
@@ -44,8 +44,7 @@ pub fn check_staleness(
 
     for path in files {
         let doc = MarkdownDocument::from_path(&path, root)?;
-        let source_id = SourceId::try_from(doc.source_id.as_str())
-            .map_err(|e: IdParseError| TexoError::domain(e.to_string()))?;
+        let source_id = SourceId::try_from(doc.source_id.as_str())?;
 
         for line in &doc.lines {
             let normalized = normalize_line(&line.text);
@@ -78,7 +77,7 @@ pub fn check_staleness(
                 (None, None)
             };
 
-            let supersession = state.superseded.get(claim.claim_id.as_str());
+            let supersession = state.superseded.get(&claim.claim_id);
             let receipt = supersession.map(|s| s.receipt.clone()).or(receipt);
 
             let message = format!(
@@ -104,7 +103,7 @@ pub fn check_staleness(
     }
 
     Ok(StalenessReport {
-        workspace_id: workspace_id.to_string(),
+        workspace_id: workspace_id.clone(),
         checked_path,
         replayed_through_sequence: state.replayed_through_sequence,
         diagnostics,
@@ -123,9 +122,9 @@ pub fn check_staleness(
 pub fn infer_supersessions(
     new_claims: &[(ClaimId, ClaimView)],
     historical_claims: &[(ClaimId, ClaimView)],
-    existing_edges: &HashSet<(String, String)>,
+    existing_edges: &HashSet<(ClaimId, ClaimId)>,
 ) -> Vec<(ClaimId, ClaimId, String)> {
-    let new_ids: HashSet<String> = new_claims.iter().map(|(id, _)| id.to_string()).collect();
+    let new_ids: HashSet<ClaimId> = new_claims.iter().map(|(id, _)| id.clone()).collect();
 
     let mut by_subject: HashMap<String, Vec<(ClaimId, ClaimView)>> = HashMap::new();
     for (id, view) in new_claims.iter().chain(historical_claims.iter()) {
@@ -145,7 +144,7 @@ pub fn infer_supersessions(
         // candidates accordingly so historical claims never supersede each other.
         let mut winners: Vec<(ClaimId, ClaimView)> = group
             .iter()
-            .filter(|(id, _)| new_ids.contains(id.as_str()))
+            .filter(|(id, _)| new_ids.contains(id))
             .filter(|(_, v)| {
                 has_replacement_keyword(&v.text) || has_replacement_keyword(&v.normalized_text)
             })
@@ -154,11 +153,7 @@ pub fn infer_supersessions(
 
         if winners.is_empty() {
             // Fall back to the last new-batch claim in insertion order.
-            let Some(latest_new) = group
-                .iter()
-                .rev()
-                .find(|(id, _)| new_ids.contains(id.as_str()))
-            else {
+            let Some(latest_new) = group.iter().rev().find(|(id, _)| new_ids.contains(id)) else {
                 continue;
             };
             winners.push(latest_new.clone());
@@ -176,7 +171,7 @@ pub fn infer_supersessions(
             if candidate.normalized_text == canonical.1.normalized_text {
                 continue;
             }
-            if existing_edges.contains(&(candidate_id.to_string(), canonical.0.to_string())) {
+            if existing_edges.contains(&(candidate_id.clone(), canonical.0.clone())) {
                 continue;
             }
             edges.push((
@@ -200,24 +195,25 @@ pub fn infer_supersessions(
 
 /// Returns true when text contains a replacement keyword used for supersession inference.
 pub fn has_replacement_keyword(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    REPLACEMENT_KEYWORDS.iter().any(|k| lower.contains(k))
+    REPLACEMENT_KEYWORDS
+        .iter()
+        .any(|k| contains_phrase(text, k))
 }
 
 /// Rank candidate supersession winners: substantive replacements beat meta negations.
 fn supersession_canonical_rank(view: &ClaimView) -> (u8, u64) {
-    let lower = view.text.to_ascii_lowercase();
-    let tier = if lower.contains("no longer")
-        && !lower.contains("moved")
-        && !lower.contains("changed")
-        && !lower.contains("decided")
+    let text = &view.text;
+    let tier = if contains_phrase(text, "no longer")
+        && !contains_word(text, "moved")
+        && !contains_word(text, "changed")
+        && !contains_word(text, "decided")
     {
         0
-    } else if lower.contains("moved")
-        || lower.contains("changed")
-        || lower.contains("decided")
-        || lower.contains("happen on")
-        || lower.contains("now ")
+    } else if contains_word(text, "moved")
+        || contains_word(text, "changed")
+        || contains_word(text, "decided")
+        || contains_phrase(text, "happen on")
+        || contains_word(text, "now")
     {
         2
     } else {
@@ -233,5 +229,16 @@ mod tests {
     #[test]
     fn replacement_keyword_detected() {
         assert!(has_replacement_keyword("deploys moved to Tuesday"));
+    }
+
+    #[test]
+    fn keyword_now_not_matched_inside_known() {
+        // "now" must not match as a substring of "known".
+        assert!(!has_replacement_keyword("this is a known issue"));
+    }
+
+    #[test]
+    fn keyword_now_matched_as_whole_word() {
+        assert!(has_replacement_keyword("deploys now happen on Tuesday"));
     }
 }

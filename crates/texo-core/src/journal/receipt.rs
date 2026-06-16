@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use batpak::prelude::*;
 
+use crate::journal::store::ReceiptInvalid;
 use crate::journal::JournalError;
 use crate::types::receipt::ReceiptView;
 
@@ -17,11 +18,10 @@ pub fn verify_and_view(
 ) -> Result<ReceiptView, JournalError> {
     let verification = store.verify_append_receipt_detailed(receipt);
     if !verification.is_valid() {
-        let message = verification.error().map_or_else(
-            || "unknown receipt verification failure".to_string(),
-            |e| format!("{e:?}"),
-        );
-        return Err(JournalError::ReceiptInvalid(message));
+        let detail = verification.error().map_or(ReceiptInvalid::Unknown, |e| {
+            ReceiptInvalid::Verification(e.clone())
+        });
+        return Err(JournalError::ReceiptInvalid(detail));
     }
     Ok(ReceiptView::from_verified_append(
         receipt, kind, scope, entity,
@@ -57,13 +57,8 @@ pub fn verify_and_view(
 pub fn verify_receipt_view(store: &Store<Open>, receipt: &ReceiptView) -> Result<(), JournalError> {
     let event_id_hex = receipt.event_id.as_str();
     let raw = event_id_hex.strip_prefix("0x").unwrap_or(event_id_hex);
-    let event_id = EventId::from(
-        u128::from_str_radix(raw, 16)
-            .map_err(|e| JournalError::ReceiptInvalid(format!("invalid event id: {e}")))?,
-    );
-    let stored = store
-        .get(event_id)
-        .map_err(|e| JournalError::ReceiptInvalid(format!("store get: {e}")))?;
+    let event_id = EventId::from(u128::from_str_radix(raw, 16)?);
+    let stored = store.get(event_id)?;
     let verification = store.verify_append_receipt_wire_detailed(
         event_id,
         receipt.sequence.get(),
@@ -73,13 +68,17 @@ pub fn verify_receipt_view(store: &Store<Open>, receipt: &ReceiptView) -> Result
         BTreeMap::new(),
     );
     if !verification.is_valid() {
-        let message = verification
-            .error()
-            .map_or_else(|| "unknown".to_string(), |e| format!("{e:?}"));
-        return Err(JournalError::ReceiptInvalid(format!(
-            "receipt {} invalid: {message}",
-            receipt.event_id
-        )));
+        let event_id = receipt.event_id.to_string();
+        let detail = verification.error().map_or_else(
+            || ReceiptInvalid::StoredReceiptUnknown {
+                event_id: event_id.clone(),
+            },
+            |e| ReceiptInvalid::StoredReceipt {
+                event_id: event_id.clone(),
+                reason: e.clone(),
+            },
+        );
+        return Err(JournalError::ReceiptInvalid(detail));
     }
     Ok(())
 }
@@ -135,6 +134,59 @@ mod tests {
         match err {
             JournalError::ReceiptInvalid(_) => {}
             other => panic!("expected ReceiptInvalid, got {other:?}"),
+        }
+
+        handle.close().expect("close store");
+    }
+
+    #[test]
+    fn verify_receipt_view_rejects_overlong_event_id_hex() {
+        // A corrupt/tampered projected view whose event-id hex exceeds the u128
+        // domain must surface JournalError::EventId (the underlying
+        // ParseIntError), not panic. We build the over-long view by deserializing
+        // untrusted JSON, mirroring the real re-verification entry point.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = StoreHandle::open(dir.path()).expect("open store");
+
+        // 40 hex digits overflows u128 (max 32 hex digits).
+        let json = r#"{
+            "event_id": "0xffffffffffffffffffffffffffffffffffffffff",
+            "sequence": 1,
+            "kind": "SourceObserved",
+            "scope": "workspace:demo",
+            "entity": "source:src-1"
+        }"#;
+        let view: ReceiptView = serde_json::from_str(json).expect("deserialize tampered view");
+
+        let err = verify_receipt_view(handle.store(), &view)
+            .expect_err("overlong event id must be rejected");
+        match err {
+            JournalError::EventId(_) => {}
+            other => panic!("expected JournalError::EventId, got {other:?}"),
+        }
+
+        handle.close().expect("close store");
+    }
+
+    #[test]
+    fn verify_receipt_view_rejects_unknown_event_id_with_store_error() {
+        // A well-formed but non-existent event id must fail when the store cannot
+        // fetch it: store.get(..) errors propagate as JournalError::Decode
+        // (DecodeError::Store), not a silent pass.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = StoreHandle::open(dir.path()).expect("open store");
+        let workspace = WorkspaceId::new("demo").expect("workspace id");
+
+        // Append one event so the store is initialized, then point the view at an
+        // event id that was never committed.
+        let mut view = append_one_source(handle.store(), &workspace);
+        view.event_id = crate::types::receipt::EventIdHex::from_event_id(u128::MAX);
+
+        let err = verify_receipt_view(handle.store(), &view)
+            .expect_err("unknown event id must be rejected");
+        match err {
+            JournalError::Decode(_) | JournalError::Store(_) | JournalError::ReceiptInvalid(_) => {}
+            other => panic!("expected Decode/Store/ReceiptInvalid, got {other:?}"),
         }
 
         handle.close().expect("close store");

@@ -4,11 +4,15 @@ use crate::events::payloads::ClaimSuperseded;
 use crate::types::status::ClaimStatus;
 
 /// Illegal claim status transition.
+///
+/// The lifecycle is monotone toward `Superseded`: once superseded, a claim never
+/// re-becomes current (the supersession edge is terminal), and `Recorded` always
+/// produces a fresh `Current` claim under a new id rather than reviving an old
+/// one. There is therefore no "superseded back to current" transition to reject,
+/// so no such variant exists — the only illegal transition the lifecycle can
+/// surface is a malformed supersession payload (see [`validate_supersession`]).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TransitionError {
-    /// Cannot transition from superseded back to current without a new claim id.
-    #[error("superseded claim cannot become current")]
-    SupersededToCurrent,
     /// Source status that cannot transition.
     #[error("invalid transition from {from:?}")]
     InvalidFrom {
@@ -100,5 +104,85 @@ mod tests {
             transition(ClaimStatus::Unknown, ClaimLifecycleEvent::Recorded).expect("transition"),
             ClaimStatus::Current
         );
+    }
+
+    #[test]
+    fn recorded_resets_a_superseded_status_to_current() {
+        // `Recorded` is total and id-fresh: even applied over a `Superseded`
+        // status it yields `Current`, NOT an error. This is exactly why the old
+        // `SupersededToCurrent` variant was dead — the lifecycle never rejects a
+        // record. If someone reintroduced a guard returning an error here, this
+        // assertion would fail.
+        assert_eq!(
+            transition(ClaimStatus::Superseded, ClaimLifecycleEvent::Recorded).expect("transition"),
+            ClaimStatus::Current
+        );
+    }
+
+    #[test]
+    fn open_conflict_marks_current_as_conflicting() {
+        assert_eq!(
+            transition(ClaimStatus::Current, ClaimLifecycleEvent::OpenConflict)
+                .expect("transition"),
+            ClaimStatus::Conflicting
+        );
+    }
+
+    #[test]
+    fn open_conflict_does_not_revive_superseded() {
+        // A superseded claim stays superseded even if a conflict is opened: the
+        // terminal supersession status wins over conflicting.
+        assert_eq!(
+            transition(ClaimStatus::Superseded, ClaimLifecycleEvent::OpenConflict)
+                .expect("transition"),
+            ClaimStatus::Superseded
+        );
+        assert_eq!(
+            apply_open_conflict(ClaimStatus::Superseded),
+            ClaimStatus::Superseded
+        );
+    }
+
+    #[test]
+    fn conflicting_and_unknown_supersede_to_superseded() {
+        assert_eq!(
+            apply_supersession(ClaimStatus::Conflicting).expect("supersede"),
+            ClaimStatus::Superseded
+        );
+        assert_eq!(
+            apply_supersession(ClaimStatus::Unknown).expect("supersede"),
+            ClaimStatus::Superseded
+        );
+    }
+
+    #[test]
+    fn validate_supersession_rejects_self_reference() {
+        let payload = ClaimSuperseded {
+            old_claim_id: "claim_aaaaaaaaaaaa".to_string(),
+            new_claim_id: "claim_aaaaaaaaaaaa".to_string(),
+            workspace_id: "demo".to_string(),
+            reason: "self".to_string(),
+            decided_by: "test".to_string(),
+            observed_at_ms: 1,
+        };
+        assert_eq!(
+            validate_supersession(&payload),
+            Err(TransitionError::InvalidFrom {
+                from: ClaimStatus::Unknown
+            })
+        );
+    }
+
+    #[test]
+    fn validate_supersession_accepts_distinct_ids() {
+        let payload = ClaimSuperseded {
+            old_claim_id: "claim_aaaaaaaaaaaa".to_string(),
+            new_claim_id: "claim_bbbbbbbbbbbb".to_string(),
+            workspace_id: "demo".to_string(),
+            reason: "replaced".to_string(),
+            decided_by: "test".to_string(),
+            observed_at_ms: 1,
+        };
+        assert_eq!(validate_supersession(&payload), Ok(()));
     }
 }

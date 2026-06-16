@@ -1,7 +1,5 @@
 //! Typed event envelope for replay.
 
-use serde::{Deserialize, Serialize};
-
 use super::payloads::{
     ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, OnboardingCompiled, SourceObserved,
 };
@@ -78,17 +76,10 @@ pub enum DecodeError {
     /// Unknown or unsupported event kind.
     #[error("unsupported event kind")]
     UnsupportedKind,
-    /// Payload bytes could not be decoded.
+    /// Underlying store read failed while fetching the entry to decode.
     #[error("decode failure: {0}")]
-    Decode(String),
-}
-
-/// Serializable event summary for tests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EventSummary {
-    /// Event kind.
-    pub kind: String,
-    /// Local sequence.
-    pub sequence: u64,
+    Store(#[from] batpak::prelude::StoreError),
+    /// Typed payload decode failed.
+    #[error("decode failure: {0}")]
+    Decode(#[from] batpak::prelude::TypedDecodeError),
 }

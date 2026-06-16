@@ -35,17 +35,55 @@ pub enum JournalError {
     /// Replay projection error.
     #[error("replay: {0}")]
     Replay(#[from] ReplayError),
+    /// Markdown source parsing error encountered during ingest.
+    #[error("source: {0}")]
+    Source(#[from] crate::source::SourceError),
+    /// Identifier parse error encountered during ingest.
+    #[error("id: {0}")]
+    IdParse(#[from] crate::types::IdParseError),
+    /// Claim extraction error encountered during ingest.
+    #[error("extract: {0}")]
+    Extract(#[from] crate::extract::ExtractError),
+    /// Event payload registry validation failure.
+    #[error("event payload registry: {0}")]
+    PayloadRegistry(#[from] EventPayloadRegistryError),
+    /// Receipt event id was not valid hex.
+    #[error("invalid event id: {0}")]
+    EventId(#[from] std::num::ParseIntError),
     /// Append receipt failed BatPak verification.
     #[error("receipt invalid: {0}")]
-    ReceiptInvalid(String),
-    /// Domain validation error.
-    #[error("{0}")]
-    Domain(String),
+    ReceiptInvalid(ReceiptInvalid),
+}
+
+/// Detail describing why a BatPak append or stored receipt failed verification.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceiptInvalid {
+    /// BatPak reported a structured verification rejection reason for an append
+    /// receipt.
+    #[error("{0:?}")]
+    Verification(ReceiptVerificationError),
+    /// Append verification failed without an attached reason.
+    #[error("unknown receipt verification failure")]
+    Unknown,
+    /// A stored receipt re-verification failed with a structured reason.
+    #[error("receipt {event_id} invalid: {reason:?}")]
+    StoredReceipt {
+        /// The event id whose stored receipt failed re-verification.
+        event_id: String,
+        /// Structured rejection reason supplied by BatPak.
+        reason: ReceiptVerificationError,
+    },
+    /// A stored receipt re-verification failed without an attached reason.
+    #[error("receipt {event_id} invalid: unknown")]
+    StoredReceiptUnknown {
+        /// The event id whose stored receipt failed re-verification.
+        event_id: String,
+    },
 }
 
 /// Active claim candidates and already-recorded supersession edges for incremental
 /// supersession inference.
-type SupersessionContext = (Vec<(ClaimId, ClaimView)>, HashSet<(String, String)>);
+type SupersessionContext = (Vec<(ClaimId, ClaimView)>, HashSet<(ClaimId, ClaimId)>);
 
 /// Owned BatPak store handle (`Store<Open>`).
 pub struct StoreHandle {
@@ -55,8 +93,7 @@ pub struct StoreHandle {
 impl StoreHandle {
     /// Open a store at the given directory path.
     pub fn open(path: &Path) -> Result<Self, JournalError> {
-        validate_event_payload_registry()
-            .map_err(|e| JournalError::Domain(format!("event payload registry: {e}")))?;
+        validate_event_payload_registry()?;
         let store = Store::open(StoreConfig::new(path))?;
         Ok(Self { store })
     }
@@ -155,10 +192,10 @@ impl StoreHandle {
         // Deterministic candidate ordering independent of HashMap iteration order.
         claims.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
 
-        let existing_edges: HashSet<(String, String)> = state
+        let existing_edges: HashSet<(ClaimId, ClaimId)> = state
             .superseded
             .values()
-            .map(|s| (s.old_claim_id.to_string(), s.new_claim_id.to_string()))
+            .map(|s| (s.old_claim_id.clone(), s.new_claim_id.clone()))
             .collect();
 
         Ok((claims, existing_edges))
@@ -178,16 +215,16 @@ pub fn ingest_sources(
     let existing = handle.existing_source_hashes(workspace)?;
     let (historical_claims, existing_edges) =
         handle.active_claims_for_supersession(workspace, config)?;
-    let plan = crate::ingest::plan_sources_for_config(
+    let plan = crate::ingest::plan_sources_for_config(&crate::ingest::PlanInput {
         input,
         config,
         workspace,
         observed_at_ms,
-        &existing,
+        existing_hashes: &existing,
         root,
-        &historical_claims,
-        &existing_edges,
-    )?;
+        historical_claims: &historical_claims,
+        existing_edges: &existing_edges,
+    })?;
     if matches!(mode, IngestMode::DryRun) {
         return Ok(IngestCommitted {
             sources_observed: plan.sources_observed,
@@ -231,16 +268,16 @@ pub fn plan_ingest_sources(
 ) -> Result<IngestPlan, JournalError> {
     let (historical_claims, existing_edges) =
         handle.active_claims_for_supersession(workspace, config)?;
-    crate::ingest::plan_sources_for_config(
+    crate::ingest::plan_sources_for_config(&crate::ingest::PlanInput {
         input,
         config,
         workspace,
         observed_at_ms,
         existing_hashes,
         root,
-        &historical_claims,
-        &existing_edges,
-    )
+        historical_claims: &historical_claims,
+        existing_edges: &existing_edges,
+    })
     .map(|plan| IngestPlan {
         sources_observed: plan.sources_observed,
         claims_recorded: plan.claims_recorded,
