@@ -14,6 +14,7 @@ pub mod journal;
 pub mod render;
 pub mod replay;
 pub mod semantics;
+pub mod semantics_pipeline;
 pub mod source;
 pub mod stale;
 pub mod state;
@@ -46,6 +47,10 @@ pub use render::{compile_artifacts, render_onboarding, CompileOutput};
 pub use replay::{ClaimState, ClaimView, ReplayError, ReplayedState};
 pub use semantics::{
     cosine_similarity, Embedder, Entailment, Nli, NliVerdict, Reranker, SemanticsError,
+};
+pub use semantics_pipeline::{
+    detect_conflicts_semantic, group_claims, infer_supersessions_semantic, PipelineError,
+    SupersessionEdge,
 };
 pub use source::{collect_markdown_files, MarkdownDocument, SourceError};
 pub use stale::{check_staleness, StalenessReport};

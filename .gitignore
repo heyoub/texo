@@ -27,3 +27,7 @@
 
 # Local agent worktrees/scratch
 .claude/
+
+# Downloaded ONNX models cached by texo-semantics smoke tests (fastembed default)
+.fastembed_cache/
+**/.fastembed_cache/
