@@ -2,7 +2,7 @@
 
 _This document is a projection replayed from the texo claim-chain. It is not source truth._
 
-_Replayed through local store sequence 60._
+_Replayed through local store sequence 55._
 
 ## Current claims
 
