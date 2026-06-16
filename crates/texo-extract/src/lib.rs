@@ -12,7 +12,9 @@
 //! existing external-extractor seam and `texo-core` stays HTTP/LLM-free.
 
 use serde::Serialize;
-use texo_core::{assess_faithfulness, normalize_line, segment_candidates, Proposer, SemanticsError};
+use texo_core::{
+    assess_faithfulness, normalize_line, segment_candidates, Proposer, SemanticsError,
+};
 
 /// Hint value used when the proposer leaves a subject/predicate field blank,
 /// matching the `extract_via_cmd` adapter's own default.
@@ -189,7 +191,10 @@ mod tests {
         )]);
         let out = run_extraction(DOC, &proposer, texo_core::DEFAULT_GROUNDING_THRESHOLD_PPM)
             .expect("run");
-        assert!(out.is_empty(), "hallucinated claim must not survive the gate");
+        assert!(
+            out.is_empty(),
+            "hallucinated claim must not survive the gate"
+        );
     }
 
     #[test]
@@ -205,8 +210,8 @@ mod tests {
 
     #[test]
     fn proposer_failure_propagates() {
-        let err = run_extraction(DOC, &ScriptedProposer::failing(), 600_000)
-            .expect_err("must propagate");
+        let err =
+            run_extraction(DOC, &ScriptedProposer::failing(), 600_000).expect_err("must propagate");
         assert!(matches!(err, ExtractRunError::Proposer(_)));
     }
 

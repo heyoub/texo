@@ -1184,7 +1184,10 @@ mod tests {
         let claims = parse_propose_response(&value).expect("parse");
         assert_eq!(claims.len(), 1, "blank-text claim dropped");
         assert_eq!(claims[0].text, "Real claim.");
-        assert_eq!(claims[0].confidence_ppm, 1_000_000, "over-100 confidence clamped");
+        assert_eq!(
+            claims[0].confidence_ppm, 1_000_000,
+            "over-100 confidence clamped"
+        );
     }
 
     #[test]

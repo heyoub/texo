@@ -73,8 +73,8 @@ pub fn assess_faithfulness(
     let source = content_tokens(source_text);
     let present = claim.iter().filter(|tok| source.contains(*tok)).count();
     // Integer ppm: present/total scaled by 1e6. `claim` is non-empty here.
-    let recall_ppm = u32::try_from(present as u64 * 1_000_000 / claim.len() as u64)
-        .unwrap_or(1_000_000);
+    let recall_ppm =
+        u32::try_from(present as u64 * 1_000_000 / claim.len() as u64).unwrap_or(1_000_000);
     Faithfulness {
         grounded: recall_ppm >= threshold_ppm,
         recall_ppm,
@@ -122,7 +122,11 @@ mod tests {
     fn hallucinated_value_is_rejected() {
         // Source says Friday; the claim invents Saturday and noon — unsupported
         // tokens drag recall below 0.60.
-        let f = assess_faithfulness("Deploys happen on Saturday at noon", "Deploys happen on Friday.", T);
+        let f = assess_faithfulness(
+            "Deploys happen on Saturday at noon",
+            "Deploys happen on Friday.",
+            T,
+        );
         assert!(!f.grounded, "recall was {}", f.recall_ppm);
         assert!(f.recall_ppm < T);
     }
@@ -130,7 +134,11 @@ mod tests {
     #[test]
     fn fabricated_entity_is_rejected() {
         // None of the distinct content tokens of the claim are in the span.
-        let f = assess_faithfulness("Kubernetes autoscaler tuned aggressively", "Deploys happen on Friday.", T);
+        let f = assess_faithfulness(
+            "Kubernetes autoscaler tuned aggressively",
+            "Deploys happen on Friday.",
+            T,
+        );
         assert!(!f.grounded);
         assert_eq!(f.recall_ppm, 0);
     }
@@ -147,15 +155,20 @@ mod tests {
         // "a" and "I" are below MIN_TOKEN_LEN and ignored on both sides, so only
         // "team" drives the verdict.
         let f = assess_faithfulness("a team", "I team", T);
-        assert_eq!(f.recall_ppm, 1_000_000, "only 'team' counts and it is present");
+        assert_eq!(
+            f.recall_ppm, 1_000_000,
+            "only 'team' counts and it is present"
+        );
     }
 
     #[test]
     fn numbers_are_grounding_tokens() {
         // A version/number mismatch is a real hallucination the gate must catch.
-        let grounded = assess_faithfulness("API v2 on port 9090", "The API v2 listens on port 9090", T);
+        let grounded =
+            assess_faithfulness("API v2 on port 9090", "The API v2 listens on port 9090", T);
         assert!(grounded.grounded);
-        let wrong = assess_faithfulness("API v2 on port 1234", "The API v2 listens on port 9090", T);
+        let wrong =
+            assess_faithfulness("API v2 on port 1234", "The API v2 listens on port 9090", T);
         assert!(wrong.recall_ppm < grounded.recall_ppm);
     }
 

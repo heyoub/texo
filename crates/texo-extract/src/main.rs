@@ -35,8 +35,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .nth(1)
             .ok_or("usage: texo-extract <markdown-file>")?,
     );
-    let source = std::fs::read_to_string(&path)
-        .map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let source =
+        std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
 
     let proposer = OpenRouterProposer::new(None)?;
     let claims = run_extraction(&source, &proposer, DEFAULT_GROUNDING_THRESHOLD_PPM)?;
