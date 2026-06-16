@@ -1,0 +1,102 @@
+# Helios — ground-truth acceptance oracle for the texo semantic pipeline.
+#
+# The Helios corpus (docs/) is a deliberately messy, real-world-shaped set of
+# engineering docs (onboarding wiki, ADRs, runbooks, a Slack meeting dump, a
+# rogue partner runbook, a storage ADR) with KNOWN-BY-CONSTRUCTION evolution.
+# This file is the oracle the eval harness scores the pipeline against.
+#
+# Matching is by case-insensitive substring on a claim's text (LLM/heuristic
+# wording varies). A claim "is about" a canonical `subject`; the pipeline must
+# group by MEANING, not the literal word — note "release approval" (who approves)
+# and "release schedule" (which day) both contain "release" but are different
+# subjects, which is exactly where the keyword heuristic fails.
+
+[meta]
+corpus = "Helios — multi-tenant data platform, evolving docs"
+docs_dir = "docs"
+# Subjects the pipeline should canonicalize claims into (meaning, not keywords):
+subjects = ["deploy-schedule", "release-schedule", "approval-owner", "storage-engine"]
+
+# ─── Claims that MUST remain CURRENT after ingesting all docs ───
+[[current_claim]]
+subject = "deploy-schedule"
+text_contains = "moved to Tuesday"
+source = "04_release_runbook.md"
+
+[[current_claim]]
+subject = "approval-owner"
+text_contains = "Bob owns release approval"
+source = "05_meeting_dump.md"
+
+[[current_claim]]
+subject = "storage-engine"
+text_contains = "uses BatPak"
+source = "07_storage_adr.md"
+
+# ─── Claims that MUST be SUPERSEDED (older, replaced by a newer claim) ───
+[[superseded_claim]]
+subject = "deploy-schedule"
+text_contains = "Deploys happen on Friday"
+note = "superseded down the chain Friday -> Wednesday -> Tuesday"
+
+[[superseded_claim]]
+subject = "deploy-schedule"
+text_contains = "moved to Wednesday"
+note = "superseded by Tuesday"
+
+[[superseded_claim]]
+subject = "approval-owner"
+text_contains = "Alice owns release approval"
+note = "Bob owns it now"
+
+[[superseded_claim]]
+subject = "storage-engine"
+text_contains = "uses Postgres for storage"
+note = "replaced by BatPak — the semantic-reversal probe the heuristic missed"
+
+# ─── Conflicts that MUST be detected (two co-current contradictory claims) ───
+[[conflict]]
+subject = "release-schedule"
+a_contains = "Releases happen on Monday"
+b_contains = "go out on Friday"
+note = "neither has a replacement keyword, so both stay current -> genuine conflict"
+
+# ─── Onboarding lines `check-staleness 01_onboarding_wiki.md` MUST flag ───
+[[stale_line]]
+source = "01_onboarding_wiki.md"
+text_contains = "Deploys happen on Friday"
+
+[[stale_line]]
+source = "01_onboarding_wiki.md"
+text_contains = "Alice owns release approval"
+
+[[stale_line]]
+source = "01_onboarding_wiki.md"
+text_contains = "uses Postgres for storage"
+note = "only flagged once the storage-engine supersession works"
+
+# ─── Text that MUST NOT become a claim (structural noise / non-durable prose) ───
+[[noise]]
+source = "07_storage_adr.md"
+text_contains = "## Decision"
+note = "markdown heading"
+
+[[noise]]
+source = "01_onboarding_wiki.md"
+text_contains = "approver: alice"
+note = "inside a fenced ```yaml``` config block"
+
+[[noise]]
+source = "05_meeting_dump.md"
+text_contains = "lunch was tacos"
+note = "meeting chatter"
+
+[[noise]]
+source = "05_meeting_dump.md"
+text_contains = "bumped the rollup memory limit"
+note = "status-update chatter, not a durable claim"
+
+[[noise]]
+source = "01_onboarding_wiki.md"
+text_contains = "Welcome to Helios"
+note = "prose narration"
