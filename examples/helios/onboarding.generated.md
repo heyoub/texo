@@ -65,4 +65,3 @@ _Replayed through local store sequence 55._
 ## Conflicts (unresolved — both claimed, neither wins)
 
 - "Releases happen on Monday." (claim_e9943d9af690) vs "Releases go out on Friday." (claim_bec5d89765f5)
-- "Releases happen on Monday." (claim_e345819b355e) vs "Releases go out on Friday." (claim_bec5d89765f5)

@@ -1,5 +1,7 @@
 //! Agent context JSON builder.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::agent::freshness::FreshnessView;
@@ -162,6 +164,15 @@ pub fn build_agent_context(
     claims.sort_by_key(|c| c.receipt.sequence);
     stale_claims.sort_by(|a, b| a.claim_id.as_str().cmp(b.claim_id.as_str()));
     conflicts.sort_by(|a, b| a.conflict_id.as_str().cmp(b.conflict_id.as_str()));
+    // Collapse conflicts that are the same pair of claim *texts*: the same fact
+    // extracted from two docs yields two claim ids, hence two identical-looking
+    // rows. Sorted by conflict_id above, so the kept row is deterministic.
+    let mut seen_pairs: HashSet<[String; 2]> = HashSet::new();
+    conflicts.retain(|c| {
+        let mut pair = [c.claim_a_text.to_lowercase(), c.claim_b_text.to_lowercase()];
+        pair.sort();
+        seen_pairs.insert(pair)
+    });
 
     AgentContext {
         workspace_id: workspace_id.clone(),
