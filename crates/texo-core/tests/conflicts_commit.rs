@@ -13,8 +13,8 @@ mod support;
 use support::{setup_demo_journal, temp_workspace};
 use texo_core::events::ClaimRecorded;
 use texo_core::{
-    commit_conflicts, detect_conflicts, open_journal, ClaimId, ClaimStatus, SourceId,
-    FIXTURE_OBSERVED_AT_MS,
+    commit_conflicts, detect_conflicts, open_journal, verify_journal_receipts, ClaimId,
+    ClaimStatus, SourceId, FIXTURE_OBSERVED_AT_MS,
 };
 
 const SOURCE_ID: &str = "src_abc123def456";
@@ -101,6 +101,12 @@ fn commit_conflicts_journals_detected_conflict_and_marks_claims() {
     );
     let view = &replayed.state.conflicts[&committed_id];
     assert_eq!(view.status, texo_core::ConflictStatus::Open);
+
+    // Receipt verification must accept a store that now contains a real
+    // ClaimConflictDetected event: this drives the conflict arm of
+    // `verify_journal_receipts`'s per-event receipt extraction.
+    verify_journal_receipts(journal.handle().store(), &workspace)
+        .expect("journal receipts including the conflict event must verify");
 
     for id in [a, b] {
         let claim_id = ClaimId::try_from(id).expect("claim id");

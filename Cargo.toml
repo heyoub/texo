@@ -24,6 +24,7 @@ tempfile = "3"
 insta = { version = "1", features = ["json", "redactions"] }
 proptest = "1"
 assert_cmd = "2"
+assert_matches = "1"
 predicates = "3"
 trybuild = "1"
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }

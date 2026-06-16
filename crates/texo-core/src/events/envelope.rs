@@ -70,6 +70,43 @@ impl TexoEvent {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::receipt::receipt_view;
+
+    fn conflict_event() -> TexoEvent {
+        TexoEvent::ClaimConflictDetected {
+            payload: ClaimConflictDetected {
+                conflict_id: "conflict_aaaaaaaaaaaa".to_string(),
+                workspace_id: "demo".to_string(),
+                claim_a: "claim_aaaaaaaaaaaa".to_string(),
+                claim_b: "claim_bbbbbbbbbbbb".to_string(),
+                reason: "test".to_string(),
+                status: "open".to_string(),
+                observed_at_ms: 1,
+            },
+            receipt: receipt_view(
+                7,
+                7,
+                "ClaimConflictDetected",
+                "workspace:demo",
+                "conflict_aaaaaaaaaaaa",
+            ),
+        }
+    }
+
+    #[test]
+    fn conflict_event_kind_and_sequence() {
+        // The ClaimConflictDetected variant must report its kind label and its
+        // receipt sequence (covers the conflict arms of `kind()` and
+        // `sequence()`).
+        let event = conflict_event();
+        assert_eq!(event.kind(), "ClaimConflictDetected");
+        assert_eq!(event.sequence().get(), 7);
+    }
+}
+
 /// Failure decoding a stored journal entry.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {

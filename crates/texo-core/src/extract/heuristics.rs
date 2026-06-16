@@ -118,4 +118,14 @@ mod tests {
     fn detects_policy_heading() {
         assert!(is_claim_line("## Deploy process"));
     }
+
+    #[test]
+    fn skips_bare_list_markers() {
+        // A line that is only a list marker (no content after stripping the
+        // bullet) is not a claim: the `is_list_marker_only` guard returns false
+        // before any signal check.
+        assert!(!is_claim_line("-"));
+        assert!(!is_claim_line("* "));
+        assert!(!is_claim_line("+   "));
+    }
 }

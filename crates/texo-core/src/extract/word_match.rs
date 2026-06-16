@@ -85,4 +85,17 @@ mod tests {
         assert!(contains_any("deploys moved today", &["changed", "moved"]));
         assert!(!contains_any("a known plan", &["now", "owns"]));
     }
+
+    #[test]
+    fn empty_needle_never_matches() {
+        // An empty or whitespace-only needle must never match, even against
+        // non-empty text: the empty-needle guards in contains_word and
+        // contains_phrase short-circuit to false rather than vacuously matching.
+        assert!(!contains_word("any text here", ""));
+        assert!(!contains_word("any text here", "   "));
+        assert!(!contains_phrase("any text here", ""));
+        assert!(!contains_phrase("any text here", "   "));
+        // contains_any over only-empty needles is likewise false.
+        assert!(!contains_any("any text here", &["", "  "]));
+    }
 }

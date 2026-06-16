@@ -226,6 +226,192 @@ fn supersession_canonical_rank(view: &ClaimView) -> (u8, u64) {
 mod tests {
     use super::*;
 
+    use crate::types::ids::SourceId;
+    use crate::types::receipt::receipt_view;
+
+    fn view(id: &str, subject: &str, text: &str, sequence: u64) -> (ClaimId, ClaimView) {
+        let claim_id = ClaimId::try_from(id).expect("id");
+        let v = ClaimView {
+            claim_id: claim_id.clone(),
+            workspace_id: "demo".to_string(),
+            source_id: SourceId::try_from("src_abc123def456").expect("src"),
+            source_path: "x.md".to_string(),
+            line_start: u32::try_from(sequence).unwrap_or(u32::MAX),
+            line_end: u32::try_from(sequence).unwrap_or(u32::MAX),
+            text: text.to_string(),
+            normalized_text: normalize_line(text),
+            subject_hint: subject.to_string(),
+            predicate_hint: "unknown".to_string(),
+            object_hint: text.to_ascii_lowercase(),
+            confidence_ppm: 650_000,
+            extractor_kind: "test".to_string(),
+            status: ClaimStatus::Current,
+            receipt: receipt_view(
+                sequence.into(),
+                sequence,
+                "ClaimRecorded",
+                "workspace:demo",
+                id,
+            ),
+            supersedes: Vec::new(),
+            superseded_by: None,
+        };
+        (claim_id, v)
+    }
+
+    #[test]
+    fn infer_supersession_keyword_winner_supersedes_older() {
+        // Two new-batch claims on one subject; the one carrying a replacement
+        // keyword ("moved") is the winner and supersedes the other.
+        let new_claims = vec![
+            view(
+                "claim_aaaaaaaaaaaa",
+                "deploy-process",
+                "Deploys happen Friday.",
+                1,
+            ),
+            view(
+                "claim_bbbbbbbbbbbb",
+                "deploy-process",
+                "Deploys moved to Tuesday.",
+                2,
+            ),
+        ];
+        let edges = infer_supersessions(&new_claims, &[], &HashSet::new());
+        assert_eq!(edges.len(), 1, "exactly one edge expected");
+        let (old, new, reason) = &edges[0];
+        assert_eq!(old.as_str(), "claim_aaaaaaaaaaaa");
+        assert_eq!(new.as_str(), "claim_bbbbbbbbbbbb");
+        assert!(reason.starts_with("superseded by"), "got {reason}");
+    }
+
+    #[test]
+    fn infer_supersession_fallback_to_latest_new_claim() {
+        // No replacement keyword present, so winners is empty and the fallback
+        // picks the LAST new-batch claim in insertion order as the winner.
+        let new_claims = vec![
+            view(
+                "claim_aaaaaaaaaaaa",
+                "deploy-process",
+                "Deploys on Friday.",
+                1,
+            ),
+            view(
+                "claim_bbbbbbbbbbbb",
+                "deploy-process",
+                "Deploys on Tuesday.",
+                2,
+            ),
+        ];
+        let edges = infer_supersessions(&new_claims, &[], &HashSet::new());
+        assert_eq!(edges.len(), 1);
+        let (old, new, _) = &edges[0];
+        // On the fallback path the latest new-batch claim wins.
+        assert_eq!(new.as_str(), "claim_bbbbbbbbbbbb");
+        assert_eq!(old.as_str(), "claim_aaaaaaaaaaaa");
+    }
+
+    #[test]
+    fn infer_supersession_skips_existing_edge() {
+        // The candidate->winner edge already exists in the journal, so it must
+        // NOT be re-emitted.
+        let new_claims = vec![
+            view(
+                "claim_aaaaaaaaaaaa",
+                "deploy-process",
+                "Deploys happen Friday.",
+                1,
+            ),
+            view(
+                "claim_bbbbbbbbbbbb",
+                "deploy-process",
+                "Deploys moved to Tuesday.",
+                2,
+            ),
+        ];
+        let mut existing = HashSet::new();
+        existing.insert((
+            ClaimId::try_from("claim_aaaaaaaaaaaa").expect("id"),
+            ClaimId::try_from("claim_bbbbbbbbbbbb").expect("id"),
+        ));
+        let edges = infer_supersessions(&new_claims, &[], &existing);
+        assert!(edges.is_empty(), "existing edge must not be re-emitted");
+    }
+
+    #[test]
+    fn infer_supersession_no_historical_only_winner_yields_no_edge() {
+        // A subject group of size 1 (single new claim) cannot supersede anything.
+        let new_claims = vec![view(
+            "claim_aaaaaaaaaaaa",
+            "deploy-process",
+            "Deploys moved to Tuesday.",
+            1,
+        )];
+        let edges = infer_supersessions(&new_claims, &[], &HashSet::new());
+        assert!(edges.is_empty(), "single-claim subject has no edges");
+    }
+
+    #[test]
+    fn infer_supersession_skips_historical_only_group() {
+        // Group has >=2 members but all are historical (no new claim): there is
+        // no winner candidate from the batch, so no edge is emitted.
+        let historical = vec![
+            view("claim_aaaaaaaaaaaa", "deploy-process", "Deploys Friday.", 1),
+            view(
+                "claim_bbbbbbbbbbbb",
+                "deploy-process",
+                "Deploys moved Tuesday.",
+                2,
+            ),
+        ];
+        let edges = infer_supersessions(&[], &historical, &HashSet::new());
+        // A purely historical group has no batch winner, so no edge is emitted.
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn infer_supersession_equal_normalized_text_not_superseded() {
+        // The winner and a candidate share identical normalized text -> they are
+        // duplicates, so no edge between them. A distinct third claim still gets
+        // superseded.
+        let new_claims = vec![
+            view(
+                "claim_aaaaaaaaaaaa",
+                "deploy-process",
+                "Deploys moved to Tuesday.",
+                1,
+            ),
+            view(
+                "claim_bbbbbbbbbbbb",
+                "deploy-process",
+                "Deploys moved to Tuesday.",
+                2,
+            ),
+        ];
+        let edges = infer_supersessions(&new_claims, &[], &HashSet::new());
+        // Identical normalized text means duplicates, so no edge between them.
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn canonical_rank_no_longer_is_lowest_tier() {
+        // "no longer" with no substantive keyword ranks tier 0 (meta negation),
+        // below a plain claim (tier 1) and a substantive "changed" (tier 2).
+        let meta = view(
+            "claim_aaaaaaaaaaaa",
+            "s",
+            "Deploys are no longer on Friday.",
+            1,
+        )
+        .1;
+        let plain = view("claim_bbbbbbbbbbbb", "s", "Deploys are on Friday.", 2).1;
+        let substantive = view("claim_cccccccccccc", "s", "Deploys changed to Tuesday.", 3).1;
+        assert!(supersession_canonical_rank(&meta).0 < supersession_canonical_rank(&plain).0);
+        assert!(
+            supersession_canonical_rank(&plain).0 < supersession_canonical_rank(&substantive).0
+        );
+    }
+
     #[test]
     fn replacement_keyword_detected() {
         assert!(has_replacement_keyword("deploys moved to Tuesday"));

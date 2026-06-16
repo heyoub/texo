@@ -93,21 +93,23 @@ fn apply_supersession_event(
 
     validate_supersession(payload)?;
 
-    if !state.claims.contains_key(&old_id) {
-        return Err(ReplayError::MissingClaim(old_id));
-    }
-    if !state.claims.contains_key(&new_id) {
-        return Err(ReplayError::MissingClaim(new_id));
-    }
+    // Each endpoint's presence is established by the `get_mut` that mutates it,
+    // so the `None` path is the genuine MissingClaim error (exercised by tests)
+    // rather than a dead arm guarded by a redundant `contains_key`. On any error
+    // the reducer discards the in-progress state, so an early-returned mutation
+    // of `old` before the `new` lookup is never observable.
+    let old = state
+        .claims
+        .get_mut(&old_id)
+        .ok_or_else(|| ReplayError::MissingClaim(old_id.clone()))?;
+    old.status = transition(old.status, ClaimLifecycleEvent::Superseded)?;
+    old.superseded_by = Some(new_id.clone());
 
-    if let Some(old) = state.claims.get_mut(&old_id) {
-        old.status = transition(old.status, ClaimLifecycleEvent::Superseded)?;
-        old.superseded_by = Some(new_id.clone());
-    }
-
-    if let Some(new) = state.claims.get_mut(&new_id) {
-        new.supersedes.push(old_id.clone());
-    }
+    let new = state
+        .claims
+        .get_mut(&new_id)
+        .ok_or_else(|| ReplayError::MissingClaim(new_id.clone()))?;
+    new.supersedes.push(old_id.clone());
 
     state.superseded.insert(
         old_id.clone(),
@@ -185,6 +187,7 @@ mod tests {
     use crate::events::payloads::{ClaimConflictDetected, ClaimRecorded, ClaimSuperseded};
     use crate::replay::reducer::fold_events;
     use crate::types::receipt::receipt_view;
+    use assert_matches::assert_matches;
 
     const SOURCE_ID: &str = "src_abc123def456";
 
@@ -255,10 +258,7 @@ mod tests {
             supersede_event(old_id, new_id, 2),
         ];
         let result = fold_events(&events);
-        match result {
-            Err(ReplayError::MissingClaim(id)) => assert_eq!(id.as_str(), old_id),
-            other => panic!("expected MissingClaim({old_id}), got {other:?}"),
-        }
+        assert_matches!(result, Err(ReplayError::MissingClaim(id)) if id.as_str() == old_id);
     }
 
     #[test]
@@ -271,10 +271,7 @@ mod tests {
             supersede_event(old_id, new_id, 2),
         ];
         let result = fold_events(&events);
-        match result {
-            Err(ReplayError::MissingClaim(id)) => assert_eq!(id.as_str(), new_id),
-            other => panic!("expected MissingClaim({new_id}), got {other:?}"),
-        }
+        assert_matches!(result, Err(ReplayError::MissingClaim(id)) if id.as_str() == new_id);
     }
 
     #[test]
@@ -283,10 +280,7 @@ mod tests {
         let id = "claim_aaaaaaaaaaaa";
         let events = [recorded_event(id, 1), supersede_event(id, id, 2)];
         let result = fold_events(&events);
-        assert!(
-            matches!(result, Err(ReplayError::Transition(_))),
-            "self-supersession must produce ReplayError::Transition, got {result:?}"
-        );
+        assert_matches!(result, Err(ReplayError::Transition(_)));
     }
 
     #[test]
@@ -299,9 +293,31 @@ mod tests {
             conflict_event("not_a_status", a, b, 3),
         ];
         let result = fold_events(&events);
-        match result {
-            Err(ReplayError::InvalidStatus(s)) => assert_eq!(s.value, "not_a_status"),
-            other => panic!("expected InvalidStatus(not_a_status), got {other:?}"),
-        }
+        assert_matches!(result, Err(ReplayError::InvalidStatus(s)) if s.value == "not_a_status");
+    }
+
+    #[test]
+    fn open_conflict_for_absent_claims_inserts_without_touching_claims() {
+        // An Open ClaimConflictDetected whose referenced claims were never
+        // recorded drives the `state.claims.get_mut(id)` None arm in
+        // `apply_conflict` for BOTH sides: the status-flip loop is a no-op (no
+        // claim to mutate) and replay must still succeed, recording the conflict
+        // view rather than erroring on the dangling references.
+        let a = "claim_aaaaaaaaaaaa";
+        let b = "claim_bbbbbbbbbbbb";
+        let events = [conflict_event("open", a, b, 1)];
+        let replayed = fold_events(&events).expect("absent-claim conflict must replay clean");
+        // No claims were ever recorded, so the status-flip loop touched nothing.
+        assert!(replayed.state.claims.is_empty());
+        // The conflict view is still recorded against the dangling claim ids.
+        let conflict_id = ConflictId::try_from("conflict_aaaaaaaaaaaa").expect("conflict id");
+        let view = replayed
+            .state
+            .conflicts
+            .get(&conflict_id)
+            .expect("conflict view must be inserted even with absent claims");
+        assert_eq!(view.status, ConflictStatus::Open);
+        assert_eq!(view.claim_a.as_str(), a);
+        assert_eq!(view.claim_b.as_str(), b);
     }
 }

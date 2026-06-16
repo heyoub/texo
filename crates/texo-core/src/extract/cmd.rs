@@ -379,6 +379,7 @@ fn stderr_suffix(stderr: &str) -> String {
 mod tests {
     use super::*;
     use crate::types::ids::SourceId;
+    use assert_matches::assert_matches;
 
     fn source_id() -> SourceId {
         let doc = MarkdownDocument::from_bytes("t.md", b"x\n").expect("doc");
@@ -399,10 +400,7 @@ mod tests {
         let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
         let cmd = r#"printf '{"line_start": 99, "text": "x"}\n'; :"#;
         let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
-        match err {
-            ExtractError::Cmd(msg) => assert!(msg.contains("out of range"), "got: {msg}"),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("out of range"));
     }
 
     #[test]
@@ -428,10 +426,7 @@ mod tests {
         let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
         let cmd = r#"printf '{"line_start": 1, "text": "x", "confidence_ppm": 1000001}\n'"#;
         let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
-        match err {
-            ExtractError::Cmd(msg) => assert!(msg.contains("confidence_ppm"), "got: {msg}"),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("confidence_ppm"));
     }
 
     #[test]
@@ -464,10 +459,7 @@ mod tests {
         let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
         let cmd = r"printf 'not-json\n'";
         let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
-        match err {
-            ExtractError::CmdJson(_) => {}
-            other => panic!("expected CmdJson, got {other:?}"),
-        }
+        assert_matches!(err, ExtractError::CmdJson(_));
     }
 
     #[test]
@@ -487,10 +479,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .expect_err("spawn in missing dir must fail");
-        match err {
-            ExtractError::CmdIo { context, .. } => assert_eq!(context, "spawn failed"),
-            other => panic!("expected CmdIo spawn failed, got {other:?}"),
-        }
+        assert_matches!(err, ExtractError::CmdIo { context, .. } if context == "spawn failed");
     }
 
     #[test]
@@ -500,10 +489,29 @@ mod tests {
         let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
         let cmd = r#"printf '{"line_start": 1, "text": "x"}\n'; exit 3; :"#;
         let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("nonzero exit must error");
-        match err {
-            ExtractError::Cmd(msg) => assert!(msg.contains("exited"), "got: {msg}"),
-            other => panic!("expected Cmd exit error, got {other:?}"),
-        }
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("exited"));
+    }
+
+    #[test]
+    fn nonzero_exit_with_stderr_appends_stderr_suffix() {
+        // A non-zero exit that also wrote to stderr must surface the stderr text
+        // in the error message via the `; stderr: ...` suffix path.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r"printf 'boom-on-stderr\n' 1>&2; exit 4; :";
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("nonzero exit must error");
+        assert_matches!(
+            err,
+            ExtractError::Cmd(msg)
+                if msg.contains("exited") && msg.contains("stderr: boom-on-stderr")
+        );
+    }
+
+    #[test]
+    fn stderr_suffix_empty_when_no_stderr() {
+        // Direct unit check of the suffix helper: empty stderr yields no suffix,
+        // non-empty yields the labelled suffix.
+        assert_eq!(stderr_suffix(""), "");
+        assert_eq!(stderr_suffix("oops"), "; stderr: oops");
     }
 
     #[test]
@@ -519,14 +527,8 @@ mod tests {
         let start = Instant::now();
         let err = run(cmd, &doc, Duration::from_millis(200)).expect_err("should time out");
         let elapsed = start.elapsed();
-        match err {
-            ExtractError::Cmd(msg) => assert!(msg.contains("timed out"), "got: {msg}"),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("timed out"));
         // Generous bound to avoid CI flakiness, but far below the child's 120s.
-        assert!(
-            elapsed < Duration::from_secs(10),
-            "took too long: {elapsed:?}"
-        );
+        assert!(elapsed < Duration::from_secs(10));
     }
 }

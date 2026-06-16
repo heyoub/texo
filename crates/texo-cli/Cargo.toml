@@ -24,6 +24,7 @@ assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
 insta.workspace = true
+assert_matches.workspace = true
 
 [lints]
 workspace = true

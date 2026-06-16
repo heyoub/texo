@@ -206,6 +206,83 @@ fn explain_claim_malformed_id_is_parse_error() {
 }
 
 #[test]
+fn check_staleness_accepts_absolute_path() {
+    // PROVES tools.rs:63 — when the supplied path is already absolute it is used
+    // verbatim (not re-joined under root). Passing the resolved absolute path of
+    // a known-stale doc must still produce diagnostics, exercising the
+    // `path.is_absolute()` true branch that the relative-path tests skip.
+    let dir = setup_workspace();
+    let ctx = ToolContext {
+        root: dir.path().to_path_buf(),
+        workspace_id: None,
+    };
+    let abs = dir
+        .path()
+        .join("sample_sources/stale_onboarding.md")
+        .canonicalize()
+        .expect("canonical absolute path");
+    assert!(
+        abs.is_absolute(),
+        "test precondition: path must be absolute"
+    );
+    let json = ctx
+        .check_staleness(&CheckStalenessInput {
+            path: abs.to_string_lossy().into_owned(),
+        })
+        .expect("staleness via absolute path");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+    assert!(
+        value["diagnostics"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty()),
+        "absolute-path staleness must still flag the stale doc: {value}"
+    );
+}
+
+#[test]
+fn get_agent_context_excludes_stale_when_not_requested() {
+    // PROVES tools.rs:95 — with `include_stale: false` the `stale_claims` vector
+    // is cleared before serialization, the default-exclusion branch. Compared
+    // against the include_stale=true call to prove the flag actually gates the
+    // field (the demo ingest yields at least one stale claim).
+    let dir = setup_workspace();
+    let ctx = ToolContext {
+        root: dir.path().to_path_buf(),
+        workspace_id: None,
+    };
+
+    let with_stale: serde_json::Value = serde_json::from_str(
+        &ctx.get_agent_context(&GetAgentContextInput {
+            subject_hint: None,
+            include_stale: true,
+        })
+        .expect("agent context with stale"),
+    )
+    .expect("json");
+    assert!(
+        !with_stale["stale_claims"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .is_empty(),
+        "test precondition: demo ingest must surface stale claims when requested: {with_stale}"
+    );
+
+    let without_stale: serde_json::Value = serde_json::from_str(
+        &ctx.get_agent_context(&GetAgentContextInput {
+            subject_hint: None,
+            include_stale: false,
+        })
+        .expect("agent context without stale"),
+    )
+    .expect("json");
+    assert_eq!(
+        without_stale["stale_claims"].as_array().map(Vec::len),
+        Some(0),
+        "include_stale=false must clear the stale_claims field: {without_stale}"
+    );
+}
+
+#[test]
 fn check_staleness_missing_workspace_errors() {
     // Opening a tool against a directory that was never `init`ed must error
     // (no .texo config), covering the open/replay failure path shared by all

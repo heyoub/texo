@@ -91,6 +91,7 @@ mod tests {
     use crate::journal::store::StoreHandle;
     use crate::types::ids::WorkspaceId;
     use crate::types::sequence::LocalSequence;
+    use assert_matches::assert_matches;
 
     fn append_one_source(store: &Store<Open>, workspace: &WorkspaceId) -> ReceiptView {
         let payload = SourceObserved {
@@ -131,10 +132,7 @@ mod tests {
 
         let err = verify_receipt_view(handle.store(), &view)
             .expect_err("tampered sequence must be rejected");
-        match err {
-            JournalError::ReceiptInvalid(_) => {}
-            other => panic!("expected ReceiptInvalid, got {other:?}"),
-        }
+        assert_matches!(err, JournalError::ReceiptInvalid(_));
 
         handle.close().expect("close store");
     }
@@ -160,10 +158,7 @@ mod tests {
 
         let err = verify_receipt_view(handle.store(), &view)
             .expect_err("overlong event id must be rejected");
-        match err {
-            JournalError::EventId(_) => {}
-            other => panic!("expected JournalError::EventId, got {other:?}"),
-        }
+        assert_matches!(err, JournalError::EventId(_));
 
         handle.close().expect("close store");
     }
@@ -184,10 +179,10 @@ mod tests {
 
         let err = verify_receipt_view(handle.store(), &view)
             .expect_err("unknown event id must be rejected");
-        match err {
-            JournalError::Decode(_) | JournalError::Store(_) | JournalError::ReceiptInvalid(_) => {}
-            other => panic!("expected Decode/Store/ReceiptInvalid, got {other:?}"),
-        }
+        assert!(matches!(
+            err,
+            JournalError::Decode(_) | JournalError::Store(_) | JournalError::ReceiptInvalid(_)
+        ));
 
         handle.close().expect("close store");
     }

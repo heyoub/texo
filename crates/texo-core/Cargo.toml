@@ -21,6 +21,7 @@ tempfile.workspace = true
 insta.workspace = true
 proptest.workspace = true
 trybuild.workspace = true
+assert_matches.workspace = true
 
 [lints]
 workspace = true

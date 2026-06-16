@@ -92,3 +92,42 @@ impl Journal<Closed> {
         Journal::<Open>::open(self.config, &self.root)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init_workspace;
+
+    /// Drive the full typestate cycle on a real on-disk store: open carries the
+    /// handle, `root()` returns the workspace root, `close()` consumes `Open`
+    /// and yields `Closed`, and `reopen()` consumes `Closed` and yields a fresh
+    /// `Open` rooted at the same path. This exercises the open/close/handle/root
+    /// transitions structurally rather than through the lib wrappers.
+    #[test]
+    fn open_use_close_reopen_cycle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let config = init_workspace(root, "demo").expect("init workspace");
+
+        let open = Journal::<Open>::open(config, root).expect("open journal");
+        // `root()` returns the workspace root the journal was opened against.
+        assert_eq!(open.root(), root, "root() must report the open root");
+        // `handle()` is infallible on an open journal and borrows the live store.
+        let _handle = open.handle();
+        let workspace = open.config().workspace().expect("workspace id");
+        // A clean replay of the empty workspace must succeed through the handle.
+        let replayed = open.replay(&workspace).expect("replay empty workspace");
+        // An empty journal replays to a zero frontier.
+        assert_eq!(replayed.state.replayed_through_sequence, 0);
+
+        // close() transitions Open -> Closed.
+        let closed: Journal<Closed> = open.close().expect("close journal");
+        assert_eq!(closed.state, Closed, "closed state carries no handle");
+
+        // reopen() transitions Closed -> Open at the same root.
+        let reopened = closed.reopen().expect("reopen journal");
+        // reopen() preserves the workspace root.
+        assert_eq!(reopened.root(), root);
+        reopened.close().expect("close reopened journal");
+    }
+}

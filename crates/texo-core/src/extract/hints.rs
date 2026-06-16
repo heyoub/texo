@@ -188,6 +188,57 @@ mod tests {
     }
 
     #[test]
+    fn non_claim_line_yields_no_hints() {
+        // A non-claim line (heuristics reject it) must produce None, not an
+        // empty-hint triple.
+        assert!(hints_from_line("").is_none());
+        assert!(hints_from_line("# Heading").is_none());
+    }
+
+    #[test]
+    fn predicate_must_and_should() {
+        assert_eq!(detect_predicate("deploys must happen on friday"), "must");
+        assert_eq!(detect_predicate("releases should be reviewed"), "should");
+    }
+
+    #[test]
+    fn subject_ownership_and_approval() {
+        // "owner"/"owns" map to ownership; "approval" maps to approval-process.
+        assert_eq!(
+            detect_subject("the owner of billing is alice", "the owner of billing"),
+            "ownership"
+        );
+        assert_eq!(
+            detect_subject("approval requires two reviewers", "approval requires two"),
+            "approval-process"
+        );
+    }
+
+    #[test]
+    fn object_after_predicate_when_no_day_present() {
+        // No weekday in the text, a known predicate present: the object is the
+        // text following the predicate token, trimmed.
+        let obj = detect_object("billing owns the payments domain", "owns");
+        assert_eq!(obj, "the payments domain");
+    }
+
+    #[test]
+    fn object_falls_back_to_full_text_when_predicate_at_end() {
+        // Predicate is the trailing token, so the remainder is empty and the
+        // object falls back to the full normalized text.
+        let obj = detect_object("the team owns", "owns");
+        assert_eq!(obj, "the team owns");
+    }
+
+    #[test]
+    fn object_full_text_when_predicate_absent_from_text() {
+        // Predicate token is not a substring of the normalized text (e.g. derived
+        // differently): the object is the whole normalized text.
+        let obj = detect_object("alpha beta gamma", "uses");
+        assert_eq!(obj, "alpha beta gamma");
+    }
+
+    #[test]
     fn confidence_decided_not_matched_inside_undecided() {
         // "decided" must not match inside "undecided" (no other keyword present);
         // confidence falls back to the default.

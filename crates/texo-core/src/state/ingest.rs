@@ -133,10 +133,8 @@ mod tests {
         }
         .into();
         let plan_json = serde_json::to_string(&plan_report).expect("serialize plan");
-        assert!(
-            !plan_json.contains("receipts"),
-            "dry-run report must omit empty receipts, got: {plan_json}"
-        );
+        // A dry-run report omits the `receipts` key entirely (skip_serializing_if).
+        assert!(!plan_json.contains("receipts"));
 
         let committed_report: IngestReport = IngestCommitted {
             sources_observed: 1,

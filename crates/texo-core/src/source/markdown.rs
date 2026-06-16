@@ -134,6 +134,7 @@ fn is_markdown(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_matches::assert_matches;
 
     #[test]
     fn skips_code_fence() {
@@ -158,6 +159,7 @@ mod tests {
             .iter()
             .map(|l| (l.number, l.text.as_str()))
             .collect();
+        // Exactly the four non-fenced lines survive with their original numbers.
         assert_eq!(
             surviving,
             vec![
@@ -165,24 +167,18 @@ mod tests {
                 (2, ""),
                 (6, ""),
                 (7, "Deploys happen on Friday.")
-            ],
-            "must keep non-fenced lines with original numbering and drop the fence"
+            ]
         );
 
         // The fence delimiters themselves and the fenced body must all be gone.
         let kept_numbers: Vec<u32> = doc.lines.iter().map(|l| l.number).collect();
         for fenced in [3u32, 4, 5] {
-            assert!(
-                !kept_numbers.contains(&fenced),
-                "fenced/delimiter line {fenced} must be excluded"
-            );
+            assert!(!kept_numbers.contains(&fenced));
         }
-        assert!(
-            doc.lines
-                .iter()
-                .all(|l| !l.text.contains("code") && !l.text.trim_start().starts_with("```")),
-            "no fence delimiter or fenced content may leak through"
-        );
+        assert!(doc
+            .lines
+            .iter()
+            .all(|l| !l.text.contains("code") && !l.text.trim_start().starts_with("```")));
     }
 
     #[test]
@@ -201,17 +197,15 @@ mod tests {
             .iter()
             .map(|l| (l.number, l.text.as_str()))
             .collect();
+        // Frontmatter (lines 1-3) is excluded; body keeps its real line numbers.
         assert_eq!(
             surviving,
-            vec![(4, "# Heading"), (5, ""), (6, "Deploys happen on Friday.")],
-            "frontmatter (lines 1-3) must be excluded; body keeps real numbers"
+            vec![(4, "# Heading"), (5, ""), (6, "Deploys happen on Friday.")]
         );
-        assert!(
-            doc.lines
-                .iter()
-                .all(|l| l.text != "title: X" && l.text != "---"),
-            "no frontmatter key or `---` delimiter may survive"
-        );
+        assert!(doc
+            .lines
+            .iter()
+            .all(|l| l.text != "title: X" && l.text != "---"));
     }
 
     #[test]
@@ -221,10 +215,7 @@ mod tests {
         // fail with SourceError::Utf8 rather than panicking or lossily decoding.
         let err = MarkdownDocument::from_bytes("bad.md", &[0xFF, 0xFE, 0x00])
             .expect_err("invalid utf-8 must error");
-        match &err {
-            SourceError::Utf8(_) => {}
-            other => panic!("expected SourceError::Utf8, got {other:?}"),
-        }
+        assert_matches!(&err, SourceError::Utf8(_));
         // The Display impl must label the variant for diagnosability.
         assert!(err.to_string().starts_with("utf8: "));
     }
@@ -235,9 +226,6 @@ mod tests {
         let missing = dir.path().join("does_not_exist.md");
         let err =
             MarkdownDocument::from_path(&missing, dir.path()).expect_err("missing file must error");
-        match err {
-            SourceError::Io(_) => {}
-            other => panic!("expected SourceError::Io, got {other:?}"),
-        }
+        assert_matches!(err, SourceError::Io(_));
     }
 }

@@ -191,6 +191,7 @@ mod tests {
     use crate::replay::state::ClaimView;
     use crate::types::ids::SourceId;
     use crate::types::receipt::receipt_view;
+    use assert_matches::assert_matches;
 
     fn claim(id: &str, subject: &str, text: &str, predicate: &str, object: &str) -> ClaimView {
         ClaimView {
@@ -239,24 +240,397 @@ mod tests {
         let entry = &report.conflicts[0];
         // The conflict must name exactly the two contradictory claims (order
         // independent) on the deploy-process subject, flagged Open.
-        let pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
-        assert!(
-            pair.contains(&"claim_aaaaaaaaaaaa") && pair.contains(&"claim_bbbbbbbbbbbb"),
-            "conflict must reference both claims, got {pair:?}"
-        );
+        let mut pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        pair.sort_unstable();
+        assert_eq!(pair, ["claim_aaaaaaaaaaaa", "claim_bbbbbbbbbbbb"]);
         assert_eq!(entry.subject_hint, "deploy-process");
         assert_eq!(entry.status, ConflictStatus::Open);
-        assert!(
-            entry.reason.contains("contradictory") && entry.reason.contains("deploy-process"),
-            "reason must explain the contradiction: {}",
-            entry.reason
-        );
+        assert!(entry.reason.contains("contradictory") && entry.reason.contains("deploy-process"));
         // The conflict id must be the deterministic pair id (stable regardless of
         // detection order) so commit/dedup downstream is reproducible.
         assert_eq!(
             entry.conflict_id,
             conflict_id_from_pair(&entry.claim_a, &entry.claim_b)
         );
+    }
+
+    fn claim_conf(
+        id: &str,
+        subject: &str,
+        text: &str,
+        predicate: &str,
+        object: &str,
+        confidence_ppm: u32,
+    ) -> ClaimView {
+        let mut c = claim(id, subject, text, predicate, object);
+        c.confidence_ppm = confidence_ppm;
+        c
+    }
+
+    fn report_for(a: ClaimView, b: ClaimView) -> ConflictReport {
+        let mut state = ClaimState::default();
+        state.claims.insert(a.claim_id.clone(), a);
+        state.claims.insert(b.claim_id.clone(), b);
+        let workspace = WorkspaceId::new("demo").expect("workspace");
+        detect_conflicts(&state, &workspace)
+    }
+
+    #[test]
+    fn replacement_keyword_in_text_flags_conflict() {
+        // The replacement-keyword path (has_replacement_keyword over a.text)
+        // must fire even when subjects are an arbitrary non-listed slug and no
+        // other signal is present.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "batch-jobs",
+            "Batch jobs run nightly.",
+            "unknown",
+            "nightly",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "batch-jobs",
+            "Batch jobs moved to hourly.",
+            "unknown",
+            "hourly",
+        );
+        let report = report_for(a, b);
+        assert_eq!(report.conflicts.len(), 1, "replacement keyword must flag");
+        assert_eq!(report.conflicts[0].subject_hint, "batch-jobs");
+    }
+
+    #[test]
+    fn predicate_changed_flags_conflict() {
+        // One side carries the "changed" predicate while the other does not:
+        // the predicate-change path must flag without any keyword/negation.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "batch-jobs",
+            "Batch jobs run nightly.",
+            "is",
+            "nightly",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "batch-jobs",
+            "Batch jobs hourly window.",
+            "changed",
+            "hourly",
+        );
+        let report = report_for(a, b);
+        assert_eq!(report.conflicts.len(), 1, "predicate change must flag");
+        let entry = &report.conflicts[0];
+        let pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        assert!(pair.contains(&"claim_aaaaaaaaaaaa") && pair.contains(&"claim_bbbbbbbbbbbb"));
+    }
+
+    #[test]
+    fn owns_with_differing_objects_flags_conflict() {
+        // Two ownership claims on the same subject pointing at different owners
+        // must conflict via the owns/owns object-mismatch path.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "ownership",
+            "Alice owns billing.",
+            "owns",
+            "alice",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "ownership",
+            "Bob owns billing.",
+            "owns",
+            "bob",
+        );
+        let report = report_for(a, b);
+        assert_eq!(report.conflicts.len(), 1, "owns object clash must flag");
+        assert_eq!(report.conflicts[0].subject_hint, "ownership");
+    }
+
+    #[test]
+    fn confidence_gap_flags_conflict() {
+        // A large confidence gap (>250000ppm) between two differing claims on a
+        // non-listed subject must trip the confidence_gap path even though no
+        // keyword, negation, predicate-change, or schedule signal is present.
+        let a = claim_conf(
+            "claim_aaaaaaaaaaaa",
+            "freeform",
+            "The widget ships green.",
+            "is",
+            "green",
+            900_000,
+        );
+        let b = claim_conf(
+            "claim_bbbbbbbbbbbb",
+            "freeform",
+            "The widget ships red.",
+            "is",
+            "red",
+            500_000,
+        );
+        let report = report_for(a, b);
+        assert_eq!(report.conflicts.len(), 1, "confidence gap must flag");
+    }
+
+    #[test]
+    fn contradiction_subject_with_object_clash_flags_conflict() {
+        // On a listed CONTRADICTION_SUBJECTS subject (approval-process), two
+        // non-empty differing objects must conflict via the final subject-list
+        // path — with predicates equal and no keyword/negation present.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "approval-process",
+            "Approval handled by team x.",
+            "is",
+            "team-x",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "approval-process",
+            "Approval handled by team y.",
+            "is",
+            "team-y",
+        );
+        let report = report_for(a, b);
+        assert_eq!(report.conflicts.len(), 1, "subject-list object clash flags");
+        assert_eq!(report.conflicts[0].subject_hint, "approval-process");
+    }
+
+    #[test]
+    fn no_signal_pair_produces_no_conflict() {
+        // Same subject, equal predicate and equal object, no keyword/negation,
+        // small confidence gap, and the subject is not contradiction-listed:
+        // none of the signals fire, so no conflict is reported.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "freeform",
+            "The widget ships green.",
+            "is",
+            "green",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "freeform",
+            "The gadget ships green.",
+            "is",
+            "green",
+        );
+        let report = report_for(a, b);
+        // No signal fires, so no conflict is reported.
+        assert_eq!(report.conflicts, Vec::new());
+    }
+
+    #[test]
+    fn superseded_pair_is_skipped() {
+        // Even a clear negation contradiction must NOT be reported once one of
+        // the claims is already superseded (already_superseded_pair short-circuit).
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "deploy-process",
+            "Deploys must happen on Friday.",
+            "must",
+            "friday",
+        );
+        let b = claim(
+            "claim_bbbbbbbbbbbb",
+            "deploy-process",
+            "Deploys must not happen on Friday.",
+            "must",
+            "friday",
+        );
+        let mut state = ClaimState::default();
+        state.claims.insert(a.claim_id.clone(), a.clone());
+        state.claims.insert(b.claim_id.clone(), b.clone());
+        state.superseded.insert(
+            a.claim_id.clone(),
+            crate::replay::state::SupersessionView {
+                old_claim_id: a.claim_id.clone(),
+                new_claim_id: b.claim_id.clone(),
+                reason: "test".to_string(),
+                decided_by: "test".to_string(),
+                receipt: receipt_view(
+                    1,
+                    1,
+                    "ClaimSuperseded",
+                    "workspace:demo",
+                    a.claim_id.as_str(),
+                ),
+            },
+        );
+        let workspace = WorkspaceId::new("demo").expect("workspace");
+        let report = detect_conflicts(&state, &workspace);
+        // An already-superseded pair must be skipped, even with a clear signal.
+        assert_eq!(report.conflicts, Vec::new());
+    }
+
+    #[test]
+    fn equal_normalized_text_is_skipped() {
+        // Two claims whose normalized text is identical are duplicates, not
+        // contradictions, and must be skipped before any signal check.
+        let a = claim(
+            "claim_aaaaaaaaaaaa",
+            "deploy-process",
+            "Deploys moved to Friday.",
+            "changed",
+            "friday",
+        );
+        let mut b = a.clone();
+        b.claim_id = ClaimId::try_from("claim_bbbbbbbbbbbb").expect("id");
+        let report = report_for(a, b);
+        // Identical normalized text is a duplicate, not a contradiction.
+        assert_eq!(report.conflicts, Vec::new());
+    }
+
+    #[test]
+    fn schedule_clash_only_on_deploy_or_release_subjects() {
+        // Friday-vs-Tuesday objects on a NON schedule subject must not trip the
+        // schedule_object_clash path (guarded to deploy/release subjects).
+        assert!(!schedule_object_clash(
+            &claim("claim_aaaaaaaaaaaa", "ownership", "x", "owns", "friday"),
+            &claim("claim_bbbbbbbbbbbb", "ownership", "y", "owns", "tuesday"),
+            "ownership"
+        ));
+        // Same days on a deploy subject DO clash.
+        assert!(schedule_object_clash(
+            &claim("claim_aaaaaaaaaaaa", "release-process", "x", "is", "friday"),
+            &claim(
+                "claim_bbbbbbbbbbbb",
+                "release-process",
+                "y",
+                "is",
+                "tuesday"
+            ),
+            "release-process"
+        ));
+        // Identical days do not clash.
+        assert!(!schedule_object_clash(
+            &claim("claim_aaaaaaaaaaaa", "deploy-process", "x", "is", "friday"),
+            &claim("claim_bbbbbbbbbbbb", "deploy-process", "y", "is", "friday"),
+            "deploy-process"
+        ));
+    }
+
+    #[test]
+    fn negation_mismatch_requires_same_stripped_text() {
+        // Both-negated (a_neg == b_neg) returns false: not a mismatch.
+        assert!(!negation_mismatch(
+            &claim(
+                "claim_aaaaaaaaaaaa",
+                "s",
+                "Deploys are not allowed.",
+                "is",
+                "x"
+            ),
+            &claim(
+                "claim_bbbbbbbbbbbb",
+                "s",
+                "Releases are not allowed.",
+                "is",
+                "x"
+            ),
+        ));
+        // One negated, one not, but the stripped texts differ -> false.
+        assert!(!negation_mismatch(
+            &claim("claim_aaaaaaaaaaaa", "s", "Deploys are allowed.", "is", "x"),
+            &claim(
+                "claim_bbbbbbbbbbbb",
+                "s",
+                "Releases are not allowed.",
+                "is",
+                "x"
+            ),
+        ));
+    }
+
+    #[test]
+    fn verify_projection_accepts_consistent_state() {
+        // Empty state has a zero frontier and no claims: the projection holds.
+        let state = ClaimState::default();
+        verify_projection(&state).expect("empty state is consistent");
+    }
+
+    #[test]
+    fn verify_projection_rejects_zero_frontier_with_claims() {
+        let a = claim("claim_aaaaaaaaaaaa", "s", "x", "is", "x");
+        let mut state = ClaimState::default();
+        state.claims.insert(a.claim_id.clone(), a);
+        // replayed_through_sequence stays 0 while a claim exists -> invariant fail.
+        let err = verify_projection(&state).expect_err("zero frontier must fail");
+        assert_matches!(err, VerifyError::Projection(msg) if msg.contains("frontier"));
+    }
+
+    #[test]
+    fn verify_projection_rejects_claim_with_unknown_source() {
+        let a = claim("claim_aaaaaaaaaaaa", "s", "x", "is", "x");
+        let mut state = ClaimState {
+            replayed_through_sequence: 1,
+            ..Default::default()
+        };
+        state.claims.insert(a.claim_id.clone(), a);
+        // No matching source inserted -> dangling source reference.
+        let err = verify_projection(&state).expect_err("unknown source must fail");
+        assert_matches!(err, VerifyError::Projection(msg) if msg.contains("unknown source"));
+    }
+
+    #[test]
+    fn verify_projection_rejects_supersession_with_unknown_claims() {
+        use crate::replay::state::{SourceView, SupersessionView};
+        use crate::types::ids::SourceId;
+        let a = claim("claim_aaaaaaaaaaaa", "s", "x", "is", "x");
+        let source_id = SourceId::try_from("src_abc123def456").expect("src");
+        let mut state = ClaimState {
+            replayed_through_sequence: 1,
+            ..Default::default()
+        };
+        state.sources.insert(
+            source_id.clone(),
+            SourceView {
+                source_id: source_id.clone(),
+                workspace_id: "demo".to_string(),
+                source_kind: "markdown".to_string(),
+                path: "x.md".to_string(),
+                body_hash_hex: "00".repeat(32),
+                observed_at_ms: 1,
+                receipt: receipt_view(1, 1, "SourceObserved", "workspace:demo", "src_abc123def456"),
+            },
+        );
+        state.claims.insert(a.claim_id.clone(), a.clone());
+        // Supersession edge references an old claim that is not in state.claims.
+        let ghost = ClaimId::try_from("claim_cccccccccccc").expect("id");
+        state.superseded.insert(
+            ghost.clone(),
+            SupersessionView {
+                old_claim_id: ghost.clone(),
+                new_claim_id: a.claim_id.clone(),
+                reason: "test".to_string(),
+                decided_by: "test".to_string(),
+                receipt: receipt_view(2, 2, "ClaimSuperseded", "workspace:demo", ghost.as_str()),
+            },
+        );
+        let err = verify_projection(&state).expect_err("unknown old claim must fail");
+        assert_matches!(err, VerifyError::Projection(msg) if msg.contains("unknown old claim"));
+
+        // Now make the OLD reference valid but the NEW reference dangle.
+        state.superseded.clear();
+        let ghost_new = ClaimId::try_from("claim_dddddddddddd").expect("id");
+        state.superseded.insert(
+            a.claim_id.clone(),
+            SupersessionView {
+                old_claim_id: a.claim_id.clone(),
+                new_claim_id: ghost_new.clone(),
+                reason: "test".to_string(),
+                decided_by: "test".to_string(),
+                receipt: receipt_view(
+                    3,
+                    3,
+                    "ClaimSuperseded",
+                    "workspace:demo",
+                    a.claim_id.as_str(),
+                ),
+            },
+        );
+        let err = verify_projection(&state).expect_err("unknown new claim must fail");
+        assert_matches!(err, VerifyError::Projection(msg) if msg.contains("unknown new claim"));
     }
 
     #[test]
@@ -284,11 +658,9 @@ mod tests {
         let entry = &report.conflicts[0];
         // Friday-vs-Tuesday must be flagged on the deploy-process subject even
         // with no replacement keyword present (pure schedule-object clash path).
-        let pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
-        assert!(
-            pair.contains(&"claim_aaaaaaaaaaaa") && pair.contains(&"claim_bbbbbbbbbbbb"),
-            "schedule clash must reference both claims, got {pair:?}"
-        );
+        let mut pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        pair.sort_unstable();
+        assert_eq!(pair, ["claim_aaaaaaaaaaaa", "claim_bbbbbbbbbbbb"]);
         assert_eq!(entry.subject_hint, "deploy-process");
         assert_eq!(entry.status, ConflictStatus::Open);
     }

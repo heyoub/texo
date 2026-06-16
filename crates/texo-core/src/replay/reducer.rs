@@ -128,10 +128,7 @@ mod tests {
             receipt,
         };
         let result = fold_events(&[event]);
-        assert!(
-            matches!(result, Err(ReplayError::InvalidId(_))),
-            "REPLAY TRUTH VIOLATED: invalid claim id must fail replay"
-        );
+        assert!(matches!(result, Err(ReplayError::InvalidId(_))));
     }
 
     fn valid_recorded(claim_id: &str, sequence: u64) -> TexoEvent {

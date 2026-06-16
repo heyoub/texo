@@ -74,11 +74,8 @@ mod tests {
     #[test]
     fn validate_workspace_rejects_unsafe_characters() {
         for bad in ["", "a/b", "a\\b", "a\0b"] {
-            assert_eq!(
-                validate_workspace(bad),
-                Err(IdParseError::InvalidWorkspace),
-                "workspace `{bad}` must be rejected"
-            );
+            // Each unsafe segment must be rejected with InvalidWorkspace.
+            assert_eq!(validate_workspace(bad), Err(IdParseError::InvalidWorkspace));
         }
     }
 
