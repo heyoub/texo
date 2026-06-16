@@ -46,11 +46,11 @@ pub use journal::{ingest_sources, plan_ingest_sources, JournalError, StoreHandle
 pub use render::{compile_artifacts, render_onboarding, CompileOutput};
 pub use replay::{ClaimState, ClaimView, ReplayError, ReplayedState};
 pub use semantics::{
-    cosine_similarity, Embedder, Entailment, Nli, NliVerdict, Reranker, SemanticsError,
+    cosine_similarity, ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict,
+    RelationVerdict, Reranker, SemanticsError,
 };
 pub use semantics_pipeline::{
-    detect_conflicts_semantic, group_claims, infer_supersessions_semantic, PipelineError,
-    SupersessionEdge,
+    group_claims, relate_claims, PipelineError, RelatedClaims, SupersessionEdge,
 };
 pub use source::{collect_markdown_files, MarkdownDocument, SourceError};
 pub use stale::{check_staleness, StalenessReport};

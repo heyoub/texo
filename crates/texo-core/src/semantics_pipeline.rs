@@ -1,38 +1,38 @@
-//! Semantic grouping, supersession, and conflict logic.
+//! Semantic supersession and conflict logic.
 //!
 //! This module replaces the exact `subject_hint` bucketing + replacement-keyword
 //! supersession + brittle contradiction-signal pile (see [`crate::stale::check`]
 //! and [`crate::conflicts::detect`]) with **meaning-based** logic driven by two
 //! injected backends:
 //!
-//! * an [`Embedder`] — claims whose embeddings have cosine similarity at or above
-//!   a caller-supplied threshold are grouped into the same subject cluster, so
-//!   "release approval" (who) and "release schedule" (which day) split apart even
-//!   though both contain the word "release";
-//! * an [`Nli`] — within a group, a *newer* claim **supersedes** an older one when
-//!   it entails it, and two co-current claims **conflict** when they mutually
-//!   contradict.
+//! * an [`Embedder`] — used as a coarse cosine prefilter (and by [`group_claims`]
+//!   for connected-component clustering), so obviously-unrelated claims never
+//!   reach the judge;
+//! * a [`ClaimRelater`] — an LLM-as-judge that, for one candidate pair, makes the
+//!   single richer call embeddings + 3-way NLI cannot: are the claims about the
+//!   same subject, and does the newer one *update* the older (supersede) or merely
+//!   *disagree* (conflict)? Measured against real models, a value replacement and
+//!   a genuine disagreement are *both* mutual contradiction at the NLI level, and
+//!   "Friday deploy" / "Friday release" embed almost identically — so neither
+//!   embeddings nor NLI alone can separate them. [`relate_claims`] is that path.
 //!
 //! Every function here is **pure**: it takes the claims and the backends and
 //! returns plain data, performing no I/O. The backends are trait objects so the
 //! logic can be proven deterministically with in-test stubs (no model, no
-//! network). These functions are **additive and opt-in** — they mirror the
-//! output shapes of [`crate::stale::check::infer_supersessions`] and
-//! [`crate::conflicts::detect::detect_conflicts`] so a later step can swap them in
-//! behind configuration without changing default behavior.
+//! network).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::replay::state::ClaimView;
-use crate::semantics::{cosine_similarity, Embedder, Entailment, Nli, SemanticsError};
+use crate::semantics::{cosine_similarity, ClaimRelater, ClaimRelation, Embedder, SemanticsError};
 use crate::state::conflict_lifecycle::ConflictEntry;
-use crate::types::ids::{conflict_id_from_pair, ClaimId};
+use crate::types::ids::{conflict_id_from_pair, ClaimId, ConflictId};
 use crate::types::status::ConflictStatus;
 
 /// Failure raised while running the semantic pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
-    /// A backend ([`Embedder`] or [`Nli`]) failed.
+    /// A backend ([`Embedder`] or [`ClaimRelater`]) failed.
     #[error("semantic backend failure")]
     Semantics(#[from] SemanticsError),
 }
@@ -122,139 +122,154 @@ fn sequence_rank(view: &ClaimView) -> u64 {
     view.receipt.sequence.get()
 }
 
-/// Infer supersession edges by meaning.
+/// Both relations the semantic pipeline derives, in a single pass.
+#[derive(Debug, Default)]
+pub struct RelatedClaims {
+    /// Supersession edges `(old, new, reason)`; each superseded claim appears once,
+    /// linked to the newest claim that supersedes it.
+    pub supersessions: Vec<SupersessionEdge>,
+    /// Open conflicts between contradictory claims that are *both* still current
+    /// (neither has been superseded).
+    pub conflicts: Vec<ConflictEntry>,
+}
+
+/// Relate claims by a single richer judgment per candidate pair.
 ///
-/// Claims are clustered with [`group_claims`]. Within each group, for every
-/// ordered pair `(older, newer)` (by journal/sequence order, recency as the
-/// tiebreaker), the newer claim **supersedes** the older one when
-/// `Nli.classify(premise = newer, hypothesis = older)` is [`Entailment`] — the
-/// newer claim covers/entails the older. Identical-text pairs are skipped
-/// (duplicates, not supersessions); only a newer claim may win.
+/// This is the primary relating entry point. A 3-way NLI label cannot distinguish
+/// a value replacement from a genuine disagreement — measured against real models,
+/// *both* are mutual contradiction, and embeddings alone cannot tell "Friday
+/// deploy" from "Friday release". A [`ClaimRelater`] answers both questions
+/// (shared subject? update or conflict?) at once.
 ///
-/// Each older claim is superseded at most once, by the newest entailing claim, so
-/// a single canonical winner emerges per stale claim (e.g. Friday -> Tuesday, not
-/// both Friday -> Wednesday and Friday -> Tuesday).
+/// Pipeline:
+/// 1. Embed every claim once; consider only pairs whose cosine similarity is
+///    `>= prefilter_threshold`. The prefilter is a *coarse* recall gate to bound
+///    the number of judge calls — it should sit **below** the lowest same-subject
+///    similarity in the corpus, never high enough to do the separating itself
+///    (that is the relater's job).
+/// 2. Order each surviving pair oldest→newest (by `receipt.sequence`, index as a
+///    deterministic tiebreak) and ask the relater how the newer relates to the
+///    older. Identical-normalized-text pairs are skipped as duplicates.
+/// 3. [`ClaimRelation::Supersedes`] → the older is superseded; among all claims
+///    that supersede it, the **newest** wins (one canonical edge per stale claim).
+/// 4. [`ClaimRelation::Conflict`] → a candidate conflict, kept only if **neither**
+///    side was superseded in step 3 (a superseded claim is no longer current).
 ///
-/// Mirrors [`crate::stale::check::infer_supersessions`]'s `(old, new, reason)`
-/// edge shape so it can be swapped in behind configuration later.
-pub fn infer_supersessions_semantic(
+/// Pure and deterministic for a given input order and backend behavior.
+pub fn relate_claims(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
-    nli: &dyn Nli,
-    threshold: f32,
-) -> Result<Vec<SupersessionEdge>, PipelineError> {
-    let groups = group_claims(claims, embedder, threshold)?;
-    let mut edges: Vec<SupersessionEdge> = Vec::new();
+    relater: &dyn ClaimRelater,
+    prefilter_threshold: f32,
+) -> Result<RelatedClaims, PipelineError> {
+    let n = claims.len();
+    if n < 2 {
+        return Ok(RelatedClaims::default());
+    }
 
-    for group in &groups {
-        if group.len() < 2 {
-            continue;
-        }
-        // Order members oldest -> newest; ties broken by index for determinism.
-        let mut ordered: Vec<usize> = group.clone();
-        ordered.sort_by(|&a, &b| {
-            sequence_rank(&claims[a].1)
-                .cmp(&sequence_rank(&claims[b].1))
-                .then(a.cmp(&b))
-        });
+    let texts: Vec<&str> = claims.iter().map(|(_, v)| embedding_text(v)).collect();
+    let embeddings = embedder.embed_batch(&texts)?;
 
-        for (pos, &old_idx) in ordered.iter().enumerate() {
-            let (old_id, old_view) = &claims[old_idx];
-            // Find the newest later claim that entails this one.
-            let mut winner: Option<usize> = None;
-            for &new_idx in ordered.iter().skip(pos + 1) {
-                let (_, new_view) = &claims[new_idx];
-                if new_view.normalized_text == old_view.normalized_text {
-                    continue;
-                }
-                let verdict = nli.classify(embedding_text(new_view), embedding_text(old_view))?;
-                if verdict.label == Entailment::Entailment {
-                    winner = Some(new_idx);
-                }
+    // old_idx -> newest superseding new_idx; conflict pairs as (min_idx, max_idx).
+    let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if cosine_similarity(&embeddings[i], &embeddings[j]) < prefilter_threshold {
+                continue;
             }
-            if let Some(new_idx) = winner {
-                let (new_id, new_view) = &claims[new_idx];
-                edges.push((
-                    old_id.clone(),
-                    new_id.clone(),
-                    format!(
-                        "superseded by {}:{}",
-                        new_view.source_path, new_view.line_start
-                    ),
-                ));
+            // Order the pair oldest -> newest; index breaks sequence ties.
+            let (old_idx, new_idx) =
+                if (sequence_rank(&claims[i].1), i) <= (sequence_rank(&claims[j].1), j) {
+                    (i, j)
+                } else {
+                    (j, i)
+                };
+            let old_view = &claims[old_idx].1;
+            let new_view = &claims[new_idx].1;
+            if old_view.normalized_text == new_view.normalized_text {
+                continue;
+            }
+
+            // The relater is an LLM judge: feed it the *raw* claim text, not the
+            // normalized (lowercased) form used for embedding — case and natural
+            // wording carry the update-intent signal it reasons over.
+            let verdict = relater.relate(&old_view.text, &new_view.text)?;
+            match verdict.relation {
+                ClaimRelation::Supersedes => {
+                    let better = match winners.get(&old_idx) {
+                        None => true,
+                        Some(&cur) => {
+                            (sequence_rank(&claims[new_idx].1), new_idx)
+                                > (sequence_rank(&claims[cur].1), cur)
+                        }
+                    };
+                    if better {
+                        winners.insert(old_idx, new_idx);
+                    }
+                }
+                ClaimRelation::Conflict => {
+                    conflict_pairs.push((old_idx.min(new_idx), old_idx.max(new_idx)));
+                }
+                ClaimRelation::Duplicate | ClaimRelation::Unrelated => {}
             }
         }
     }
 
-    edges.sort_by(|a, b| {
+    let superseded: HashSet<ClaimId> = winners.keys().map(|&old| claims[old].0.clone()).collect();
+
+    let mut supersessions: Vec<SupersessionEdge> = winners
+        .iter()
+        .map(|(&old, &new)| {
+            let (old_id, _) = &claims[old];
+            let (new_id, new_view) = &claims[new];
+            (
+                old_id.clone(),
+                new_id.clone(),
+                format!(
+                    "superseded by {}:{}",
+                    new_view.source_path, new_view.line_start
+                ),
+            )
+        })
+        .collect();
+    supersessions.sort_by(|a, b| {
         a.0.as_str()
             .cmp(b.0.as_str())
             .then_with(|| a.1.as_str().cmp(b.1.as_str()))
     });
-    Ok(edges)
-}
 
-/// Detect conflicts by meaning.
-///
-/// Claims are clustered with [`group_claims`]. Within each group, an unordered
-/// pair `(a, b)` is a **conflict** iff the relation is *mutually* contradictory —
-/// `Nli.classify(a -> b)` and `Nli.classify(b -> a)` both return
-/// [`Entailment::Contradiction`] — and neither claim has been superseded
-/// (its id is not present in `superseded_ids`). Identical-text pairs are skipped.
-///
-/// Mirrors [`crate::conflicts::detect::detect_conflicts`]'s [`ConflictEntry`]
-/// output (deterministic pair id, `Open` status) so it can be swapped in later.
-/// Pass the claims that should be considered superseded (e.g. the old side of the
-/// edges from [`infer_supersessions_semantic`]) in `superseded_ids`.
-pub fn detect_conflicts_semantic(
-    claims: &[(ClaimId, ClaimView)],
-    superseded_ids: &HashSet<ClaimId>,
-    embedder: &dyn Embedder,
-    nli: &dyn Nli,
-    threshold: f32,
-) -> Result<Vec<ConflictEntry>, PipelineError> {
-    let groups = group_claims(claims, embedder, threshold)?;
     let mut conflicts: Vec<ConflictEntry> = Vec::new();
-
-    for group in &groups {
-        if group.len() < 2 {
+    let mut seen: HashSet<ConflictId> = HashSet::new();
+    for (i, j) in conflict_pairs {
+        let (a_id, a_view) = &claims[i];
+        let (b_id, b_view) = &claims[j];
+        if superseded.contains(a_id) || superseded.contains(b_id) {
             continue;
         }
-        for (offset, &i) in group.iter().enumerate() {
-            for &j in group.iter().skip(offset + 1) {
-                let (a_id, a_view) = &claims[i];
-                let (b_id, b_view) = &claims[j];
-                if a_view.normalized_text == b_view.normalized_text {
-                    continue;
-                }
-                if superseded_ids.contains(a_id) || superseded_ids.contains(b_id) {
-                    continue;
-                }
-                let forward = nli.classify(embedding_text(a_view), embedding_text(b_view))?;
-                if forward.label != Entailment::Contradiction {
-                    continue;
-                }
-                let backward = nli.classify(embedding_text(b_view), embedding_text(a_view))?;
-                if backward.label != Entailment::Contradiction {
-                    continue;
-                }
-                conflicts.push(ConflictEntry {
-                    conflict_id: conflict_id_from_pair(a_id, b_id),
-                    claim_a: a_id.clone(),
-                    claim_b: b_id.clone(),
-                    subject_hint: a_view.subject_hint.clone(),
-                    reason: format!(
-                        "contradictory current claims: \"{}\" vs \"{}\"",
-                        a_view.text, b_view.text
-                    ),
-                    status: ConflictStatus::Open,
-                });
-            }
+        let conflict_id = conflict_id_from_pair(a_id, b_id);
+        if !seen.insert(conflict_id.clone()) {
+            continue;
         }
+        conflicts.push(ConflictEntry {
+            conflict_id,
+            claim_a: a_id.clone(),
+            claim_b: b_id.clone(),
+            subject_hint: a_view.subject_hint.clone(),
+            reason: format!(
+                "contradictory current claims: \"{}\" vs \"{}\"",
+                a_view.text, b_view.text
+            ),
+            status: ConflictStatus::Open,
+        });
     }
-
     conflicts.sort_by(|x, y| x.conflict_id.as_str().cmp(y.conflict_id.as_str()));
-    Ok(conflicts)
+
+    Ok(RelatedClaims {
+        supersessions,
+        conflicts,
+    })
 }
 
 #[cfg(test)]
@@ -262,7 +277,6 @@ mod tests {
     use super::*;
 
     use crate::extract::normalize::normalize_line;
-    use crate::semantics::NliVerdict;
     use crate::types::ids::SourceId;
     use crate::types::receipt::receipt_view;
     use crate::types::status::ClaimStatus;
@@ -306,36 +320,38 @@ mod tests {
         }
     }
 
-    /// Deterministic NLI driven by a scripted `(premise_sub, hypothesis_sub) ->
-    /// label` table. The first entry whose substrings both match wins; unmatched
-    /// pairs are [`Entailment::Neutral`] (the safe default — no supersession, no
-    /// conflict). Keyed on distinctive phrases so wording is irrelevant.
-    struct ScriptedNli {
-        table: Vec<(&'static str, &'static str, Entailment)>,
+    use crate::semantics::RelationVerdict;
+
+    /// Deterministic relater driven by an `(older_sub, newer_sub) -> relation`
+    /// table. The first entry whose substrings match both the older premise and
+    /// the newer hypothesis wins; unmatched pairs are [`ClaimRelation::Unrelated`]
+    /// (the safe default — no edge, no conflict). Keyed on distinctive phrases.
+    struct ScriptedRelater {
+        table: Vec<(&'static str, &'static str, ClaimRelation)>,
     }
 
-    impl ScriptedNli {
-        fn new(table: Vec<(&'static str, &'static str, Entailment)>) -> Self {
+    impl ScriptedRelater {
+        fn new(table: Vec<(&'static str, &'static str, ClaimRelation)>) -> Self {
             Self { table }
         }
     }
 
-    impl Nli for ScriptedNli {
-        fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError> {
-            let p = premise.to_ascii_lowercase();
-            let h = hypothesis.to_ascii_lowercase();
-            for (premise_sub, hypothesis_sub, label) in &self.table {
-                if p.contains(&premise_sub.to_ascii_lowercase())
-                    && h.contains(&hypothesis_sub.to_ascii_lowercase())
+    impl ClaimRelater for ScriptedRelater {
+        fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            let o = older.to_ascii_lowercase();
+            let nw = newer.to_ascii_lowercase();
+            for (older_sub, newer_sub, relation) in &self.table {
+                if o.contains(&older_sub.to_ascii_lowercase())
+                    && nw.contains(&newer_sub.to_ascii_lowercase())
                 {
-                    return Ok(NliVerdict {
-                        label: *label,
+                    return Ok(RelationVerdict {
+                        relation: *relation,
                         score: 1.0,
                     });
                 }
             }
-            Ok(NliVerdict {
-                label: Entailment::Neutral,
+            Ok(RelationVerdict {
+                relation: ClaimRelation::Unrelated,
                 score: 1.0,
             })
         }
@@ -405,57 +421,6 @@ mod tests {
         assert_eq!(groups[0].len(), 4);
     }
 
-    #[test]
-    fn deploy_schedule_tuesday_supersedes_friday_and_wednesday_not_noise() {
-        let claims = vec![
-            claim("claim_aaaaaaaaaaaa", "x", "Deploys happen on Friday", 1),
-            claim("claim_bbbbbbbbbbbb", "x", "Deploys moved to Wednesday", 2),
-            claim("claim_cccccccccccc", "x", "Deploys moved to Tuesday", 3),
-            claim(
-                "claim_dddddddddddd",
-                "x",
-                "dave asked about the deploy day",
-                2,
-            ),
-        ];
-        // Tuesday (newest) entails the earlier decisions; the noise question
-        // entails nothing, so it must NOT supersede the decision.
-        let nli = ScriptedNli::new(vec![
-            ("tuesday", "friday", Entailment::Entailment),
-            ("tuesday", "wednesday", Entailment::Entailment),
-            ("wednesday", "friday", Entailment::Entailment),
-        ]);
-        let edges =
-            infer_supersessions_semantic(&claims, &deploy_embedder(), &nli, 0.9).expect("infer");
-
-        // Friday and Wednesday are superseded, each by Tuesday (the newest
-        // entailing claim) — not a chain of intermediate edges.
-        assert_eq!(
-            edges.len(),
-            2,
-            "exactly Friday->Tuesday and Wednesday->Tuesday"
-        );
-        let pairs: Vec<(&str, &str)> = edges
-            .iter()
-            .map(|(o, n, _)| (o.as_str(), n.as_str()))
-            .collect();
-        assert!(
-            pairs.contains(&("claim_aaaaaaaaaaaa", "claim_cccccccccccc")),
-            "Friday->Tuesday"
-        );
-        assert!(
-            pairs.contains(&("claim_bbbbbbbbbbbb", "claim_cccccccccccc")),
-            "Wednesday->Tuesday"
-        );
-        // The noise claim is neither superseded nor a superseder.
-        assert!(
-            !pairs
-                .iter()
-                .any(|(o, n)| *o == "claim_dddddddddddd" || *n == "claim_dddddddddddd"),
-            "noise question must not participate in supersession"
-        );
-    }
-
     /// Embedder for the release scenario: the two release-schedule claims cluster
     /// together, but "Bob owns release approval" is a DIFFERENT subject and must
     /// land in its own group (the key dogfood trap — same word, different
@@ -494,150 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn release_schedule_mutual_contradiction_is_a_conflict() {
-        let claims = vec![
-            claim("claim_aaaaaaaaaaaa", "x", "Releases happen on Monday", 1),
-            claim("claim_bbbbbbbbbbbb", "x", "Releases go out on Friday", 2),
-            claim("claim_cccccccccccc", "x", "Bob owns release approval", 3),
-        ];
-        // Monday vs Friday mutually contradict; neither entails the other, so
-        // neither is superseded -> genuine conflict. Approval is in its own group
-        // and shares no NLI relation, so it is not dragged in.
-        let nli = ScriptedNli::new(vec![
-            ("monday", "friday", Entailment::Contradiction),
-            ("friday", "monday", Entailment::Contradiction),
-        ]);
-        let conflicts =
-            detect_conflicts_semantic(&claims, &HashSet::new(), &release_embedder(), &nli, 0.9)
-                .expect("detect");
-        assert_eq!(conflicts.len(), 1, "exactly one release-schedule conflict");
-        let entry = &conflicts[0];
-        let mut pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
-        pair.sort_unstable();
-        assert_eq!(pair, ["claim_aaaaaaaaaaaa", "claim_bbbbbbbbbbbb"]);
-        assert_eq!(entry.status, ConflictStatus::Open);
-        assert_eq!(
-            entry.conflict_id,
-            conflict_id_from_pair(&entry.claim_a, &entry.claim_b)
-        );
-    }
-
-    #[test]
-    fn one_sided_contradiction_is_not_a_conflict() {
-        // Only the forward direction contradicts; the relation is not mutual, so
-        // it must NOT be reported as a conflict.
-        let claims = vec![
-            claim("claim_aaaaaaaaaaaa", "x", "Releases happen on Monday", 1),
-            claim("claim_bbbbbbbbbbbb", "x", "Releases go out on Friday", 2),
-        ];
-        let nli = ScriptedNli::new(vec![("monday", "friday", Entailment::Contradiction)]);
-        let embedder = FixedEmbedder::new(
-            vec![
-                ("releases happen on monday", vec![1.0, 0.0]),
-                ("go out on friday", vec![0.95, 0.05]),
-            ],
-            2,
-        );
-        let conflicts = detect_conflicts_semantic(&claims, &HashSet::new(), &embedder, &nli, 0.9)
-            .expect("detect");
-        assert!(
-            conflicts.is_empty(),
-            "one-sided contradiction is not a conflict"
-        );
-    }
-
-    #[test]
-    fn superseded_claim_is_excluded_from_conflicts() {
-        let claims = vec![
-            claim("claim_aaaaaaaaaaaa", "x", "Releases happen on Monday", 1),
-            claim("claim_bbbbbbbbbbbb", "x", "Releases go out on Friday", 2),
-        ];
-        let nli = ScriptedNli::new(vec![
-            ("monday", "friday", Entailment::Contradiction),
-            ("friday", "monday", Entailment::Contradiction),
-        ]);
-        let embedder = FixedEmbedder::new(
-            vec![
-                ("releases happen on monday", vec![1.0, 0.0]),
-                ("go out on friday", vec![0.95, 0.05]),
-            ],
-            2,
-        );
-        let mut superseded = HashSet::new();
-        superseded.insert(ClaimId::try_from("claim_aaaaaaaaaaaa").expect("id"));
-        let conflicts =
-            detect_conflicts_semantic(&claims, &superseded, &embedder, &nli, 0.9).expect("detect");
-        assert!(
-            conflicts.is_empty(),
-            "a superseded claim must not produce a conflict"
-        );
-    }
-
-    #[test]
-    fn storage_batpak_supersedes_postgres() {
-        let claims = vec![
-            claim(
-                "claim_aaaaaaaaaaaa",
-                "x",
-                "Helios uses Postgres for storage",
-                1,
-            ),
-            claim(
-                "claim_bbbbbbbbbbbb",
-                "x",
-                "Helios uses BatPak for storage",
-                2,
-            ),
-        ];
-        let embedder = FixedEmbedder::new(
-            vec![("postgres", vec![1.0, 0.0]), ("batpak", vec![0.96, 0.05])],
-            2,
-        );
-        // BatPak (newer) is the current storage decision and entails/covers the
-        // older Postgres claim — the semantic-reversal the keyword heuristic
-        // missed.
-        let nli = ScriptedNli::new(vec![("batpak", "postgres", Entailment::Entailment)]);
-        let edges = infer_supersessions_semantic(&claims, &embedder, &nli, 0.9).expect("infer");
-        assert_eq!(edges.len(), 1, "BatPak supersedes Postgres");
-        let (old, new, reason) = &edges[0];
-        assert_eq!(old.as_str(), "claim_aaaaaaaaaaaa");
-        assert_eq!(new.as_str(), "claim_bbbbbbbbbbbb");
-        assert!(reason.starts_with("superseded by"), "got {reason}");
-    }
-
-    #[test]
-    fn empty_input_yields_no_groups_edges_or_conflicts() {
-        let embedder = FixedEmbedder::new(Vec::new(), 2);
-        let nli = ScriptedNli::new(Vec::new());
-        assert!(group_claims(&[], &embedder, 0.9).expect("group").is_empty());
-        assert!(infer_supersessions_semantic(&[], &embedder, &nli, 0.9)
-            .expect("infer")
-            .is_empty());
-        assert!(
-            detect_conflicts_semantic(&[], &HashSet::new(), &embedder, &nli, 0.9)
-                .expect("detect")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn identical_text_pairs_are_skipped() {
-        // Two claims with identical normalized text are duplicates: neither a
-        // supersession nor a conflict, even when grouped and NLI would fire.
-        let claims = vec![
-            claim("claim_aaaaaaaaaaaa", "x", "Deploys moved to Tuesday", 1),
-            claim("claim_bbbbbbbbbbbb", "x", "Deploys moved to Tuesday", 2),
-        ];
-        let embedder = FixedEmbedder::new(vec![("tuesday", vec![1.0, 0.0])], 2);
-        let nli = ScriptedNli::new(vec![("tuesday", "tuesday", Entailment::Entailment)]);
-        let edges = infer_supersessions_semantic(&claims, &embedder, &nli, 0.9).expect("infer");
-        assert!(edges.is_empty(), "duplicate text is not a supersession");
-        let conflicts = detect_conflicts_semantic(&claims, &HashSet::new(), &embedder, &nli, 0.9)
-            .expect("detect");
-        assert!(conflicts.is_empty(), "duplicate text is not a conflict");
-    }
-
-    #[test]
     fn backend_error_propagates() {
         struct FailingEmbedder;
         impl Embedder for FailingEmbedder {
@@ -651,6 +472,12 @@ mod tests {
         let claims = vec![claim("claim_aaaaaaaaaaaa", "x", "anything", 1)];
         let err = group_claims(&claims, &FailingEmbedder, 0.9).expect_err("must propagate");
         assert!(matches!(err, PipelineError::Semantics(_)));
+    }
+
+    #[test]
+    fn group_claims_empty_input_is_empty() {
+        let embedder = FixedEmbedder::new(Vec::new(), 2);
+        assert!(group_claims(&[], &embedder, 0.9).expect("group").is_empty());
     }
 
     #[test]
@@ -675,5 +502,176 @@ mod tests {
         let groups = group_claims(&claims, &embedder, 0.9).expect("group");
         assert_eq!(groups.len(), 1, "transitive chain forms one component");
         assert_eq!(groups[0].len(), 3);
+    }
+
+    // --- relate_claims (the LLM-relation-judge path) ---
+
+    #[test]
+    fn relate_supersession_chain_picks_newest_winner_and_ignores_noise() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "Deploys happen on Friday", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "Deploys moved to Wednesday", 2),
+            claim("claim_cccccccccccc", "x", "Deploys moved to Tuesday", 3),
+            claim(
+                "claim_dddddddddddd",
+                "x",
+                "dave asked about the deploy day",
+                2,
+            ),
+        ];
+        // The judge reports each newer deploy decision as superseding the older;
+        // the noise question is unrelated to every deploy claim.
+        let relater = ScriptedRelater::new(vec![
+            ("friday", "wednesday", ClaimRelation::Supersedes),
+            ("friday", "tuesday", ClaimRelation::Supersedes),
+            ("wednesday", "tuesday", ClaimRelation::Supersedes),
+        ]);
+        let out = relate_claims(&claims, &deploy_embedder(), &relater, 0.9).expect("relate");
+
+        // Friday and Wednesday each superseded by Tuesday (the newest winner).
+        assert_eq!(out.supersessions.len(), 2);
+        let pairs: Vec<(&str, &str)> = out
+            .supersessions
+            .iter()
+            .map(|(o, n, _)| (o.as_str(), n.as_str()))
+            .collect();
+        assert!(pairs.contains(&("claim_aaaaaaaaaaaa", "claim_cccccccccccc")));
+        assert!(pairs.contains(&("claim_bbbbbbbbbbbb", "claim_cccccccccccc")));
+        assert!(
+            !pairs
+                .iter()
+                .any(|(o, n)| *o == "claim_dddddddddddd" || *n == "claim_dddddddddddd"),
+            "noise never participates in supersession"
+        );
+        assert!(out.conflicts.is_empty(), "no conflicts in a clean chain");
+    }
+
+    #[test]
+    fn relate_release_disagreement_is_conflict_not_supersession() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "Releases happen on Monday", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "Releases go out on Friday", 2),
+            claim("claim_cccccccccccc", "x", "Bob owns release approval", 3),
+        ];
+        // Monday vs Friday disagree with no update intent -> conflict. Approval is
+        // a different subject and never grouped with the schedule pair.
+        let relater = ScriptedRelater::new(vec![("monday", "friday", ClaimRelation::Conflict)]);
+        let out = relate_claims(&claims, &release_embedder(), &relater, 0.9).expect("relate");
+
+        assert!(
+            out.supersessions.is_empty(),
+            "a flat disagreement is not a supersession"
+        );
+        assert_eq!(out.conflicts.len(), 1, "exactly one release conflict");
+        let entry = &out.conflicts[0];
+        let mut pair = [entry.claim_a.as_str(), entry.claim_b.as_str()];
+        pair.sort_unstable();
+        assert_eq!(pair, ["claim_aaaaaaaaaaaa", "claim_bbbbbbbbbbbb"]);
+        assert_eq!(entry.status, ConflictStatus::Open);
+    }
+
+    #[test]
+    fn relate_superseded_claim_cannot_also_conflict() {
+        // A claim that is superseded must not surface as a live conflict, even if
+        // the judge also reports a contradicting peer.
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "Deploys happen on Friday", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "Deploys moved to Tuesday", 3),
+            claim("claim_cccccccccccc", "x", "Deploys happen on Monday", 2),
+        ];
+        let relater = ScriptedRelater::new(vec![
+            ("friday", "tuesday", ClaimRelation::Supersedes),
+            ("monday", "tuesday", ClaimRelation::Supersedes),
+            ("friday", "monday", ClaimRelation::Conflict),
+        ]);
+        // All three deploy-day claims must cluster (deploy_embedder omits Monday).
+        let embedder = FixedEmbedder::new(
+            vec![
+                ("friday", vec![1.0, 0.0, 0.0]),
+                ("tuesday", vec![0.97, 0.12, 0.0]),
+                ("monday", vec![0.96, 0.14, 0.0]),
+            ],
+            3,
+        );
+        let out = relate_claims(&claims, &embedder, &relater, 0.9).expect("relate");
+        // Friday and Monday are both superseded by Tuesday, so the Friday/Monday
+        // conflict is dropped.
+        assert_eq!(out.supersessions.len(), 2);
+        assert!(
+            out.conflicts.is_empty(),
+            "conflict involving a superseded claim is dropped"
+        );
+    }
+
+    #[test]
+    fn relate_duplicate_text_is_skipped() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "Deploys moved to Tuesday", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "Deploys moved to Tuesday", 2),
+        ];
+        let embedder = FixedEmbedder::new(vec![("tuesday", vec![1.0, 0.0])], 2);
+        // Even if the judge would fire, identical normalized text is never judged.
+        let relater = ScriptedRelater::new(vec![("tuesday", "tuesday", ClaimRelation::Supersedes)]);
+        let out = relate_claims(&claims, &embedder, &relater, 0.9).expect("relate");
+        assert!(out.supersessions.is_empty());
+        assert!(out.conflicts.is_empty());
+    }
+
+    #[test]
+    fn relate_prefilter_skips_low_similarity_pairs_without_judging() {
+        // A relater that panics if ever called proves the cosine prefilter gates
+        // out below-threshold pairs before any judge call.
+        struct NeverRelater;
+        impl ClaimRelater for NeverRelater {
+            fn relate(
+                &self,
+                _older: &str,
+                _newer: &str,
+            ) -> Result<RelationVerdict, SemanticsError> {
+                panic!("relater must not be called for sub-threshold pairs");
+            }
+        }
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "alpha subject", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "beta subject", 2),
+        ];
+        // Orthogonal embeddings -> cosine 0 < threshold -> never judged.
+        let embedder =
+            FixedEmbedder::new(vec![("alpha", vec![1.0, 0.0]), ("beta", vec![0.0, 1.0])], 2);
+        let out = relate_claims(&claims, &embedder, &NeverRelater, 0.5).expect("relate");
+        assert!(out.supersessions.is_empty());
+        assert!(out.conflicts.is_empty());
+    }
+
+    #[test]
+    fn relate_empty_and_singleton_inputs_are_inert() {
+        let embedder = FixedEmbedder::new(Vec::new(), 2);
+        let relater = ScriptedRelater::new(Vec::new());
+        let empty = relate_claims(&[], &embedder, &relater, 0.5).expect("relate empty");
+        assert!(empty.supersessions.is_empty() && empty.conflicts.is_empty());
+
+        let one = vec![claim("claim_aaaaaaaaaaaa", "x", "Deploys on Tuesday", 1)];
+        let single = relate_claims(&one, &embedder, &relater, 0.5).expect("relate one");
+        assert!(single.supersessions.is_empty() && single.conflicts.is_empty());
+    }
+
+    #[test]
+    fn relate_propagates_embedder_failure() {
+        struct FailingEmbedder;
+        impl Embedder for FailingEmbedder {
+            fn embed(&self, _text: &str) -> Result<Vec<f32>, SemanticsError> {
+                Err(SemanticsError::DimensionMismatch {
+                    expected: 2,
+                    actual: 1,
+                })
+            }
+        }
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "one", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "two", 2),
+        ];
+        let relater = ScriptedRelater::new(Vec::new());
+        let err = relate_claims(&claims, &FailingEmbedder, &relater, 0.5).expect_err("propagate");
+        assert!(matches!(err, PipelineError::Semantics(_)));
     }
 }

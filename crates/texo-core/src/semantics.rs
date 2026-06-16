@@ -54,6 +54,52 @@ pub trait Nli {
     fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError>;
 }
 
+/// The relationship of a *newer* claim to an *older* one about a shared subject.
+///
+/// This is the judgment a 3-way NLI label cannot make: a value replacement (e.g.
+/// "deploys moved to Tuesday" vs "deploys happen on Friday") and a genuine
+/// disagreement (e.g. two docs asserting different release days) are *both*
+/// mutual contradictions at the NLI level. Separating them requires reasoning
+/// about recency and update-intent — and about whether the two claims even share
+/// a subject ("Friday deploy" vs "Friday release" embed almost identically). A
+/// [`ClaimRelater`] makes that single, richer call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimRelation {
+    /// Same subject; the newer claim updates/replaces the older's value (the fact
+    /// changed over time). The newer **supersedes** the older.
+    Supersedes,
+    /// Same subject; incompatible values with no sign one updates the other — a
+    /// genuine **conflict** between claims of equal standing.
+    Conflict,
+    /// The two claims state the same fact.
+    Duplicate,
+    /// Different subjects/attributes, or compatible and independent. Claims that
+    /// merely share a token (a weekday, the word "release") but concern different
+    /// subjects are unrelated.
+    Unrelated,
+}
+
+/// A single claim-relation judgment.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RelationVerdict {
+    /// The judged relation of the newer claim to the older.
+    pub relation: ClaimRelation,
+    /// Confidence score for [`RelationVerdict::relation`], typically in `[0, 1]`.
+    pub score: f32,
+}
+
+/// Judges the relationship between two claims, with recency known to the caller.
+///
+/// The caller orders the pair by recency and passes them as `(older, newer)`; the
+/// implementor returns how `newer` relates to `older` (see [`ClaimRelation`]).
+/// This is the primary relating primitive of the semantic pipeline; [`Nli`]
+/// remains available as a lower-level building block.
+pub trait ClaimRelater {
+    /// Judge how the more-recent `newer` claim relates to the older `older` claim.
+    fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError>;
+}
+
 /// Scores candidate documents against a query for relevance reranking.
 pub trait Reranker {
     /// Return one relevance score per entry in `docs`, in the same order.
@@ -218,6 +264,46 @@ mod tests {
         assert_eq!(same.label, Entailment::Entailment);
         let diff = dynamic.classify("a", "b").expect("classify");
         assert_eq!(diff.label, Entailment::Neutral);
+    }
+
+    /// Deterministic relater stub: equal strings duplicate, otherwise unrelated.
+    struct StubRelater;
+
+    impl ClaimRelater for StubRelater {
+        fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            let relation = if older == newer {
+                ClaimRelation::Duplicate
+            } else {
+                ClaimRelation::Unrelated
+            };
+            Ok(RelationVerdict {
+                relation,
+                score: 1.0,
+            })
+        }
+    }
+
+    #[test]
+    fn relater_usable_as_trait_object() {
+        let relater = StubRelater;
+        let dynamic: &dyn ClaimRelater = &relater;
+        let same = dynamic.relate("a", "a").expect("relate");
+        assert_eq!(same.relation, ClaimRelation::Duplicate);
+        let diff = dynamic.relate("a", "b").expect("relate");
+        assert_eq!(diff.relation, ClaimRelation::Unrelated);
+    }
+
+    #[test]
+    fn claim_relation_serde_roundtrip() {
+        let json = serde_json::to_string(&ClaimRelation::Supersedes).expect("ser");
+        assert_eq!(json, "\"supersedes\"");
+        let back: ClaimRelation = serde_json::from_str(&json).expect("de");
+        assert_eq!(back, ClaimRelation::Supersedes);
+        // Snake-case for the multi-word-free variants too.
+        assert_eq!(
+            serde_json::to_string(&ClaimRelation::Conflict).expect("ser"),
+            "\"conflict\""
+        );
     }
 
     #[test]

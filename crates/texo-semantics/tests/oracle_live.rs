@@ -7,18 +7,16 @@
 //! runs in the default gate. Run it with:
 //!   OPENROUTER_API_KEY=... cargo test -p texo-semantics --test oracle_live -- --ignored --nocapture
 
-use std::collections::HashSet;
-
 use texo_core::types::ids::SourceId;
 use texo_core::types::receipt::receipt_view;
-use texo_core::{
-    detect_conflicts_semantic, infer_supersessions_semantic, ClaimId, ClaimStatus, ClaimView,
-};
-use texo_semantics::{OpenRouterEmbedder, OpenRouterNli};
+use texo_core::{relate_claims, ClaimId, ClaimStatus, ClaimView};
+use texo_semantics::{OpenRouterEmbedder, OpenRouterRelater};
 
-/// Cosine grouping threshold for gemini-embedding-2. Starting point; the eval is the
-/// tuning loop — if grouping is wrong, this is the first knob.
-const THRESHOLD: f32 = 0.55;
+/// Coarse cosine **prefilter** for gemini-embedding-2: pairs below this are never
+/// sent to the relation judge. It must sit *below* the lowest same-subject
+/// similarity in the corpus (measured: Postgres↔BatPak ≈ 0.70) so no true pair is
+/// dropped — the relater, not this threshold, does the subject separation.
+const PREFILTER: f32 = 0.60;
 
 /// Build a claim. `seq` is the journal sequence (recency: higher = newer) and also the
 /// unique id seed; `text` is the claim sentence; `src` the originating doc.
@@ -95,12 +93,14 @@ fn helios_relations_hold_with_real_models() {
     };
 
     let embedder = OpenRouterEmbedder::new(None).expect("embedder");
-    let nli = OpenRouterNli::new(None).expect("nli");
+    let relater = OpenRouterRelater::new(None).expect("relater");
 
-    let edges =
-        infer_supersessions_semantic(&claims, &embedder, &nli, THRESHOLD).expect("supersede");
+    let out = relate_claims(&claims, &embedder, &relater, PREFILTER).expect("relate");
+    let edges = &out.supersessions;
+    let conflicts = &out.conflicts;
+
     eprintln!("\n--- supersession edges (old -> new) ---");
-    for (old, new, why) in &edges {
+    for (old, new, why) in edges {
         eprintln!("  {:?}  ->  {:?}   [{why}]", text_of(old), text_of(new));
     }
 
@@ -131,17 +131,14 @@ fn helios_relations_hold_with_real_models() {
     );
 
     // TRAP 2: approval-owner and release-schedule are different subjects — no cross edge.
-    let crosses_approval_schedule = |a: &str, b: &str| text_of_pair_crosses(&edges, &text_of, a, b);
+    let crosses_approval_schedule = |a: &str, b: &str| text_of_pair_crosses(edges, &text_of, a, b);
     assert!(
         !crosses_approval_schedule("owns release approval", "Releases"),
         "approval-owner must not link to release-schedule via supersession"
     );
 
-    let superseded: HashSet<ClaimId> = edges.iter().map(|(o, _, _)| o.clone()).collect();
-    let conflicts = detect_conflicts_semantic(&claims, &superseded, &embedder, &nli, THRESHOLD)
-        .expect("conflict");
     eprintln!("\n--- conflicts ---");
-    for c in &conflicts {
+    for c in conflicts {
         eprintln!("  {:?}  <>  {:?}", text_of(&c.claim_a), text_of(&c.claim_b));
     }
 
