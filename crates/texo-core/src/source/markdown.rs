@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
 use crate::types::ids::{blake3_bytes_hex, source_id_from_hash};
 
 /// One logical line in a markdown document.
@@ -87,6 +89,155 @@ fn parse_lines(text: &str) -> Vec<MarkdownLine> {
         });
     }
     lines
+}
+
+/// A prose block that may carry a durable claim.
+///
+/// Candidates are emitted by [`segment_candidates`] from the CommonMark AST.
+/// Structural and non-durable nodes (headings, code, frontmatter, HTML, tables,
+/// blockquotes) are excluded; only paragraphs and list items survive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateSpan {
+    /// The verbatim source text of the block.
+    pub text: String,
+    /// 1-based raw file line of the first byte.
+    pub line_start: u32,
+    /// 1-based raw file line of the last byte.
+    pub line_end: u32,
+    /// Byte offset of the block start into the source.
+    pub char_start: usize,
+    /// Byte offset of the block end (exclusive) into the source.
+    pub char_end: usize,
+    /// Trail of enclosing ATX/Setext headings, outermost first.
+    pub heading_path: Vec<String>,
+}
+
+/// One frame of the heading stack: its nesting level and rendered text.
+struct HeadingFrame {
+    level: HeadingLevel,
+    text: String,
+}
+
+/// Segment a markdown source into prose candidate spans.
+///
+/// Emits one [`CandidateSpan`] per paragraph and per list item that can carry a
+/// durable claim. Headings, fenced and indented code, frontmatter, HTML blocks,
+/// tables, and blockquotes (and all their contents) are excluded. Empty or
+/// degenerate input yields an empty vector.
+#[must_use]
+pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
+
+    let mut spans = Vec::new();
+    let mut headings: Vec<HeadingFrame> = Vec::new();
+
+    // While inside an excluded container (heading, code, table, blockquote,
+    // HTML, frontmatter) we suppress candidate emission and accumulate heading
+    // text. `suppress_depth` counts nested excluded containers; emission is only
+    // allowed when it is zero.
+    let mut suppress_depth: usize = 0;
+    // Set when we are inside a heading and should capture its text.
+    let mut capturing_heading: Option<(HeadingLevel, String)> = None;
+    // The outermost prose block currently open (paragraph or list item) and its
+    // byte range. Nested prose (e.g. a paragraph inside a list item) does not
+    // open a new candidate — the outer block already covers it.
+    let mut open_block: Option<(usize, usize)> = None;
+
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                suppress_depth += 1;
+                capturing_heading = Some((level, String::new()));
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, text)) = capturing_heading.take() {
+                    while headings.last().is_some_and(|frame| frame.level >= level) {
+                        headings.pop();
+                    }
+                    headings.push(HeadingFrame {
+                        level,
+                        text: text.trim().to_string(),
+                    });
+                }
+                suppress_depth = suppress_depth.saturating_sub(1);
+            }
+            Event::Start(
+                Tag::CodeBlock(_)
+                | Tag::Table(_)
+                | Tag::BlockQuote(_)
+                | Tag::HtmlBlock
+                | Tag::MetadataBlock(_),
+            ) => {
+                suppress_depth += 1;
+            }
+            Event::End(
+                TagEnd::CodeBlock
+                | TagEnd::Table
+                | TagEnd::BlockQuote(_)
+                | TagEnd::HtmlBlock
+                | TagEnd::MetadataBlock(_),
+            ) => {
+                suppress_depth = suppress_depth.saturating_sub(1);
+            }
+            Event::Start(Tag::Paragraph | Tag::Item) => {
+                if suppress_depth == 0 && open_block.is_none() {
+                    open_block = Some((range.start, range.end));
+                }
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Item) => {
+                if suppress_depth == 0 {
+                    if let Some((start, end)) = open_block.take() {
+                        push_span(&mut spans, source, start, end, &headings);
+                    }
+                }
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, buf)) = capturing_heading.as_mut() {
+                    buf.push_str(&text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    spans
+}
+
+/// Build and record a candidate span from a byte range, trimming trailing
+/// whitespace/newlines so offsets slice back exactly to the emitted text.
+fn push_span(
+    spans: &mut Vec<CandidateSpan>,
+    source: &str,
+    start: usize,
+    end: usize,
+    headings: &[HeadingFrame],
+) {
+    let raw = &source[start..end];
+    let trimmed = raw.trim_end_matches(['\n', '\r', ' ', '\t']);
+    if trimmed.is_empty() {
+        return;
+    }
+    let char_end = start + trimmed.len();
+    let line_start = line_of_offset(source, start);
+    let line_end = line_of_offset(source, char_end.saturating_sub(1));
+    spans.push(CandidateSpan {
+        text: trimmed.to_string(),
+        line_start,
+        line_end,
+        char_start: start,
+        char_end,
+        heading_path: headings.iter().map(|f| f.text.clone()).collect(),
+    });
+}
+
+/// Compute the 1-based file line of a byte offset by counting newlines before it.
+fn line_of_offset(source: &str, offset: usize) -> u32 {
+    let upto = offset.min(source.len());
+    let count = source[..upto].bytes().filter(|&b| b == b'\n').count() + 1;
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// Source parsing errors.
@@ -227,5 +378,123 @@ mod tests {
         let err =
             MarkdownDocument::from_path(&missing, dir.path()).expect_err("missing file must error");
         assert_matches!(err, SourceError::Io(_));
+    }
+
+    /// Load a real Helios doc relative to this crate's manifest directory.
+    fn helios_doc(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/helios/docs")
+            .join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read helios doc {}: {e}", path.display()))
+    }
+
+    #[test]
+    fn segment_excludes_heading_noise() {
+        // The ATX heading "## Decision" is structural noise: it must never be
+        // emitted as a stand-alone candidate span.
+        let source = helios_doc("07_storage_adr.md");
+        let spans = segment_candidates(&source);
+        assert!(
+            !spans.iter().any(|s| s.text.trim() == "## Decision"),
+            "heading text must not be a candidate span"
+        );
+        // No span should be a bare ATX heading line at all.
+        assert!(
+            !spans.iter().any(|s| s.text.trim_start().starts_with("## ")),
+            "no candidate should be a bare ATX heading"
+        );
+    }
+
+    #[test]
+    fn segment_excludes_fenced_code_and_headings() {
+        // The onboarding wiki has a ```yaml``` fence containing `approver: alice`
+        // and several ATX headings. None of that content is durable prose.
+        let source = helios_doc("01_onboarding_wiki.md");
+        let spans = segment_candidates(&source);
+        assert!(
+            !spans.iter().any(|s| s.text.contains("approver: alice")),
+            "fenced code content must be excluded"
+        );
+        assert!(
+            !spans.iter().any(|s| {
+                let t = s.text.trim_start();
+                t.starts_with("## ") || t.starts_with("# ")
+            }),
+            "bare ATX headings must be excluded"
+        );
+    }
+
+    #[test]
+    fn segment_includes_prose_with_heading_path() {
+        // Prose under "## Shipping your first change" must be a candidate, and
+        // carry that heading in its heading_path.
+        let source = helios_doc("01_onboarding_wiki.md");
+        let spans = segment_candidates(&source);
+        let hit = spans
+            .iter()
+            .find(|s| s.text.contains("Deploys happen on Friday"))
+            .expect("prose span must be emitted");
+        assert!(
+            hit.heading_path
+                .iter()
+                .any(|h| h == "Shipping your first change"),
+            "heading_path must include the enclosing ATX heading, got {:?}",
+            hit.heading_path
+        );
+    }
+
+    #[test]
+    fn segment_includes_decision_prose_under_heading() {
+        // The ADR's decision prose ("uses BatPak") is durable and sits under the
+        // "Decision" heading.
+        let source = helios_doc("07_storage_adr.md");
+        let spans = segment_candidates(&source);
+        let hit = spans
+            .iter()
+            .find(|s| s.text.contains("uses BatPak"))
+            .expect("decision prose span must be emitted");
+        assert!(
+            hit.heading_path.iter().any(|h| h == "Decision"),
+            "heading_path must include Decision, got {:?}",
+            hit.heading_path
+        );
+    }
+
+    #[test]
+    fn segment_offsets_slice_back_and_lines_match() {
+        let source = helios_doc("01_onboarding_wiki.md");
+        let spans = segment_candidates(&source);
+        let hit = spans
+            .iter()
+            .find(|s| s.text.contains("Deploys happen on Friday"))
+            .expect("prose span must be emitted");
+
+        // char_start..char_end must slice the source back to the span text.
+        assert_eq!(
+            &source[hit.char_start..hit.char_end],
+            hit.text,
+            "byte offsets must slice back to the span text"
+        );
+
+        // line_start must be the real 1-based file line of the first byte.
+        let computed_line = source[..hit.char_start]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1;
+        assert_eq!(
+            usize::try_from(hit.line_start).expect("line fits usize"),
+            computed_line,
+            "line_start must match the real file line"
+        );
+        // "Deploys happen on Friday." is on line 22 of the onboarding wiki.
+        assert_eq!(hit.line_start, 22);
+    }
+
+    #[test]
+    fn segment_empty_input_is_empty() {
+        assert!(segment_candidates("").is_empty());
+        assert!(segment_candidates("   \n\n  \n").is_empty());
     }
 }

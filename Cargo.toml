@@ -20,6 +20,7 @@ blake3 = "1"
 toml = "0.8"
 walkdir = "2"
 glob = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false }
 tempfile = "3"
 insta = { version = "1", features = ["json", "redactions"] }
 proptest = "1"
