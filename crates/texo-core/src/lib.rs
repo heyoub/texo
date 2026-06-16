@@ -36,8 +36,8 @@ pub use events::{
     TexoEvent,
 };
 pub use extract::{
-    extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError, ExtractedClaim,
-    EXTRACTOR_KIND_HEURISTIC_V1,
+    assess_faithfulness, extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError,
+    ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM, EXTRACTOR_KIND_HEURISTIC_V1,
 };
 pub use fixture::{
     DEFAULT_CONFIG_DIR, DEFAULT_STORE_PATH, DEFAULT_WORKSPACE_ID, FIXTURE_OBSERVED_AT_MS,

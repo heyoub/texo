@@ -1,12 +1,14 @@
 //! Claim extraction heuristics.
 
 pub mod cmd;
+pub mod faithfulness;
 pub mod heuristics;
 pub mod hints;
 pub mod normalize;
 pub mod word_match;
 
 pub use cmd::extract_via_cmd;
+pub use faithfulness::{assess_faithfulness, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM};
 pub use heuristics::is_claim_line;
 pub use hints::ClaimHints;
 pub use normalize::normalize_line;
