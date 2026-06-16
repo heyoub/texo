@@ -108,15 +108,15 @@ pub struct ConflictView {
 #[serde(deny_unknown_fields)]
 pub struct ClaimState {
     /// Observed sources by id.
-    pub sources: HashMap<String, SourceView>,
+    pub sources: HashMap<SourceId, SourceView>,
     /// Claims by id.
-    pub claims: HashMap<String, ClaimView>,
+    pub claims: HashMap<ClaimId, ClaimView>,
     /// Supersession records by old claim id.
-    pub superseded: HashMap<String, SupersessionView>,
+    pub superseded: HashMap<ClaimId, SupersessionView>,
     /// Conflicts by id.
-    pub conflicts: HashMap<String, ConflictView>,
+    pub conflicts: HashMap<ConflictId, ConflictView>,
     /// Current claim ids grouped by subject hint.
-    pub current_by_subject: HashMap<String, Vec<String>>,
+    pub current_by_subject: HashMap<String, Vec<ClaimId>>,
     /// Maximum local sequence replayed.
     pub replayed_through_sequence: u64,
 }
@@ -124,7 +124,7 @@ pub struct ClaimState {
 impl ClaimState {
     /// Lookup claim by id.
     pub fn claim(&self, id: &ClaimId) -> Option<&ClaimView> {
-        self.claims.get(id.as_str())
+        self.claims.get(id)
     }
 
     /// Current claims optionally filtered by subject.
@@ -137,6 +137,12 @@ impl ClaimState {
     }
 
     /// Rebuild subject index from claim statuses.
+    ///
+    /// `self.claims` is a `HashMap`, so iterating its values yields claim ids in a
+    /// process-randomized order. The per-subject id vectors are sorted afterwards
+    /// so the index is a deterministic function of the claim set — folding the
+    /// same events twice produces an identical `ClaimState` (replay determinism),
+    /// independent of HashMap iteration order.
     pub fn rebuild_subject_index(&mut self) {
         self.current_by_subject.clear();
         for claim in self.claims.values() {
@@ -144,8 +150,11 @@ impl ClaimState {
                 self.current_by_subject
                     .entry(claim.subject_hint.clone())
                     .or_default()
-                    .push(claim.claim_id.to_string());
+                    .push(claim.claim_id.clone());
             }
+        }
+        for ids in self.current_by_subject.values_mut() {
+            ids.sort();
         }
     }
 

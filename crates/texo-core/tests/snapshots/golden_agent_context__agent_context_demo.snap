@@ -34,9 +34,9 @@ expression: golden
       "sequence": 9,
       "supersedes": [
         "claim_41ae8efef753",
-        "claim_99a832a6ce66",
         "claim_51e452705640",
-        "claim_591c69e84c12"
+        "claim_591c69e84c12",
+        "claim_99a832a6ce66"
       ]
     },
     {
@@ -47,11 +47,11 @@ expression: golden
       "line_start": 5,
       "sequence": 10,
       "supersedes": [
-        "claim_7b88773ca445",
-        "claim_74a582198da0",
         "claim_69f8b22cdd6f",
-        "claim_f4d0eee19d1e",
-        "claim_956c3fdbcd20"
+        "claim_74a582198da0",
+        "claim_7b88773ca445",
+        "claim_956c3fdbcd20",
+        "claim_f4d0eee19d1e"
       ]
     },
     {

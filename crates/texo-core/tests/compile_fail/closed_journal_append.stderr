@@ -2,4 +2,7 @@ error[E0599]: no method named `handle` found for struct `texo_core::Journal<Clos
   --> tests/compile_fail/closed_journal_append.rs:11:20
    |
 11 |     let _ = closed.handle(); //~ ERROR no method named `handle`
-   |                    ^^^^^^ private field, not a method
+   |                    ^^^^^^ method not found in `texo_core::Journal<Closed>`
+   |
+   = note: the method was found for
+           - `texo_core::Journal<texo_core::Open>`

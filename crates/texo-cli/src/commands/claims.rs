@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use texo_core::{build_agent_context, open_journal_with, ClaimStatus};
+use texo_core::{build_agent_context, open_journal_with};
 
 pub fn run(root: &Path, workspace: Option<&str>, subject: Option<&str>, json: bool) -> Result<()> {
     let journal = open_journal_with(root, workspace)?;
@@ -12,7 +12,7 @@ pub fn run(root: &Path, workspace: Option<&str>, subject: Option<&str>, json: bo
     journal.close()?;
 
     if json {
-        let context = build_agent_context(&replayed.state, workspace_id.as_str(), subject);
+        let context = build_agent_context(&replayed.state, &workspace_id, subject);
         println!("{}", serde_json::to_string_pretty(&context.claims)?);
     } else {
         for claim in replayed.state.claims.values() {
@@ -28,7 +28,6 @@ pub fn run(root: &Path, workspace: Option<&str>, subject: Option<&str>, json: bo
             println!("  seq: {}", claim.receipt.sequence.get());
             println!("  receipt: {}", claim.receipt.event_id);
         }
-        let _ = ClaimStatus::Current;
     }
     Ok(())
 }

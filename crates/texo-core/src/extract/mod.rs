@@ -1,11 +1,14 @@
 //! Claim extraction heuristics.
 
 pub mod cmd;
+pub mod faithfulness;
 pub mod heuristics;
 pub mod hints;
 pub mod normalize;
+pub mod word_match;
 
 pub use cmd::extract_via_cmd;
+pub use faithfulness::{assess_faithfulness, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM};
 pub use heuristics::is_claim_line;
 pub use hints::ClaimHints;
 pub use normalize::normalize_line;
@@ -16,6 +19,14 @@ use crate::types::ids::{claim_id_from_parts, SourceId};
 
 /// Extractor version tag written to journaled claims.
 pub const EXTRACTOR_KIND_HEURISTIC_V1: &str = "heuristic-v1";
+
+/// Default `confidence_ppm` for a claim whose confidence is unspecified.
+///
+/// Applied both by the heuristic extractor when no confidence-bearing keyword is
+/// found, and by the external-command adapter when a JSON line omits
+/// `confidence_ppm`. A single conservative default keeps the two extraction
+/// paths in agreement: an unspecified confidence should not be inflated.
+pub const DEFAULT_CONFIDENCE_PPM: u32 = 500_000;
 
 /// Function pointer type for compositional ingest extraction.
 pub type ExtractClaimsFn =
@@ -96,4 +107,18 @@ pub enum ExtractError {
     /// External extractor command failed.
     #[error("extractor cmd: {0}")]
     Cmd(String),
+    /// Spawning or driving the external extractor process failed.
+    #[error("extractor cmd: {context}: {source}")]
+    CmdIo {
+        /// What the extractor adapter was doing when the I/O error occurred.
+        context: &'static str,
+        /// Underlying I/O error.
+        source: std::io::Error,
+    },
+    /// The extractor's stdout was not valid UTF-8.
+    #[error("extractor cmd: stdout not utf-8: {0}")]
+    CmdUtf8(#[from] std::str::Utf8Error),
+    /// A JSON line emitted by the extractor could not be parsed.
+    #[error("extractor cmd: invalid json line: {0}")]
+    CmdJson(#[from] serde_json::Error),
 }

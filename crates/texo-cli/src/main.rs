@@ -3,10 +3,10 @@
 mod commands;
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use texo_core::fixture::FIXTURE_OBSERVED_AT_MS;
 use texo_mcp::run_stdio;
 
 #[derive(Parser)]
@@ -77,6 +77,11 @@ enum Commands {
         #[arg(long, default_value = "public")]
         out: PathBuf,
     },
+    /// Semantic supersession + conflict pass (OpenRouter; needs OPENROUTER_API_KEY).
+    Relate {
+        #[arg(long)]
+        json: bool,
+    },
     /// Report possible conflicts.
     Conflicts {
         #[arg(long)]
@@ -124,19 +129,36 @@ fn main() -> Result<()> {
             json,
         ),
         Commands::Compile { out } => commands::compile::run(&cli.root, workspace, &out),
+        Commands::Relate { json } => commands::relate::run(&cli.root, workspace, json),
         Commands::Conflicts { json, commit } => {
             commands::conflicts::run(&cli.root, workspace, json, commit)
         }
         Commands::Verify { json } => commands::verify::run(&cli.root, workspace, json),
         Commands::Mcp => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_stdio(cli.root, workspace.map(str::to_string)))?;
+            let rt = tokio::runtime::Runtime::new()
+                .context("failed to create tokio runtime for MCP server")?;
+            rt.block_on(run_stdio(cli.root, workspace.map(str::to_string)))
+                .context("MCP stdio server failed")?;
             Ok(())
         }
     }
 }
 
-/// Observation timestamp for writes (fixed in tests via env override pattern).
+/// Observation timestamp (in milliseconds since the Unix epoch) for writes.
+///
+/// Returns real wall-clock time by default. If the `TEXO_OBSERVED_AT_MS`
+/// environment variable is set and parses as a `u64`, that value is returned
+/// instead. This override exists so golden/integration tests can pin a
+/// deterministic timestamp (e.g. the fixture constant).
 pub fn observed_at_ms() -> u64 {
-    FIXTURE_OBSERVED_AT_MS
+    if let Ok(raw) = std::env::var("TEXO_OBSERVED_AT_MS") {
+        if let Ok(parsed) = raw.trim().parse::<u64>() {
+            return parsed;
+        }
+    }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }

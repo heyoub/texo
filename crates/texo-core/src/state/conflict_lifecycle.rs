@@ -1,6 +1,6 @@
 //! Conflict lifecycle types.
 
-use crate::types::ids::{ClaimId, ConflictId};
+use crate::types::ids::{ClaimId, ConflictId, WorkspaceId};
 use crate::types::status::ConflictStatus;
 
 /// Read-only conflict report entry.
@@ -26,7 +26,7 @@ pub struct ConflictEntry {
 #[serde(deny_unknown_fields)]
 pub struct ConflictReport {
     /// Workspace id.
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     /// Detected conflicts.
     pub conflicts: Vec<ConflictEntry>,
 }

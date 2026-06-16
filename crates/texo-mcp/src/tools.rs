@@ -64,7 +64,7 @@ impl ToolContext {
         } else {
             self.root.join(path)
         };
-        let report = check_staleness(&replayed.state, workspace.as_str(), &resolved, &self.root)?;
+        let report = check_staleness(&replayed.state, &workspace, &resolved, &self.root)?;
         journal.close()?;
         Ok(serde_json::to_string_pretty(&report)?)
     }
@@ -74,13 +74,14 @@ impl ToolContext {
         let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
-        let context = build_agent_context(
-            &replayed.state,
-            workspace.as_str(),
-            input.subject_hint.as_deref(),
-        );
+        let context =
+            build_agent_context(&replayed.state, &workspace, input.subject_hint.as_deref());
         journal.close()?;
-        Ok(serde_json::to_string_pretty(&context.claims)?)
+        let output = serde_json::json!({
+            "claims": context.claims,
+            "replayed_through_sequence": context.replayed_through_sequence,
+        });
+        Ok(serde_json::to_string_pretty(&output)?)
     }
 
     /// Execute get_agent_context tool.
@@ -88,11 +89,8 @@ impl ToolContext {
         let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
-        let mut context = build_agent_context(
-            &replayed.state,
-            workspace.as_str(),
-            input.subject_hint.as_deref(),
-        );
+        let mut context =
+            build_agent_context(&replayed.state, &workspace, input.subject_hint.as_deref());
         if !input.include_stale {
             context.stale_claims.clear();
         }
@@ -105,8 +103,7 @@ impl ToolContext {
         let journal = self.open()?;
         let workspace = journal.config().workspace()?;
         let replayed = journal.replay(&workspace)?;
-        let claim_id = ClaimId::try_from(input.claim_id.as_str())
-            .map_err(|e| TexoError::domain(e.to_string()))?;
+        let claim_id = ClaimId::try_from(input.claim_id.as_str())?;
         let explanation = explain_claim(&replayed.state, &claim_id)
             .ok_or_else(|| TexoError::domain(format!("unknown claim {claim_id}")))?;
         journal.close()?;

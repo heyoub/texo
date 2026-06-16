@@ -17,7 +17,7 @@ fn full_ingest_has_no_open_conflicts_after_supersession() {
     let replayed = journal.replay(&workspace).expect("replay");
     journal.close().expect("close");
 
-    let report = detect_conflicts(&replayed.state, workspace.as_str());
+    let report = detect_conflicts(&replayed.state, &workspace);
     assert!(
         report.conflicts.is_empty(),
         "CONFLICT SEMANTICS VIOLATED: superseded deploy claims must not appear as conflicts"

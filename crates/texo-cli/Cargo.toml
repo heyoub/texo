@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 texo-core = { path = "../texo-core", version = "0.1.0" }
+texo-extract = { path = "../texo-extract", version = "0.1.0" }
 texo-mcp = { path = "../texo-mcp", version = "0.1.0" }
+texo-semantics = { path = "../texo-semantics", version = "0.1.0" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -24,6 +26,7 @@ assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
 insta.workspace = true
+assert_matches.workspace = true
 
 [lints]
 workspace = true

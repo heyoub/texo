@@ -13,6 +13,8 @@ pub mod ingest;
 pub mod journal;
 pub mod render;
 pub mod replay;
+pub mod semantics;
+pub mod semantics_pipeline;
 pub mod source;
 pub mod stale;
 pub mod state;
@@ -22,10 +24,11 @@ pub use agent::{
     build_agent_context, explain_claim, AgentClaim, AgentContext, AgentStaleClaim,
     ClaimExplanation, FreshnessView,
 };
-pub use config::{ConfigError, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
+pub use config::{
+    ConfigError, SemanticsConfig, TexoConfig, TexoRootConfig, WorkspaceConfig, WorkspaceEntry,
+};
 pub use conflicts::{
-    commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, verify_store,
-    VerifyError,
+    commit_conflicts, detect_conflicts, verify_journal_receipts, verify_projection, VerifyError,
 };
 pub use error::TexoError;
 pub use events::{
@@ -33,7 +36,8 @@ pub use events::{
     TexoEvent,
 };
 pub use extract::{
-    extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError, ExtractedClaim,
+    assess_faithfulness, extract_claims, extract_via_cmd, normalize_line, ExtractClaimsFn,
+    ExtractError, ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM,
     EXTRACTOR_KIND_HEURISTIC_V1,
 };
 pub use fixture::{
@@ -42,7 +46,16 @@ pub use fixture::{
 pub use journal::{ingest_sources, plan_ingest_sources, JournalError, StoreHandle};
 pub use render::{compile_artifacts, render_onboarding, CompileOutput};
 pub use replay::{ClaimState, ClaimView, ReplayError, ReplayedState};
-pub use source::{collect_markdown_files, MarkdownDocument, SourceError};
+pub use semantics::{
+    cosine_similarity, ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict,
+    ProposedClaim, Proposer, RelationVerdict, Reranker, SemanticsError,
+};
+pub use semantics_pipeline::{
+    group_claims, relate_claims, PipelineError, RelatedClaims, SupersessionEdge,
+};
+pub use source::{
+    collect_markdown_files, segment_candidates, CandidateSpan, MarkdownDocument, SourceError,
+};
 pub use stale::{check_staleness, StalenessReport};
 pub use state::{
     Closed, IngestCommitted, IngestMode, IngestPlan, IngestReport, Journal, Open, TransitionError,
@@ -98,14 +111,10 @@ pub fn compile_out(
     let journal = open_journal_with(root, workspace_id)?;
     let workspace = journal.config().workspace()?;
     let replayed = journal.replay(&workspace)?;
-    let context = build_agent_context(&replayed.state, workspace.as_str(), None);
-    let stale = check_staleness(
-        &replayed.state,
-        workspace.as_str(),
-        &root.join("sample_sources"),
-        root,
-    )?;
-    let conflicts = detect_conflicts(&replayed.state, workspace.as_str());
+    let context = build_agent_context(&replayed.state, &workspace, None);
+    let docs_root = journal.config().docs_scan_root(root);
+    let stale = check_staleness(&replayed.state, &workspace, &docs_root, root)?;
+    let conflicts = detect_conflicts(&replayed.state, &workspace);
     let output = compile_artifacts(&context, &replayed.state, &stale, &conflicts)?;
 
     std::fs::create_dir_all(out)?;

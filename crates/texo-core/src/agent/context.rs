@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::freshness::FreshnessView;
 use crate::replay::state::ClaimState;
-use crate::types::ids::ClaimId;
+use crate::types::ids::{ClaimId, ConflictId, WorkspaceId};
 use crate::types::receipt::ReceiptView;
-use crate::types::status::ClaimStatus;
+use crate::types::status::{ClaimStatus, ConflictStatus};
 
 /// Source provenance in agent context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,12 +63,31 @@ pub struct AgentStaleClaim {
     pub superseded_by: ClaimId,
 }
 
+/// An unresolved conflict between two co-current claims, with both sides' text
+/// resolved for display.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConflict {
+    /// Deterministic conflict id.
+    pub conflict_id: ConflictId,
+    /// First claim id.
+    pub claim_a: ClaimId,
+    /// First claim text.
+    pub claim_a_text: String,
+    /// Second claim id.
+    pub claim_b: ClaimId,
+    /// Second claim text.
+    pub claim_b_text: String,
+    /// Why the pair conflicts.
+    pub reason: String,
+}
+
 /// Full agent context snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentContext {
     /// Workspace id.
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     /// Replay frontier.
     pub replayed_through_sequence: u64,
     /// Freshness metadata.
@@ -77,12 +96,16 @@ pub struct AgentContext {
     pub claims: Vec<AgentClaim>,
     /// Stale claims.
     pub stale_claims: Vec<AgentStaleClaim>,
+    /// Unresolved conflicts. Omitted when empty so consumers without conflicts
+    /// (e.g. the heuristic path) see an unchanged shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<AgentConflict>,
 }
 
 /// Build agent context from replayed state.
 pub fn build_agent_context(
     state: &ClaimState,
-    workspace_id: &str,
+    workspace_id: &WorkspaceId,
     subject_filter: Option<&str>,
 ) -> AgentContext {
     let mut claims = Vec::new();
@@ -117,15 +140,36 @@ pub fn build_agent_context(
         }
     }
 
+    // Open conflicts, with both sides' text resolved for display. A conflicting
+    // claim is neither Current nor Superseded, so without this it would vanish
+    // from the projection entirely.
+    let mut conflicts = Vec::new();
+    for conflict in state.conflicts.values() {
+        if conflict.status != ConflictStatus::Open {
+            continue;
+        }
+        let text_of = |id: &ClaimId| state.claim(id).map(|c| c.text.clone()).unwrap_or_default();
+        conflicts.push(AgentConflict {
+            conflict_id: conflict.conflict_id.clone(),
+            claim_a: conflict.claim_a.clone(),
+            claim_a_text: text_of(&conflict.claim_a),
+            claim_b: conflict.claim_b.clone(),
+            claim_b_text: text_of(&conflict.claim_b),
+            reason: conflict.reason.clone(),
+        });
+    }
+
     claims.sort_by_key(|c| c.receipt.sequence);
     stale_claims.sort_by(|a, b| a.claim_id.as_str().cmp(b.claim_id.as_str()));
+    conflicts.sort_by(|a, b| a.conflict_id.as_str().cmp(b.conflict_id.as_str()));
 
     AgentContext {
-        workspace_id: workspace_id.to_string(),
+        workspace_id: workspace_id.clone(),
         replayed_through_sequence: state.replayed_through_sequence,
         freshness: FreshnessView::batpak_local(state.replayed_through_sequence),
         claims,
         stale_claims,
+        conflicts,
     }
 }
 

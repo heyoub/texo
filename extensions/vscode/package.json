@@ -42,11 +42,6 @@
           "default": "texo",
           "description": "Path to the texo CLI binary"
         },
-        "texo.storePath": {
-          "type": "string",
-          "default": ".texo/store",
-          "description": "BatPak store path"
-        },
         "texo.workspaceId": {
           "type": "string",
           "default": "demo",
@@ -67,7 +62,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "test": "npm run compile && node out/diagnostics.test.js",
+    "test": "npm run compile && node out/diagnostics.test.js && node out/publishDiagnostics.test.js",
     "watch": "tsc -watch -p .",
     "package": "npm run compile && npx --yes @vscode/vsce package"
   },

@@ -19,7 +19,7 @@ pub fn run(
         let committed = commit_conflicts(
             journal.handle(),
             &replayed.state,
-            workspace_id.as_str(),
+            &workspace_id,
             observed_at_ms(),
         )?;
         journal.close()?;
@@ -31,7 +31,7 @@ pub fn run(
         return Ok(());
     }
 
-    let report = detect_conflicts(&replayed.state, workspace_id.as_str());
+    let report = detect_conflicts(&replayed.state, &workspace_id);
     journal.close()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);

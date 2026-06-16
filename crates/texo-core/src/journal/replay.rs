@@ -24,19 +24,18 @@ pub fn load_workspace_events(
 
     loop {
         let page = store.query_entries_after(&region, after, PAGE_SIZE);
-        if page.is_empty() {
-            break;
-        }
+        // An empty page ends pagination; a non-empty page's last entry advances
+        // the cursor. Binding `last` here makes the non-empty invariant
+        // structural — no `.last().expect(...)` is needed.
+        let Some(last) = page.last() else { break };
+        after = Some(last.global_sequence());
         for entry in &page {
             let event_id = EventId::from(entry.event_id());
-            let stored = store
-                .get(event_id)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if let Some(decoded) = decode_stored_event(&stored, entry.global_sequence())? {
-                events.push(decoded);
-            }
+            let stored = store.get(event_id)?;
+            // Strict policy: an unknown kind propagates as an error here rather
+            // than being silently skipped (SPEC.md:73 — no silent partial state).
+            events.push(decode_stored_event(&stored, entry.global_sequence())?);
         }
-        after = Some(page.last().expect("non-empty page").global_sequence());
     }
 
     Ok(events)
@@ -53,89 +52,68 @@ pub fn load_source_body_hashes(
 
     loop {
         let page = store.query_entries_after(&region, after, PAGE_SIZE);
-        if page.is_empty() {
-            break;
-        }
+        // See `load_workspace_events`: binding the last entry expresses the
+        // non-empty invariant structurally instead of asserting it.
+        let Some(last) = page.last() else { break };
+        after = Some(last.global_sequence());
         for entry in &page {
             let event_id = EventId::from(entry.event_id());
-            let stored = store
-                .get(event_id)
-                .map_err(|e| DecodeError::Decode(e.to_string()))?;
-            if let Some(payload) = stored
-                .event
-                .route_typed::<SourceObserved>()
-                .map_err(map_typed_decode_error)?
+            let stored = store.get(event_id)?;
+            // Decode against all five known kinds so a truly unknown kind still
+            // errors (no silent skip), then filter to the SOURCE kind we want.
+            // Other KNOWN kinds are intentionally ignored here.
+            if let TexoEvent::SourceObserved { payload, .. } =
+                decode_stored_event(&stored, entry.global_sequence())?
             {
                 hashes.insert(payload.body_hash_hex);
             }
         }
-        after = Some(page.last().expect("non-empty page").global_sequence());
     }
 
     Ok(hashes)
 }
 
-fn map_typed_decode_error(error: TypedDecodeError) -> DecodeError {
-    match error {
-        TypedDecodeError::KindMismatch { .. } => DecodeError::UnsupportedKind,
-        TypedDecodeError::DecodeFailure { source, .. } => DecodeError::Decode(source.to_string()),
-    }
-}
-
+/// Decode one stored entry into a known texo event.
+///
+/// Recognizes all five known texo kinds. A kind that matches none of them is
+/// treated as an error (`DecodeError::UnsupportedKind`) rather than being
+/// silently skipped, so callers replay full state or fail loudly.
 fn decode_stored_event(
     stored: &StoredEvent<serde_json::Value>,
     sequence: u64,
-) -> Result<Option<TexoEvent>, DecodeError> {
+) -> Result<TexoEvent, DecodeError> {
     let scope = stored.coordinate.scope().to_string();
     let entity = stored.coordinate.entity().to_string();
     let event_id = stored.event.header.event_id;
     let base_receipt = receipt_view(event_id.into(), sequence, "", &scope, &entity);
 
-    if let Some(payload) = stored
-        .event
-        .route_typed::<SourceObserved>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<SourceObserved>()? {
         let mut receipt = base_receipt;
         receipt.kind = "SourceObserved".to_string();
-        return Ok(Some(TexoEvent::SourceObserved { payload, receipt }));
+        return Ok(TexoEvent::SourceObserved { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimRecorded>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimRecorded>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimRecorded".to_string();
-        return Ok(Some(TexoEvent::ClaimRecorded { payload, receipt }));
+        return Ok(TexoEvent::ClaimRecorded { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimSuperseded>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimSuperseded>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimSuperseded".to_string();
-        return Ok(Some(TexoEvent::ClaimSuperseded { payload, receipt }));
+        return Ok(TexoEvent::ClaimSuperseded { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<ClaimConflictDetected>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<ClaimConflictDetected>()? {
         let mut receipt = base_receipt;
         receipt.kind = "ClaimConflictDetected".to_string();
-        return Ok(Some(TexoEvent::ClaimConflictDetected { payload, receipt }));
+        return Ok(TexoEvent::ClaimConflictDetected { payload, receipt });
     }
-    if let Some(payload) = stored
-        .event
-        .route_typed::<OnboardingCompiled>()
-        .map_err(map_typed_decode_error)?
-    {
+    if let Some(payload) = stored.event.route_typed::<OnboardingCompiled>()? {
         let mut receipt = base_receipt;
         receipt.kind = "OnboardingCompiled".to_string();
-        return Ok(Some(TexoEvent::OnboardingCompiled { payload, receipt }));
+        return Ok(TexoEvent::OnboardingCompiled { payload, receipt });
     }
 
-    Ok(None)
+    // None of the five known kinds matched: this is a truly unknown kind, which
+    // must not be silently dropped (SPEC.md:73 — no silent partial state).
+    Err(DecodeError::UnsupportedKind)
 }

@@ -32,7 +32,7 @@ fn ingest_demo_snapshot() {
     let report = ingest_sample_sources_report(dir.path());
 
     let golden = IngestGolden {
-        workspace_id: report.workspace_id,
+        workspace_id: report.workspace_id.to_string(),
         sources_observed: report.sources_observed,
         claims_recorded: report.claims_recorded,
         receipts: report

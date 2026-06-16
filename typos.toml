@@ -1,5 +1,15 @@
 [default]
-extend-ignore-re = ["(?i)crate", "Ba?tPak", "texo", "ctxvc", "serde", "rmcp"]
+# The last entry ignores content-addressed ids (claim_/conflict_/src_ + hex):
+# the hex can spell anything ("...beed...") and they appear in generated trophies.
+extend-ignore-re = [
+    "(?i)crate",
+    "Ba?tPak",
+    "texo",
+    "ctxvc",
+    "serde",
+    "rmcp",
+    "\\b(claim|conflict|src)_[0-9a-f]+\\b",
+]
 
 [files]
 extend-exclude = [

@@ -5,9 +5,13 @@ use crate::events::payloads::{
     ClaimConflictDetected, ClaimRecorded, ClaimSuperseded, SourceObserved,
 };
 use crate::replay::state::{ClaimState, ClaimView, ConflictView, SourceView, SupersessionView};
-use crate::state::claim_lifecycle::{initial_claim_status, transition, ClaimLifecycleEvent};
+use crate::state::claim_lifecycle::{
+    apply_open_conflict, initial_claim_status, transition, validate_supersession,
+    ClaimLifecycleEvent,
+};
+use crate::state::TransitionError;
 use crate::types::ids::{ClaimId, ConflictId, SourceId};
-use crate::types::status::{ClaimStatus, ConflictStatus};
+use crate::types::status::{ConflictStatus, ConflictStatusParseError};
 use crate::types::IdParseError;
 
 /// Apply one journal event to replay state.
@@ -31,10 +35,9 @@ fn apply_source(
     payload: &SourceObserved,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let source_id = SourceId::try_from(payload.source_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let source_id = SourceId::try_from(payload.source_id.as_str())?;
     state.sources.insert(
-        payload.source_id.clone(),
+        source_id.clone(),
         SourceView {
             source_id,
             workspace_id: payload.workspace_id.clone(),
@@ -53,10 +56,8 @@ fn apply_claim(
     payload: &ClaimRecorded,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let claim_id = ClaimId::try_from(payload.claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let source_id = SourceId::try_from(payload.source_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let claim_id = ClaimId::try_from(payload.claim_id.as_str())?;
+    let source_id = SourceId::try_from(payload.source_id.as_str())?;
     let view = ClaimView {
         claim_id: claim_id.clone(),
         workspace_id: payload.workspace_id.clone(),
@@ -71,13 +72,13 @@ fn apply_claim(
         object_hint: payload.object_hint.clone(),
         confidence_ppm: payload.confidence_ppm,
         extractor_kind: payload.extractor_kind.clone(),
-        status: transition(ClaimStatus::Unknown, ClaimLifecycleEvent::Recorded)
-            .unwrap_or(initial_claim_status()),
+        // `Recorded` is total: a newly recorded claim is always `Current`.
+        status: initial_claim_status(),
         receipt: receipt.clone(),
         supersedes: Vec::new(),
         superseded_by: None,
     };
-    state.claims.insert(payload.claim_id.clone(), view);
+    state.claims.insert(claim_id, view);
     state.rebuild_subject_index();
     Ok(())
 }
@@ -87,23 +88,31 @@ fn apply_supersession_event(
     payload: &ClaimSuperseded,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let old_id = ClaimId::try_from(payload.old_claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let new_id = ClaimId::try_from(payload.new_claim_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
+    let old_id = ClaimId::try_from(payload.old_claim_id.as_str())?;
+    let new_id = ClaimId::try_from(payload.new_claim_id.as_str())?;
 
-    if let Some(old) = state.claims.get_mut(&payload.old_claim_id) {
-        old.status = transition(old.status, ClaimLifecycleEvent::Superseded)
-            .map_err(|e| ReplayError::Transition(e.to_string()))?;
-        old.superseded_by = Some(new_id.clone());
-    }
+    validate_supersession(payload)?;
 
-    if let Some(new) = state.claims.get_mut(&payload.new_claim_id) {
-        new.supersedes.push(old_id.clone());
-    }
+    // Each endpoint's presence is established by the `get_mut` that mutates it,
+    // so the `None` path is the genuine MissingClaim error (exercised by tests)
+    // rather than a dead arm guarded by a redundant `contains_key`. On any error
+    // the reducer discards the in-progress state, so an early-returned mutation
+    // of `old` before the `new` lookup is never observable.
+    let old = state
+        .claims
+        .get_mut(&old_id)
+        .ok_or_else(|| ReplayError::MissingClaim(old_id.clone()))?;
+    old.status = transition(old.status, ClaimLifecycleEvent::Superseded)?;
+    old.superseded_by = Some(new_id.clone());
+
+    let new = state
+        .claims
+        .get_mut(&new_id)
+        .ok_or_else(|| ReplayError::MissingClaim(new_id.clone()))?;
+    new.supersedes.push(old_id.clone());
 
     state.superseded.insert(
-        payload.old_claim_id.clone(),
+        old_id.clone(),
         SupersessionView {
             old_claim_id: old_id,
             new_claim_id: new_id,
@@ -121,25 +130,23 @@ fn apply_conflict(
     payload: &ClaimConflictDetected,
     receipt: &crate::types::receipt::ReceiptView,
 ) -> Result<(), ReplayError> {
-    let conflict_id = ConflictId::try_from(payload.conflict_id.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let claim_a = ClaimId::try_from(payload.claim_a.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let claim_b = ClaimId::try_from(payload.claim_b.as_str())
-        .map_err(|e: IdParseError| ReplayError::InvalidId(e.to_string()))?;
-    let status = ConflictStatus::parse_str(&payload.status).unwrap_or(ConflictStatus::Open);
+    let conflict_id = ConflictId::try_from(payload.conflict_id.as_str())?;
+    let claim_a = ClaimId::try_from(payload.claim_a.as_str())?;
+    let claim_b = ClaimId::try_from(payload.claim_b.as_str())?;
+    let status = ConflictStatus::parse_str(&payload.status)?;
 
     if status == ConflictStatus::Open {
-        for id in [&payload.claim_a, &payload.claim_b] {
-            if let Some(claim) = state.claims.get_mut(id.as_str()) {
-                claim.status = transition(claim.status, ClaimLifecycleEvent::OpenConflict)
-                    .unwrap_or(claim.status);
+        for id in [&claim_a, &claim_b] {
+            if let Some(claim) = state.claims.get_mut(id) {
+                // `OpenConflict` is total; call the total function directly so no
+                // error can be swallowed and a stale status silently kept.
+                claim.status = apply_open_conflict(claim.status);
             }
         }
     }
 
     state.conflicts.insert(
-        payload.conflict_id.clone(),
+        conflict_id.clone(),
         ConflictView {
             conflict_id,
             claim_a,
@@ -158,8 +165,159 @@ fn apply_conflict(
 pub enum ReplayError {
     /// Invalid identifier in event payload.
     #[error("invalid id: {0}")]
-    InvalidId(String),
+    InvalidId(#[from] IdParseError),
     /// Illegal lifecycle transition.
     #[error("transition: {0}")]
-    Transition(String),
+    Transition(#[from] TransitionError),
+    /// Referenced claim is absent from replay state.
+    #[error("missing claim: {0}")]
+    MissingClaim(ClaimId),
+    /// Unrecognized conflict status string in event payload.
+    #[error("invalid conflict status: {0}")]
+    InvalidStatus(#[from] ConflictStatusParseError),
+}
+
+#[cfg(test)]
+mod tests {
+    //! PROVES: INV-REPLAY-ERRORS (F3/F4 error paths) — folding domain events
+    //! directly through the reducer must surface MissingClaim, Transition
+    //! (self-supersession) and InvalidStatus rather than panicking or silently
+    //! succeeding.
+    use super::*;
+    use crate::events::payloads::{ClaimConflictDetected, ClaimRecorded, ClaimSuperseded};
+    use crate::replay::reducer::fold_events;
+    use crate::types::receipt::receipt_view;
+    use assert_matches::assert_matches;
+
+    const SOURCE_ID: &str = "src_abc123def456";
+
+    fn recorded_event(claim_id: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimRecorded {
+            payload: ClaimRecorded {
+                claim_id: claim_id.to_string(),
+                workspace_id: "demo".to_string(),
+                source_id: SOURCE_ID.to_string(),
+                source_path: "x.md".to_string(),
+                line_start: 1,
+                line_end: 1,
+                text: "x".to_string(),
+                normalized_text: "x".to_string(),
+                subject_hint: "s".to_string(),
+                predicate_hint: "unknown".to_string(),
+                object_hint: "x".to_string(),
+                confidence_ppm: 500_000,
+                extractor_kind: "test".to_string(),
+                observed_at_ms: 1,
+            },
+            receipt: receipt_view(sequence.into(), sequence, "ClaimRecorded", "demo", claim_id),
+        }
+    }
+
+    fn supersede_event(old: &str, new: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimSuperseded {
+            payload: ClaimSuperseded {
+                old_claim_id: old.to_string(),
+                new_claim_id: new.to_string(),
+                workspace_id: "demo".to_string(),
+                reason: "test".to_string(),
+                decided_by: "test".to_string(),
+                observed_at_ms: 2,
+            },
+            receipt: receipt_view(sequence.into(), sequence, "ClaimSuperseded", "demo", old),
+        }
+    }
+
+    fn conflict_event(status: &str, claim_a: &str, claim_b: &str, sequence: u64) -> TexoEvent {
+        TexoEvent::ClaimConflictDetected {
+            payload: ClaimConflictDetected {
+                conflict_id: "conflict_aaaaaaaaaaaa".to_string(),
+                workspace_id: "demo".to_string(),
+                claim_a: claim_a.to_string(),
+                claim_b: claim_b.to_string(),
+                reason: "test".to_string(),
+                status: status.to_string(),
+                observed_at_ms: 3,
+            },
+            receipt: receipt_view(
+                sequence.into(),
+                sequence,
+                "ClaimConflictDetected",
+                "demo",
+                "conflict_aaaaaaaaaaaa",
+            ),
+        }
+    }
+
+    #[test]
+    fn supersession_missing_old_claim_errors() {
+        // new_claim recorded but old_claim never recorded.
+        let new_id = "claim_bbbbbbbbbbbb";
+        let old_id = "claim_aaaaaaaaaaaa";
+        let events = [
+            recorded_event(new_id, 1),
+            supersede_event(old_id, new_id, 2),
+        ];
+        let result = fold_events(&events);
+        assert_matches!(result, Err(ReplayError::MissingClaim(id)) if id.as_str() == old_id);
+    }
+
+    #[test]
+    fn supersession_missing_new_claim_errors() {
+        // old_claim recorded but new_claim never recorded.
+        let old_id = "claim_aaaaaaaaaaaa";
+        let new_id = "claim_bbbbbbbbbbbb";
+        let events = [
+            recorded_event(old_id, 1),
+            supersede_event(old_id, new_id, 2),
+        ];
+        let result = fold_events(&events);
+        assert_matches!(result, Err(ReplayError::MissingClaim(id)) if id.as_str() == new_id);
+    }
+
+    #[test]
+    fn self_supersession_errors_with_transition() {
+        // old_claim_id == new_claim_id must be rejected by validate_supersession.
+        let id = "claim_aaaaaaaaaaaa";
+        let events = [recorded_event(id, 1), supersede_event(id, id, 2)];
+        let result = fold_events(&events);
+        assert_matches!(result, Err(ReplayError::Transition(_)));
+    }
+
+    #[test]
+    fn conflict_with_unparsable_status_errors() {
+        let a = "claim_aaaaaaaaaaaa";
+        let b = "claim_bbbbbbbbbbbb";
+        let events = [
+            recorded_event(a, 1),
+            recorded_event(b, 2),
+            conflict_event("not_a_status", a, b, 3),
+        ];
+        let result = fold_events(&events);
+        assert_matches!(result, Err(ReplayError::InvalidStatus(s)) if s.value == "not_a_status");
+    }
+
+    #[test]
+    fn open_conflict_for_absent_claims_inserts_without_touching_claims() {
+        // An Open ClaimConflictDetected whose referenced claims were never
+        // recorded drives the `state.claims.get_mut(id)` None arm in
+        // `apply_conflict` for BOTH sides: the status-flip loop is a no-op (no
+        // claim to mutate) and replay must still succeed, recording the conflict
+        // view rather than erroring on the dangling references.
+        let a = "claim_aaaaaaaaaaaa";
+        let b = "claim_bbbbbbbbbbbb";
+        let events = [conflict_event("open", a, b, 1)];
+        let replayed = fold_events(&events).expect("absent-claim conflict must replay clean");
+        // No claims were ever recorded, so the status-flip loop touched nothing.
+        assert!(replayed.state.claims.is_empty());
+        // The conflict view is still recorded against the dangling claim ids.
+        let conflict_id = ConflictId::try_from("conflict_aaaaaaaaaaaa").expect("conflict id");
+        let view = replayed
+            .state
+            .conflicts
+            .get(&conflict_id)
+            .expect("conflict view must be inserted even with absent claims");
+        assert_eq!(view.status, ConflictStatus::Open);
+        assert_eq!(view.claim_a.as_str(), a);
+        assert_eq!(view.claim_b.as_str(), b);
+    }
 }

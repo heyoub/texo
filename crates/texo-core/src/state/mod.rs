@@ -6,8 +6,8 @@ pub mod ingest;
 pub mod journal;
 
 pub use claim_lifecycle::{
-    apply_open_conflict, apply_supersession, initial_claim_status, transition, ClaimLifecycleEvent,
-    TransitionError,
+    apply_open_conflict, apply_supersession, initial_claim_status, transition,
+    validate_supersession, ClaimLifecycleEvent, TransitionError,
 };
 pub use conflict_lifecycle::{CommittedConflict, ConflictEntry, ConflictReport};
 pub use ingest::{IngestCommitted, IngestMode, IngestPlan, IngestReport};

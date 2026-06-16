@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use texo_core::{
-    check_staleness, ingest_sources, init_workspace, open_journal, ClaimStatus, IngestMode,
-    IngestReport, Journal, Open, FIXTURE_OBSERVED_AT_MS,
+    check_staleness, ingest_sources, init_workspace, open_journal, ClaimId, ClaimStatus,
+    IngestMode, IngestReport, Journal, Open, FIXTURE_OBSERVED_AT_MS,
 };
 
 /// Create a temp workspace with demo config and return root path.
@@ -78,7 +78,7 @@ pub fn stale_onboarding_report(root: &Path) -> texo_core::StalenessReport {
     let replayed = journal.replay(&workspace).expect("replay");
     let report = check_staleness(
         &replayed.state,
-        workspace.as_str(),
+        &workspace,
         &root.join("sample_sources/stale_onboarding.md"),
         root,
     )
@@ -92,10 +92,11 @@ pub fn assert_claim_status(root: &Path, claim_id: &str, expected: ClaimStatus) {
     let journal = open_journal(root).expect("open");
     let workspace = journal.config().workspace().expect("workspace");
     let replayed = journal.replay(&workspace).expect("replay");
+    let id = ClaimId::try_from(claim_id).expect("valid claim id");
     let claim = replayed
         .state
         .claims
-        .get(claim_id)
+        .get(&id)
         .unwrap_or_else(|| panic!("missing claim {claim_id}"));
     assert_eq!(
         claim.status, expected,
