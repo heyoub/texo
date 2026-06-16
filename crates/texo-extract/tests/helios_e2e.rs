@@ -54,7 +54,13 @@ fn build_view(
         confidence_ppm,
         extractor_kind: "or:opus-4.8".to_string(),
         status: ClaimStatus::Current,
-        receipt: receipt_view(u128::from(seq), seq, "ClaimRecorded", "workspace:helios", &id_str),
+        receipt: receipt_view(
+            u128::from(seq),
+            seq,
+            "ClaimRecorded",
+            "workspace:helios",
+            &id_str,
+        ),
         supersedes: Vec::new(),
         superseded_by: None,
     };

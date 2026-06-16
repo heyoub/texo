@@ -528,7 +528,7 @@ mod tests {
         // Directly exercise the offset->line helper at a byte index that lands
         // inside the em-dash (a non-char-boundary), which previously panicked.
         let source = "ab—cd\n"; // '—' occupies bytes 2..5
-        // Offsets 3 and 4 are inside the em-dash.
+                                // Offsets 3 and 4 are inside the em-dash.
         assert_eq!(line_of_offset(source, 3), 1);
         assert_eq!(line_of_offset(source, 4), 1);
         assert_eq!(line_of_offset(source, source.len()), 2);
