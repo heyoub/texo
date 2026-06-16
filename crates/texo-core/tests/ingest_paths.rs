@@ -249,6 +249,54 @@ fn failing_external_extractor_surfaces_error_through_ingest() {
 }
 
 #[test]
+fn cmd_extractor_resolves_doc_path_from_its_cwd() {
+    // Regression: the external extractor runs with its cwd at the docs scan dir,
+    // so a relative `doc.path` ("policy.md" under a docs/ subdir) resolves to a
+    // real file. The extractor below READS "$1" (unlike the printf cases, which
+    // ignore it) and only emits a claim if the read succeeds — so if the path did
+    // not resolve from the extractor's cwd, `cat` would fail, the command would
+    // exit non-zero, and ingest would surface an Extract error instead.
+    let dir = temp_workspace();
+    let root = dir.path();
+    write_doc(root, "docs/policy.md", "Deploys moved to Tuesday.\n");
+
+    let config = WorkspaceConfig {
+        workspace_id: "demo".to_string(),
+        store_path: ".texo/store".to_string(),
+        docs_glob: "docs/**/*.md".to_string(),
+        extractor_cmd: Some(
+            r#"cat "$1" >/dev/null && printf '{"line_start": 1, "text": "Deploys moved to Tuesday."}\n'"#
+                .to_string(),
+        ),
+        semantics: None,
+    };
+    let journal = Journal::<Open>::open(config, root).expect("open journal");
+    let workspace = journal.config().workspace().expect("workspace");
+
+    let committed = ingest_sources(
+        journal.handle(),
+        journal.config(),
+        &workspace,
+        &root.join("docs"),
+        IngestMode::Commit,
+        FIXTURE_OBSERVED_AT_MS,
+        root,
+    )
+    .expect("the extractor must be able to read the doc from its cwd");
+    assert_eq!(committed.claims_recorded, 1);
+
+    let replayed = journal.replay(&workspace).expect("replay");
+    let texts: Vec<String> = replayed
+        .state
+        .claims
+        .values()
+        .map(|c| c.text.clone())
+        .collect();
+    assert_eq!(texts, vec!["Deploys moved to Tuesday."]);
+    journal.close().expect("close");
+}
+
+#[test]
 fn supersession_marks_old_claim_stale_and_agent_context_reflects_it() {
     // Two ingests on the same subject across sessions: the second supersedes the
     // first. This exercises check_staleness's superseder-present branches, the

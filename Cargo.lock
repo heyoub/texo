@@ -3381,6 +3381,7 @@ dependencies = [
  "tempfile",
  "texo-core",
  "texo-mcp",
+ "texo-semantics",
  "tokio",
 ]
 

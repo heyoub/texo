@@ -1,0 +1,1 @@
+[{"text":"ADR-001 is accepted.","subject":"ADR-001","predicate":"has status","object":"Accepted","confidence_ppm":950000},{"text":"ADR-001 supersedes the ad-hoc \"just push it\" era.","subject":"ADR-001","predicate":"supersedes","object":"the ad-hoc \"just push it\" era","confidence_ppm":900000}]

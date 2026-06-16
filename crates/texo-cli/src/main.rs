@@ -77,6 +77,11 @@ enum Commands {
         #[arg(long, default_value = "public")]
         out: PathBuf,
     },
+    /// Semantic supersession + conflict pass (OpenRouter; needs OPENROUTER_API_KEY).
+    Relate {
+        #[arg(long)]
+        json: bool,
+    },
     /// Report possible conflicts.
     Conflicts {
         #[arg(long)]
@@ -124,6 +129,7 @@ fn main() -> Result<()> {
             json,
         ),
         Commands::Compile { out } => commands::compile::run(&cli.root, workspace, &out),
+        Commands::Relate { json } => commands::relate::run(&cli.root, workspace, json),
         Commands::Conflicts { json, commit } => {
             commands::conflicts::run(&cli.root, workspace, json, commit)
         }

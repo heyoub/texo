@@ -1,0 +1,1 @@
+[{"text":"ADR-007 does not change the release cadence.","subject":"ADR-007","predicate":"does not change","object":"the release cadence","confidence_ppm":950000},{"text":"ADR-007 changes only the deploy day.","subject":"ADR-007","predicate":"changes","object":"only the deploy day","confidence_ppm":950000}]

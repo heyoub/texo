@@ -51,6 +51,41 @@ demo-fresh:
     touch public/.gitkeep
     just demo
 
+demo-helios:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY to run the semantic demo}"
+    # Build the LLM extractor and the CLI.
+    cargo build -q -p texo-extract -p texo-cli
+    EXTRACT="$(pwd)/target/debug/texo-extract"
+    TEXO="./target/debug/texo"
+    # Fresh helios workspace wired to the semantic pipeline (LLM extractor + relate).
+    rm -rf .texo public/helios
+    mkdir -p .texo/helios-store public/helios
+    cat > .texo/config.toml <<TOML
+    default_workspace = "helios"
+
+    [workspaces.helios]
+    store_path = ".texo/helios-store"
+    docs_glob = "examples/helios/docs/**/*.md"
+    extractor_cmd = "$EXTRACT"
+
+    [workspaces.helios.semantics]
+    enabled = true
+    TOML
+    echo "==> ingest (LLM extraction via texo-extract; first run hits OpenRouter, then cached)"
+    "$TEXO" ingest examples/helios/docs
+    echo "==> relate (semantic supersession + conflict pass)"
+    "$TEXO" relate
+    echo "==> compile onboarding"
+    "$TEXO" compile --out public/helios
+    echo
+    echo "===================== CURRENT CLAIMS (what new hires/agents see) ====================="
+    "$TEXO" claims
+    echo
+    echo "===================== CONFLICTS (genuine disagreements surfaced) ======================"
+    "$TEXO" conflicts
+
 ext-package:
     #!/usr/bin/env bash
     set -euo pipefail

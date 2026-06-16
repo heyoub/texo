@@ -1,0 +1,1 @@
+[{"text":"The rollback command is `helios rollback`.","subject":"rollback","predicate":"command is","object":"helios rollback","confidence_ppm":850000},{"text":"Incidents should be posted in `#incident`.","subject":"incident posts","predicate":"channel is","object":"#incident","confidence_ppm":850000}]

@@ -80,7 +80,7 @@ pub fn plan_sources(
         workspace,
         observed_at_ms,
         existing_hashes,
-        root,
+        root: _,
         historical_claims,
         existing_edges,
     } = params;
@@ -118,9 +118,13 @@ pub fn plan_sources(
         actions.push(PlannedAction::Source(source_payload));
 
         let source_id = SourceId::try_from(doc.source_id.as_str())?;
+        // The external extractor runs with its cwd at `root_dir` — the directory
+        // `doc.path` was stripped against — so a relative `doc.path` resolves to a
+        // real file. (Passing the CLI `root` here mismatches when docs live in a
+        // subdirectory: `doc.path` is "sub/x.md" relative to `root_dir`, not root.)
         let claims = extract_for_doc(
             config,
-            root,
+            root_dir,
             &doc,
             &source_id,
             workspace.as_str(),
