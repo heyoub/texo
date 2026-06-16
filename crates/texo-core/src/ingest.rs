@@ -141,17 +141,24 @@ pub fn plan_sources(
         }
     }
 
-    for (old_id, new_id, reason) in
-        infer_supersessions(&claim_views, historical_claims, existing_edges)
-    {
-        actions.push(PlannedAction::Supersede(ClaimSuperseded {
-            old_claim_id: old_id.to_string(),
-            new_claim_id: new_id.to_string(),
-            workspace_id: workspace.to_string(),
-            reason,
-            decided_by: "texo-ingest".to_string(),
-            observed_at_ms,
-        }));
+    // The keyword-heuristic supersession is suppressed when the semantic pipeline
+    // is enabled: there, the dedicated `relate` pass (meaning-based supersession +
+    // conflict) is authoritative, and letting the heuristic also fire would
+    // supersede claims the wrong way and fight the semantic pass.
+    let semantics_enabled = config.semantics.as_ref().is_some_and(|s| s.enabled);
+    if !semantics_enabled {
+        for (old_id, new_id, reason) in
+            infer_supersessions(&claim_views, historical_claims, existing_edges)
+        {
+            actions.push(PlannedAction::Supersede(ClaimSuperseded {
+                old_claim_id: old_id.to_string(),
+                new_claim_id: new_id.to_string(),
+                workspace_id: workspace.to_string(),
+                reason,
+                decided_by: "texo-ingest".to_string(),
+                observed_at_ms,
+            }));
+        }
     }
 
     Ok(IngestPlanInternal {

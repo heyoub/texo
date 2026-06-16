@@ -13,7 +13,7 @@ use assert_matches::assert_matches;
 use support::temp_workspace;
 use texo_core::{
     build_agent_context, check_staleness, explain_claim, ingest_sources, plan_ingest_sources,
-    ClaimId, ClaimStatus, IngestMode, Journal, Open, WorkspaceConfig, WorkspaceId,
+    ClaimId, ClaimStatus, IngestMode, Journal, Open, SemanticsConfig, WorkspaceConfig, WorkspaceId,
     FIXTURE_OBSERVED_AT_MS,
 };
 
@@ -246,6 +246,64 @@ fn failing_external_extractor_surfaces_error_through_ingest() {
     assert_matches!(err, texo_core::JournalError::Extract(_));
 
     journal.close().expect("close");
+}
+
+#[test]
+fn semantics_enabled_suppresses_heuristic_supersession() {
+    // The keyword heuristic supersedes "Deploys happen on Friday" with the later
+    // "Deploys moved to Tuesday". With `[semantics].enabled` the dedicated relate
+    // pass is authoritative, so that heuristic supersession must be suppressed —
+    // otherwise the two passes fight and bury claims the wrong way.
+    fn superseded_after_ingest(root: &Path, semantics_enabled: bool) -> usize {
+        write_doc(root, "docs/a.md", "Deploys happen on Friday.\n");
+        write_doc(root, "docs/b.md", "Deploys moved to Tuesday.\n");
+        let semantics = semantics_enabled.then(|| SemanticsConfig {
+            enabled: true,
+            ..SemanticsConfig::default()
+        });
+        let config = WorkspaceConfig {
+            workspace_id: "demo".to_string(),
+            store_path: ".texo/store".to_string(),
+            docs_glob: "docs/**/*.md".to_string(),
+            extractor_cmd: None,
+            semantics,
+        };
+        let journal = Journal::<Open>::open(config, root).expect("open journal");
+        let workspace = journal.config().workspace().expect("workspace");
+        ingest_sources(
+            journal.handle(),
+            journal.config(),
+            &workspace,
+            &root.join("docs"),
+            IngestMode::Commit,
+            FIXTURE_OBSERVED_AT_MS,
+            root,
+        )
+        .expect("ingest");
+        let replayed = journal.replay(&workspace).expect("replay");
+        let superseded = replayed
+            .state
+            .claims
+            .values()
+            .filter(|c| c.status != ClaimStatus::Current)
+            .count();
+        journal.close().expect("close");
+        superseded
+    }
+
+    let off_dir = temp_workspace();
+    let on_dir = temp_workspace();
+    let off = superseded_after_ingest(off_dir.path(), false);
+    let on = superseded_after_ingest(on_dir.path(), true);
+
+    assert!(
+        off >= 1,
+        "non-vacuous: the heuristic must supersede with semantics OFF (got {off})"
+    );
+    assert_eq!(
+        on, 0,
+        "semantics ENABLED must suppress heuristic supersession (got {on})"
+    );
 }
 
 #[test]

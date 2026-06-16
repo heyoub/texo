@@ -77,7 +77,6 @@ pub fn run(root: &Path, workspace: Option<&str>, json: bool) -> Result<()> {
 
     let superseded = out.supersessions.len();
     let conflicts = out.conflicts.len();
-    journal.close()?;
 
     if json {
         println!(
@@ -85,10 +84,27 @@ pub fn run(root: &Path, workspace: Option<&str>, json: bool) -> Result<()> {
             claims.len()
         );
     } else {
+        let text_of = |id: &ClaimId| -> String {
+            claims
+                .iter()
+                .find(|(cid, _)| cid == id)
+                .map_or_else(|| id.to_string(), |(_, v)| v.text.clone())
+        };
         println!(
             "related {} claims: {superseded} supersessions, {conflicts} conflicts ({workspace_id})",
             claims.len()
         );
+        for (old, new, _) in &out.supersessions {
+            println!("  superseded: {:?}  ->  {:?}", text_of(old), text_of(new));
+        }
+        for entry in &out.conflicts {
+            println!(
+                "  conflict:   {:?}  <>  {:?}",
+                text_of(&entry.claim_a),
+                text_of(&entry.claim_b)
+            );
+        }
     }
+    journal.close()?;
     Ok(())
 }
