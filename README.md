@@ -42,11 +42,13 @@ texo is not a database server, consensus system, Slack crawler, Google Docs clon
 
 It is a small domain app on top of BatPak.
 
-## The extractor is intentionally dumb
+## The extractor is intentionally dumb (by default)
 
 v0 uses simple line heuristics. That is deliberate.
 
-The claim-chain is the point: append, receipt, replay, supersede, prove. A real LLM extractor plugs into the same seam later.
+The claim-chain is the point: append, receipt, replay, supersede, prove. A real LLM extractor plugs into the same seam — see the optional semantic pipeline below.
+
+Deferred and future work is tracked in [ROADMAP.md](ROADMAP.md).
 
 ## State-machine framing
 
