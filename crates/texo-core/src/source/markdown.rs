@@ -234,9 +234,17 @@ fn push_span(
 }
 
 /// Compute the 1-based file line of a byte offset by counting newlines before it.
+///
+/// Counts over the **byte** slice rather than a `str` slice: `offset` may fall
+/// inside a multi-byte character (e.g. one byte before the end of an em-dash), and
+/// `&source[..offset]` would panic on a non-char-boundary index. Byte indexing has
+/// no such requirement, and newline (`\n`) is single-byte and never part of a
+/// multi-byte sequence, so the count is identical and panic-free.
 fn line_of_offset(source: &str, offset: usize) -> u32 {
     let upto = offset.min(source.len());
-    let count = source[..upto].bytes().filter(|&b| b == b'\n').count() + 1;
+    // `bytes().take(upto)` avoids slicing the `str` at `upto` (which may be a
+    // non-char-boundary and panic) while still counting only bytes before it.
+    let count = source.bytes().take(upto).filter(|&b| b == b'\n').count() + 1;
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
@@ -496,5 +504,33 @@ mod tests {
     fn segment_empty_input_is_empty() {
         assert!(segment_candidates("").is_empty());
         assert!(segment_candidates("   \n\n  \n").is_empty());
+    }
+
+    #[test]
+    fn segment_handles_multibyte_chars_without_panic() {
+        // Regression: a prose span ending just after a multi-byte char (em-dash,
+        // 3 bytes) made line_of_offset slice a `str` at a non-char-boundary index
+        // and panic. Real corpora are full of —, “smart quotes”, and é/ü.
+        let source = "# Eng Sync — raw notes\n\nDecision: Bob owns release approval now — \
+                      effective immediately. Héllo, ünïcode “world”.\n\nThe big one —\n";
+        let spans = segment_candidates(source);
+        // The decision prose must be captured, and every offset must slice back.
+        let hit = spans
+            .iter()
+            .find(|s| s.text.contains("Bob owns release approval"))
+            .expect("decision prose span must be emitted");
+        assert_eq!(&source[hit.char_start..hit.char_end], hit.text);
+        assert!(hit.line_start >= 1);
+    }
+
+    #[test]
+    fn line_of_offset_inside_multibyte_char_does_not_panic() {
+        // Directly exercise the offset->line helper at a byte index that lands
+        // inside the em-dash (a non-char-boundary), which previously panicked.
+        let source = "ab—cd\n"; // '—' occupies bytes 2..5
+        // Offsets 3 and 4 are inside the em-dash.
+        assert_eq!(line_of_offset(source, 3), 1);
+        assert_eq!(line_of_offset(source, 4), 1);
+        assert_eq!(line_of_offset(source, source.len()), 2);
     }
 }
