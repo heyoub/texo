@@ -2,13 +2,20 @@
 
 ```txt
 markdown sources
-   ↓ ingest (heuristic extract)
+   ↓ ingest — heuristic extract (default)  OR  AST → texo-extract (LLM) → faithfulness gate
 BatPak journal (.texo/store)
+   ↓ relate (optional): embed prefilter → LLM relation-judge → supersede/conflict events
    ↓ append typed events + verify receipts
 replay (query_entries_after)
    ↓ ClaimState projection (errors propagate)
 agent JSON / staleness / compile / MCP / VS Code CLI shell
 ```
+
+The semantic path is opt-in per workspace (`[semantics]`) and stays **outside**
+`texo-core`'s HTTP-free boundary: `texo-extract` (binary, via the `extract_via_cmd`
+seam) and `texo-semantics` (OpenRouter/ONNX backends) hold all model/HTTP code;
+the model runs once at ingest (record-once) and only its journaled events feed
+replay. See [`ADR-001`](ADR-001-semantic-pipeline.md).
 
 texo is a single-writer local claim-chain. Sequences are per-store. No global order or consensus is claimed.
 

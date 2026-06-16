@@ -2,11 +2,14 @@
 
 ## Repo map
 
-- [`crates/texo-core/`](crates/texo-core/) — domain logic, BatPak journal adapter, replay, staleness
-- [`crates/texo-cli/`](crates/texo-cli/) — `texo` binary
+- [`crates/texo-core/`](crates/texo-core/) — domain logic, BatPak journal adapter, replay, staleness, semantic trait seams + relate logic
+- [`crates/texo-cli/`](crates/texo-cli/) — `texo` binary (incl. `texo relate`)
 - [`crates/texo-mcp/`](crates/texo-mcp/) — read-only MCP stdio tools
+- [`crates/texo-semantics/`](crates/texo-semantics/) — optional ML backends (OpenRouter default, local ONNX opt-in)
+- [`crates/texo-extract/`](crates/texo-extract/) — LLM extractor binary (`extract_via_cmd` seam) + record-once cache
 - [`extensions/vscode/`](extensions/vscode/) — thin diagnostics shell over CLI
 - [`sample_sources/`](sample_sources/) — demo markdown inputs
+- [`examples/helios/`](examples/helios/) — the messy dogfood corpus + ground truth + committed trophy
 
 ## Canonical commands
 
@@ -14,6 +17,7 @@
 - `just test-prop` — property tests with `PROPTEST_CASES=256`
 - `just demo` — spec demo flow
 - `just demo-fresh` — wipe `.texo` + `public/` then demo (non-zero ingest)
+- `just demo-helios` — semantic pipeline end-to-end on the messy Helios corpus (needs `OPENROUTER_API_KEY`)
 - `just ext-package` — build VS Code `.vsix`
 - `just test-invariants` — courtroom invariant tests
 

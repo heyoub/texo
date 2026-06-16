@@ -1,7 +1,7 @@
 # Conventions
 
 - Product name: **texo**
-- Crates: `texo-core`, `texo-cli`, `texo-mcp`
+- Crates: `texo-core`, `texo-cli`, `texo-mcp`, `texo-semantics` (optional ML backends), `texo-extract` (LLM extractor binary)
 - Config/store: `.texo/config.toml`, `.texo/store/`
 - Use newtypes for IDs and sequences in domain code
 - Use `IngestMode` not bare `bool` for dry-run vs commit

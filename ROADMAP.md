@@ -47,3 +47,23 @@ each claim it produced: "this claim came from bytes X–Y of this doc."
 
 **Risks:** replay back-compat (must test), the two extraction paths agreeing on
 field semantics, golden review, and `usize -> u32` conversion/overflow on offsets.
+
+## Relate does not scale to large corpora (O(n²))
+
+**Status:** deferred. Surfaced dogfooding texo on its own docs (145 claims): the
+relate pass judges candidate pairs after a cosine prefilter, but the pair set is
+still O(n²), so a large corpus is impractical (the Helios demo, ~50 claims, is
+fine). Fix: cluster/group claims first (connected components over a similarity
+graph — `group_claims` already exists) and relate only *within* a cluster, which
+bounds the judge calls to roughly O(n · cluster_size). Until then, semantic
+relate is intended for focused workspaces, not whole-repo doc sweeps.
+
+## Smaller hardening (review-driven)
+
+- **Source-self-assertion claims.** The extractor faithfully records meta-claims
+  a document makes about *itself* ("this wiki is the source of truth for new
+  engineers") as current claims — ironic for a "prose is not state" tool. Teach
+  the proposer to skip/flag document-self-assertions.
+- **VS Code extension manners.** Check-on-save calls the CLI directly; add a
+  timeout around `execFile`, a per-file debounce, a status indicator, and a
+  graceful message when `.texo/config.toml` is missing.

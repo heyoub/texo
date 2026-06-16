@@ -24,14 +24,18 @@ Courtroom tests in `crates/texo-core/tests/` prove each step.
 | Kind | Purpose |
 |---|---|
 | `SourceObserved` | Hash-committed markdown source |
-| `ClaimRecorded` | Heuristic claim extracted from a source line |
+| `ClaimRecorded` | Claim extracted from a source (heuristic by default, or the optional LLM extractor) |
 | `ClaimSuperseded` | Old claim replaced by new (same subject) |
-| `ConflictOpened` | Two current claims contradict (explicit heuristic) |
+| `ClaimConflictDetected` | Two current claims contradict (heuristic detector, or the semantic relate pass) |
 | `OnboardingCompiled` | Audit trail when static compile runs |
 
 All appends go through BatPak; every commit verifies `AppendReceipt` before surfacing `ReceiptView`.
 
-Extractors compose at the ingest seam: default `heuristic-v1`, optional per-workspace `extractor_cmd` (NDJSON subprocess), or test injection via `ExtractClaimsFn` — no trait hierarchy.
+Extractors compose at the ingest seam: default `heuristic-v1`, optional per-workspace `extractor_cmd` (NDJSON subprocess — e.g. the `texo-extract` LLM extractor), or test injection via `ExtractClaimsFn` — no trait hierarchy.
+
+## Semantic pipeline (v1, optional)
+
+Enabled per-workspace via `[semantics]`. AST segmentation → LLM extraction (`texo-extract`) → deterministic faithfulness gate → embedding prefilter + LLM relation-judge (`texo relate`) → journal. The model runs **once** at ingest (record-once boundary); its outputs are cached content-addressed and become journaled events, so replay/compile stay deterministic. Heuristic extraction remains the default. See [`ADR-001`](ADR-001-semantic-pipeline.md).
 
 ## Multi-workspace (v1)
 
@@ -54,7 +58,7 @@ CLI: global `--workspace <id>`. VS Code: `texo.workspaceId`.
 
 ## Surfaces
 
-- **CLI** (`texo`) — ingest, claims, staleness, compile, verify
+- **CLI** (`texo`) — ingest, claims, relate, staleness, compile, conflicts, verify
 - **MCP** — read-only tools over replay (spawn_blocking for BatPak I/O)
 - **VS Code extension** — thin shell over CLI diagnostics
 - **Static compile** — `public/` trophy case (onboarding, claims JSON, index)
@@ -62,8 +66,8 @@ CLI: global `--workspace <id>`. VS Code: `texo.workspaceId`.
 ## Non-goals (v0)
 
 - Database server, consensus, Slack crawler, Google Docs clone
-- Vector database or semantic search
-- LLM extraction framework (heuristic extractor is intentional)
+- A general-purpose vector database or semantic-search engine (embeddings are an internal, optional prefilter for relating claims — not a queryable index)
+- A general-purpose LLM-extraction framework (the optional semantic extractor is record-once perception into the claim-chain; the heuristic extractor is the default)
 - BatPak projection reactor framework or distributed replication
 
 ## Invariants

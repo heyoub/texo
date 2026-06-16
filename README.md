@@ -68,10 +68,14 @@ That runs the real pipeline end to end — AST segmentation → LLM extraction (
 Every claim carries a receipt and a source line; "stale" and "conflict" are computed from the journal, not guessed. The model runs **once** at ingest (record-once boundary) and its outputs are cached content-addressed, so replay/compile are deterministic and re-runs are instant. Design rationale + the measured findings that shaped it are in [ADR-001](ADR-001-semantic-pipeline.md).
 
 > Needs an `OPENROUTER_API_KEY`. The first run calls the models (a few minutes) and fills the cache; later runs replay from cache. Models are configurable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`) — Claude for prod, free models for testing.
+>
+> **Trust note:** `extractor_cmd` is **trusted local code** that `texo ingest` executes. Review `.texo/config.toml` before ingesting an untrusted repo.
+>
+> v0 records `extractor_kind` + source line on each claim. Per-model provenance and source-span byte offsets are the next event-schema revision, tracked in [ROADMAP.md](ROADMAP.md).
 
 ## What this is not
 
-texo is not a database server, consensus system, Slack crawler, Google Docs clone, vector database, or LLM extraction framework.
+texo is not a database server, consensus system, Slack crawler, or Google Docs clone. It is **not a general-purpose LLM-extraction framework or a vector database**: the optional semantic pipeline is a *record-once perception layer* that writes claims into the chain — the **journal stays source truth**, and the heuristic extractor is the default. The model is perception at a record boundary, not the source of truth.
 
 It is a small domain app on top of BatPak.
 
