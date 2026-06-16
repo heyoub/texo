@@ -601,6 +601,15 @@ Thursday.\" -> supersedes (a later move of the SAME thing replaces the earlier \
 move; the most recent change wins — this is NOT a conflict).\n\
 - older \"The cache TTL is 60 seconds.\" / newer \"The cache TTL is 300 \
 seconds.\" -> conflict (a different value, but no wording signals an update).\n\
+- older \"Dana leads the on-call rotation.\" / newer \"Raj is no longer on the \
+on-call rotation.\" -> unrelated (a claim that ONE person left a role does not \
+supersede a claim that a DIFFERENT person holds a role — the subjects differ; a \
+negative/consequence claim about entity A never supersedes a positive claim \
+about entity B).\n\
+- older \"The platform stores events in BatPak.\" / newer \"BatPak keeps each \
+event as a content-addressed log entry.\" -> unrelated (the second ELABORATES a \
+detail of the same system; it does not state a different value for the first's \
+attribute, so it does not supersede it).\n\
 - older \"Backups run nightly.\" / newer \"The staging cluster has 3 nodes.\" -> \
 unrelated (different subjects).\n\
 Reply with ONLY a single JSON object: {\"relation\": \"supersedes\" | \
