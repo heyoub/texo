@@ -83,6 +83,10 @@ const MAX_COMPLETION_TOKENS: u32 = 4096;
 /// several atomic claims plus a reasoning trace, so it needs more room than the
 /// single-verdict judges.
 const MAX_PROPOSE_TOKENS: u32 = 2048;
+/// Maximum inputs per `/embeddings` request. A whole corpus can be hundreds of
+/// claims, which overruns the endpoint's per-request input cap (the response then
+/// lacks `data`), so `embed_batch` chunks at this size and concatenates in order.
+const EMBED_BATCH_MAX: usize = 64;
 
 /// How long to wait before the next retry. A server-supplied `Retry-After`
 /// (delta-seconds) wins when present; otherwise the wait is capped exponential
@@ -324,9 +328,14 @@ impl Embedder for OpenRouterEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let body = build_embeddings_request(&self.model, texts);
-        let value = self.client.post_json("/embeddings", &body)?;
-        let vectors = parse_embeddings_response(&value, texts.len())?;
+        // Chunk to stay under the endpoint's per-request input cap; concatenate
+        // in request order so the result still lines up 1:1 with `texts`.
+        let mut vectors = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(EMBED_BATCH_MAX) {
+            let body = build_embeddings_request(&self.model, chunk);
+            let value = self.client.post_json("/embeddings", &body)?;
+            vectors.extend(parse_embeddings_response(&value, chunk.len())?);
+        }
         Ok(vectors)
     }
 }

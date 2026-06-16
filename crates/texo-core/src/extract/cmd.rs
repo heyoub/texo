@@ -17,8 +17,23 @@ use crate::types::ids::{claim_id_from_parts, SourceId};
 
 use super::{ExtractError, ExtractedClaim};
 
-/// Maximum wall-clock runtime allowed for an external extractor before it is killed.
-const EXTRACT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default max wall-clock runtime for an external extractor before it is killed.
+/// Generous because an LLM extractor makes one (retryable, ~seconds) model call
+/// per prose span, so a dense document with many spans legitimately runs minutes
+/// on a cold cache. Override with `TEXO_EXTRACT_TIMEOUT_SECS`.
+const DEFAULT_EXTRACT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Environment variable overriding the external-extractor timeout (in seconds).
+const ENV_EXTRACT_TIMEOUT: &str = "TEXO_EXTRACT_TIMEOUT_SECS";
+
+/// Resolve the external-extractor timeout from the environment, else the default.
+fn extract_timeout() -> Duration {
+    std::env::var(ENV_EXTRACT_TIMEOUT)
+        .ok()
+        .and_then(|secs| secs.trim().parse::<u64>().ok())
+        .filter(|&secs| secs > 0)
+        .map_or(DEFAULT_EXTRACT_TIMEOUT, Duration::from_secs)
+}
 
 /// Poll interval used while waiting for the child to exit. Short enough that the
 /// timeout fires promptly, long enough not to busy-spin.
@@ -55,7 +70,7 @@ pub fn extract_via_cmd(
         workspace_id,
         observed_at_ms,
         root,
-        EXTRACT_TIMEOUT,
+        extract_timeout(),
     )
 }
 
