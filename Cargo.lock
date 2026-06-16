@@ -3442,6 +3442,7 @@ dependencies = [
  "hf-hub",
  "ndarray",
  "ort",
+ "proptest",
  "reqwest",
  "serde",
  "serde_json",

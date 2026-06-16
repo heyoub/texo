@@ -1,4 +1,5 @@
-//! PROVES: extract output stays within source lines; normalize is idempotent.
+//! PROVES: extract output stays within source lines; normalize is idempotent;
+//! the faithfulness gate is total, bounded, reflexive, and monotone in coverage.
 
 mod common;
 
@@ -6,10 +7,11 @@ use std::collections::HashSet;
 
 use proptest::prelude::*;
 use texo_core::{
+    assess_faithfulness,
     extract::{extract_claims, normalize_line},
     source::markdown::{MarkdownDocument, MarkdownLine},
     types::ids::SourceId,
-    FIXTURE_OBSERVED_AT_MS,
+    DEFAULT_GROUNDING_THRESHOLD_PPM, FIXTURE_OBSERVED_AT_MS,
 };
 
 use common::proptest::config;
@@ -60,5 +62,45 @@ proptest! {
                 .clone();
             prop_assert_eq!(claim.payload.text, source_text);
         }
+    }
+
+    // INV: the faithfulness gate is a total function; recall is a bounded ppm and
+    // `grounded` is exactly `recall_ppm >= threshold`. Arbitrary input, no panic.
+    #[test]
+    fn faithfulness_is_total_and_bounded(
+        claim in any::<String>(),
+        source in any::<String>(),
+        threshold in 0u32..=1_000_000,
+    ) {
+        let f = assess_faithfulness(&claim, &source, threshold);
+        prop_assert!(f.recall_ppm <= 1_000_000);
+        prop_assert_eq!(f.grounded, f.recall_ppm >= threshold);
+    }
+
+    // INV: a claim with content tokens is fully grounded in itself.
+    #[test]
+    fn faithfulness_is_reflexive_on_content(
+        words in prop::collection::vec("[a-z]{2,8}", 1..8)
+    ) {
+        let claim = words.join(" ");
+        let f = assess_faithfulness(&claim, &claim, DEFAULT_GROUNDING_THRESHOLD_PPM);
+        prop_assert!(f.grounded);
+        prop_assert_eq!(f.recall_ppm, 1_000_000);
+    }
+
+    // INV: a claim is fully grounded in any source that contains all its content
+    // tokens (the claim's words plus arbitrary extra words).
+    #[test]
+    fn faithfulness_grounded_in_token_superset(
+        words in prop::collection::vec("[a-z]{2,8}", 1..6),
+        extra in prop::collection::vec("[a-z]{2,8}", 0..6),
+    ) {
+        let claim = words.join(" ");
+        let mut all = words;
+        all.extend(extra);
+        let source = all.join(" ");
+        let f = assess_faithfulness(&claim, &source, DEFAULT_GROUNDING_THRESHOLD_PPM);
+        prop_assert_eq!(f.recall_ppm, 1_000_000);
+        prop_assert!(f.grounded);
     }
 }

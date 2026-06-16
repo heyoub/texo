@@ -1338,4 +1338,42 @@ mod tests {
         eprintln!("verdict -> {:?} ({:.4})", verdict.label, verdict.score);
         assert_eq!(verdict.label, Entailment::Contradiction);
     }
+
+    /// PROVES: the three chat-completions response parsers are TOTAL functions on
+    /// arbitrary model output — they return `Ok` or a typed `Err`, never panic —
+    /// and when `Ok`, scores are clamped to `[0,1]` and confidence to `0..=1e6`.
+    /// The cargo-fuzz substitute for the judge/proposer parsers.
+    mod robustness {
+        use super::super::{parse_nli_response, parse_propose_response, parse_relation_response};
+        use super::chat_envelope;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            #[test]
+            fn nli_parser_is_total(content in any::<String>()) {
+                if let Ok(v) = parse_nli_response(&chat_envelope(&content)) {
+                    prop_assert!((0.0..=1.0).contains(&v.score));
+                }
+            }
+
+            #[test]
+            fn relation_parser_is_total(content in any::<String>()) {
+                if let Ok(v) = parse_relation_response(&chat_envelope(&content)) {
+                    prop_assert!((0.0..=1.0).contains(&v.score));
+                }
+            }
+
+            #[test]
+            fn propose_parser_is_total(content in any::<String>()) {
+                if let Ok(claims) = parse_propose_response(&chat_envelope(&content)) {
+                    for c in claims {
+                        prop_assert!(c.confidence_ppm <= 1_000_000);
+                        prop_assert!(!c.text.trim().is_empty());
+                    }
+                }
+            }
+        }
+    }
 }

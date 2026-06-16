@@ -201,3 +201,48 @@ proptest! {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Parser 4: AST segmentation (source/markdown.rs segment_candidates). Arbitrary
+// input must never panic, and every emitted span's byte offsets must slice the
+// source back to the span text. The em-dash char-boundary panic (a `str` slice
+// at a non-char-boundary in line_of_offset) lived exactly in this surface.
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(config())]
+
+    #[test]
+    fn segment_candidates_is_total_and_offsets_slice_back(text in any::<String>()) {
+        // Must not panic on any valid utf-8, including multi-byte chars.
+        let spans = texo_core::segment_candidates(&text);
+        let physical = u32::try_from(text.lines().count()).unwrap_or(u32::MAX);
+        for span in &spans {
+            // Byte offsets are in range and ordered.
+            prop_assert!(span.char_start <= span.char_end);
+            prop_assert!(span.char_end <= text.len());
+            // The offsets must slice the source back to the span text exactly.
+            // (This also asserts both offsets are char boundaries — a non-boundary
+            // would panic here, which is the regression we are guarding.)
+            prop_assert_eq!(&text[span.char_start..span.char_end], span.text.as_str());
+            // Lines are 1-based and ordered, within the physical line count.
+            prop_assert!(span.line_start >= 1);
+            prop_assert!(span.line_start <= span.line_end);
+            prop_assert!(span.line_end <= physical.max(1));
+            // push_span never emits an empty span.
+            prop_assert!(!span.text.is_empty());
+        }
+    }
+
+    // Strings biased toward markdown punctuation + multi-byte chars, to hammer the
+    // heading/code/offset state machine on adversarial-but-decodable content.
+    #[test]
+    fn segment_candidates_handles_markdownish_and_multibyte(
+        text in r"[#`*\-_>|\n —“”é\[\]() a-z]{0,400}"
+    ) {
+        let spans = texo_core::segment_candidates(&text);
+        for span in &spans {
+            prop_assert_eq!(&text[span.char_start..span.char_end], span.text.as_str());
+        }
+    }
+}
