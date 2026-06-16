@@ -98,6 +98,11 @@ pub struct RelationVerdict {
 pub trait ClaimRelater {
     /// Judge how the more-recent `newer` claim relates to the older `older` claim.
     fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError>;
+
+    /// A stable identity for this relater's *output contract* — typically the
+    /// model id plus a prompt version. A record-once cache mixes this into its key
+    /// so changing the model or prompt invalidates stale cached verdicts.
+    fn fingerprint(&self) -> String;
 }
 
 /// One atomic claim proposed by a Stage-1 extractor, before grounding/journaling.
@@ -321,6 +326,9 @@ mod tests {
                 relation,
                 score: 1.0,
             })
+        }
+        fn fingerprint(&self) -> String {
+            "stub".to_owned()
         }
     }
 

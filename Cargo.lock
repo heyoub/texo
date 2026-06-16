@@ -3380,6 +3380,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "texo-core",
+ "texo-extract",
  "texo-mcp",
  "texo-semantics",
  "tokio",

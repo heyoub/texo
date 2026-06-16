@@ -17,6 +17,7 @@ use texo_core::{
     open_journal_with, relate_claims, ClaimConflictDetected, ClaimId, ClaimStatus, ClaimSuperseded,
     ClaimView,
 };
+use texo_extract::CachingRelater;
 use texo_semantics::{OpenRouterEmbedder, OpenRouterRelater};
 
 use crate::observed_at_ms;
@@ -25,6 +26,11 @@ use crate::observed_at_ms;
 /// similarity (the relater does the real separation), so it is intentionally
 /// lower than the grouping `cosine_threshold` in `[semantics]`.
 const PREFILTER: f32 = 0.60;
+
+/// Environment variable selecting the record-once relate cache directory.
+const ENV_RELATE_CACHE: &str = "TEXO_RELATE_CACHE";
+/// Default relate cache directory, relative to the workspace root.
+const DEFAULT_RELATE_CACHE: &str = ".texo/relate-cache";
 
 pub fn run(root: &Path, workspace: Option<&str>, json: bool) -> Result<()> {
     let journal = open_journal_with(root, workspace)?;
@@ -48,7 +54,14 @@ pub fn run(root: &Path, workspace: Option<&str>, json: bool) -> Result<()> {
     });
 
     let embedder = OpenRouterEmbedder::new(None).context("building OpenRouter embedder")?;
-    let relater = OpenRouterRelater::new(None).context("building OpenRouter relater")?;
+    // Cache the relater (the O(n^2) judging step) so a re-run after a transient
+    // failure resumes from already-judged pairs instead of repeating the pass.
+    let cache_dir = std::env::var_os(ENV_RELATE_CACHE)
+        .map_or_else(|| root.join(DEFAULT_RELATE_CACHE), std::path::PathBuf::from);
+    let relater = CachingRelater::new(
+        OpenRouterRelater::new(None).context("building OpenRouter relater")?,
+        cache_dir,
+    );
     let out = relate_claims(&claims, &embedder, &relater, PREFILTER).context("relating claims")?;
 
     let now = observed_at_ms();

@@ -13,14 +13,28 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use texo_core::types::ids::blake3_hash_hex;
-use texo_core::{ProposedClaim, Proposer, SemanticsError};
+use texo_core::{ClaimRelater, ProposedClaim, Proposer, RelationVerdict, SemanticsError};
 
 /// Field separator (ASCII Unit Separator) mixed into the cache key material so
 /// distinct fields can never collide by concatenation.
 const SEP: char = '\u{1f}';
 /// Separator between heading-path frames.
 const HEADING_SEP: char = '\u{1e}';
+
+/// Write `value` as JSON to `path` atomically (temp file + rename) so a
+/// concurrent or interrupted run never observes a half-written cache entry.
+fn write_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec(value).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
 
 /// Wraps any [`Proposer`] with an on-disk, content-addressed record-once cache.
 pub struct CachingProposer<P: Proposer> {
@@ -49,19 +63,6 @@ impl<P: Proposer> CachingProposer<P> {
     fn path_for(&self, key: &str) -> PathBuf {
         self.dir.join(format!("{key}.json"))
     }
-
-    /// Write proposals to `path` atomically (temp file + rename) so a concurrent
-    /// or interrupted run never observes a half-written entry.
-    fn write_entry(path: &Path, claims: &[ProposedClaim]) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec(claims).map_err(std::io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &bytes)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
 }
 
 impl<P: Proposer> Proposer for CachingProposer<P> {
@@ -84,7 +85,7 @@ impl<P: Proposer> Proposer for CachingProposer<P> {
 
         // Best-effort persist: a cache-write failure must not fail an otherwise
         // valid extraction, but it is surfaced (not silently swallowed).
-        if let Err(err) = Self::write_entry(&path, &claims) {
+        if let Err(err) = write_atomic(&path, &claims) {
             eprintln!(
                 "texo-extract: cache write skipped ({}): {err}",
                 path.display()
@@ -98,10 +99,64 @@ impl<P: Proposer> Proposer for CachingProposer<P> {
     }
 }
 
+/// Wraps any [`ClaimRelater`] with an on-disk, content-addressed record-once
+/// cache. This makes a long O(n^2) relate pass **resumable**: a re-run (e.g. after
+/// a transient failure) returns already-judged pairs instantly and only calls the
+/// model for the rest.
+pub struct CachingRelater<R: ClaimRelater> {
+    inner: R,
+    dir: PathBuf,
+}
+
+impl<R: ClaimRelater> CachingRelater<R> {
+    /// Wrap `inner`, storing cache entries as JSON files under `dir`.
+    pub fn new(inner: R, dir: PathBuf) -> Self {
+        Self { inner, dir }
+    }
+
+    /// Content-addressed key for an ordered `(older, newer)` pair under the inner
+    /// relater's fingerprint.
+    fn key(&self, older: &str, newer: &str) -> String {
+        let material = format!("{}{SEP}{older}{SEP}{newer}", self.inner.fingerprint());
+        blake3_hash_hex(&material)
+    }
+
+    /// Filesystem path for a cache key.
+    fn path_for(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("{key}.json"))
+    }
+}
+
+impl<R: ClaimRelater> ClaimRelater for CachingRelater<R> {
+    fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+        let path = self.path_for(&self.key(older, newer));
+
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(verdict) = serde_json::from_slice::<RelationVerdict>(&bytes) {
+                return Ok(verdict);
+            }
+        }
+
+        let verdict = self.inner.relate(older, newer)?;
+        if let Err(err) = write_atomic(&path, &verdict) {
+            eprintln!(
+                "texo-extract: relate cache write skipped ({}): {err}",
+                path.display()
+            );
+        }
+        Ok(verdict)
+    }
+
+    fn fingerprint(&self) -> String {
+        self.inner.fingerprint()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use texo_core::ClaimRelation;
 
     /// Proposer stub that counts calls (to prove cache hits skip the inner call).
     struct CountingProposer {
@@ -190,6 +245,53 @@ mod tests {
         let other = CachingProposer::new(CountingProposer::new("fp-2"), dir.clone());
         other.propose("span one", &[]).expect("d");
         assert_eq!(other.inner.calls.get(), 1, "new fingerprint -> cache miss");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Relater stub that counts calls, to prove relate cache hits skip the model.
+    struct CountingRelater {
+        calls: Cell<usize>,
+        relation: ClaimRelation,
+        fingerprint: String,
+    }
+
+    impl ClaimRelater for CountingRelater {
+        fn relate(&self, _older: &str, _newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(RelationVerdict {
+                relation: self.relation,
+                score: 1.0,
+            })
+        }
+        fn fingerprint(&self) -> String {
+            self.fingerprint.clone()
+        }
+    }
+
+    #[test]
+    fn relate_cache_hit_skips_inner_and_resumes() {
+        let dir = tmp_dir().join("relate");
+        let _ = std::fs::remove_dir_all(&dir);
+        let relater = CachingRelater::new(
+            CountingRelater {
+                calls: Cell::new(0),
+                relation: ClaimRelation::Supersedes,
+                fingerprint: "fp-1".to_owned(),
+            },
+            dir.clone(),
+        );
+
+        let a = relater.relate("Friday", "Tuesday").expect("a");
+        let b = relater.relate("Friday", "Tuesday").expect("b"); // cached
+        relater.relate("Monday", "Friday").expect("c"); // distinct pair -> miss
+
+        assert_eq!(a.relation, ClaimRelation::Supersedes);
+        assert_eq!(a, b, "cached verdict matches the live one");
+        assert_eq!(
+            relater.inner.calls.get(),
+            2,
+            "the repeated pair is served from cache; only 2 distinct pairs judged"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

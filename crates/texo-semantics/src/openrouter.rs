@@ -52,9 +52,14 @@ const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
 const PROPOSE_PROMPT_VERSION: u32 = 1;
+/// Version tag for the claim-relation prompt/output contract. Bump whenever
+/// `RELATION_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
+/// invalidates verdicts produced by an older prompt.
+const RELATION_PROMPT_VERSION: u32 = 1;
 
-/// Per-request timeout.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-request timeout. Generous because a reasoning judge model can spend many
+/// seconds on a hard pair before emitting its verdict.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Number of retry attempts on retryable (429 / 5xx) statuses, in addition to
 /// the initial attempt.
 const MAX_RETRIES: u32 = 4;
@@ -91,6 +96,12 @@ fn retry_delay(attempt: u32, retry_after_secs: Option<u64>) -> Duration {
         RETRY_BACKOFF.saturating_mul(1u32.checked_shl(shift).unwrap_or(u32::MAX))
     };
     base.min(MAX_BACKOFF)
+}
+
+/// Whether a transport error is transient and worth retrying — a timeout or a
+/// connection failure. Other transport errors (e.g. a malformed URL) are not.
+fn is_transient(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect()
 }
 
 /// Parse a `Retry-After` header expressed as delta-seconds. The HTTP-date form
@@ -146,28 +157,44 @@ impl OpenRouterClient {
     /// POST `body` as JSON to `endpoint` (a path like `/embeddings`) and return
     /// the parsed JSON response.
     ///
-    /// Retries on HTTP 429 and 5xx up to [`MAX_RETRIES`] times, honoring a
-    /// `Retry-After` header when present and otherwise using capped exponential
-    /// backoff (see [`retry_delay`]); transport errors are returned immediately.
-    /// Non-retryable non-success statuses become [`BackendError::HttpStatus`].
+    /// Retries up to [`MAX_RETRIES`] times — on HTTP 429/5xx (honoring a
+    /// `Retry-After` header) and on **transient transport errors** (timeouts and
+    /// connection failures, see [`is_transient`]) — using capped exponential
+    /// backoff (see [`retry_delay`]). A long O(n^2) judging pass makes hundreds of
+    /// calls, so one transient blip must not abort it. Non-transient transport
+    /// errors and non-retryable statuses surface immediately.
     fn post_json(&self, endpoint: &'static str, body: &Value) -> Result<Value, BackendError> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), endpoint);
 
         let mut attempt = 0;
         loop {
-            let response = self
+            let response = match self
                 .http
                 .post(&url)
                 .bearer_auth(&self.api_key)
                 .json(body)
                 .send()
-                .map_err(|source| BackendError::Http { endpoint, source })?;
+            {
+                Ok(response) => response,
+                Err(source) if is_transient(&source) && attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    std::thread::sleep(retry_delay(attempt, None));
+                    continue;
+                }
+                Err(source) => return Err(BackendError::Http { endpoint, source }),
+            };
 
             let status = response.status();
             if status.is_success() {
-                let text = response
-                    .text()
-                    .map_err(|source| BackendError::Http { endpoint, source })?;
+                let text = match response.text() {
+                    Ok(text) => text,
+                    Err(source) if is_transient(&source) && attempt < MAX_RETRIES => {
+                        attempt += 1;
+                        std::thread::sleep(retry_delay(attempt, None));
+                        continue;
+                    }
+                    Err(source) => return Err(BackendError::Http { endpoint, source }),
+                };
                 return serde_json::from_str(&text)
                     .map_err(|source| BackendError::Parse { endpoint, source });
             }
@@ -739,6 +766,13 @@ impl ClaimRelater for OpenRouterRelater {
         let value = self.client.post_json("/chat/completions", &body)?;
         let verdict = parse_relation_response(&value)?;
         Ok(verdict)
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "openrouter:{}|relation-v{RELATION_PROMPT_VERSION}",
+            self.model
+        )
     }
 }
 

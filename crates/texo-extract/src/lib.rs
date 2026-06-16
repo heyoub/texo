@@ -13,7 +13,7 @@
 
 pub mod cache;
 
-pub use cache::CachingProposer;
+pub use cache::{CachingProposer, CachingRelater};
 
 use serde::Serialize;
 use texo_core::{

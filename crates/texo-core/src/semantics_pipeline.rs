@@ -355,6 +355,9 @@ mod tests {
                 score: 1.0,
             })
         }
+        fn fingerprint(&self) -> String {
+            "scripted".to_owned()
+        }
     }
 
     fn claim(id: &str, subject: &str, text: &str, sequence: u64) -> (ClaimId, ClaimView) {
@@ -629,6 +632,9 @@ mod tests {
                 _newer: &str,
             ) -> Result<RelationVerdict, SemanticsError> {
                 panic!("relater must not be called for sub-threshold pairs");
+            }
+            fn fingerprint(&self) -> String {
+                "never".to_owned()
             }
         }
         let claims = vec![
