@@ -36,15 +36,27 @@ pub fn render_onboarding(context: &AgentContext) -> String {
         }
     }
 
+    if !context.conflicts.is_empty() {
+        out.push_str("\n## Conflicts (unresolved — both claimed, neither wins)\n\n");
+        for conflict in &context.conflicts {
+            out.push_str(&format!(
+                "- \"{}\" ({}) vs \"{}\" ({})\n",
+                conflict.claim_a_text, conflict.claim_a, conflict.claim_b_text, conflict.claim_b
+            ));
+        }
+    }
+
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::context::{AgentClaim, AgentReceipt, AgentSource, AgentStaleClaim};
+    use crate::agent::context::{
+        AgentClaim, AgentConflict, AgentReceipt, AgentSource, AgentStaleClaim,
+    };
     use crate::agent::freshness::FreshnessView;
-    use crate::types::ids::{ClaimId, WorkspaceId};
+    use crate::types::ids::{ClaimId, ConflictId, WorkspaceId};
     use crate::types::status::ClaimStatus;
 
     fn agent_claim(id: &str) -> AgentClaim {
@@ -81,6 +93,7 @@ mod tests {
                 text: "Deploys happen on Monday.".to_string(),
                 superseded_by: ClaimId::try_from("claim_aaaaaaaaaaaa").expect("id"),
             }],
+            conflicts: Vec::new(),
         };
         let md = render_onboarding(&context);
         assert!(md.contains("sequence 7"), "must report the frontier: {md}");
@@ -101,9 +114,41 @@ mod tests {
             freshness: FreshnessView::batpak_local(1),
             claims: vec![agent_claim("claim_aaaaaaaaaaaa")],
             stale_claims: Vec::new(),
+            conflicts: Vec::new(),
         };
         let md = render_onboarding(&context);
         // With no stale claims the stale section is absent entirely.
         assert!(!md.contains("Stale claims"));
+        // No conflicts -> no conflicts section either.
+        assert!(!md.contains("## Conflicts"));
+    }
+
+    #[test]
+    fn renders_conflict_section_with_both_sides() {
+        // A populated conflicts list must surface a Conflicts section naming both
+        // claims — a conflicting claim is neither Current nor Stale, so without
+        // this it would vanish from the projection.
+        let context = AgentContext {
+            workspace_id: WorkspaceId::new("demo").expect("ws"),
+            replayed_through_sequence: 9,
+            freshness: FreshnessView::batpak_local(9),
+            claims: vec![agent_claim("claim_aaaaaaaaaaaa")],
+            stale_claims: Vec::new(),
+            conflicts: vec![AgentConflict {
+                conflict_id: ConflictId::try_from("conflict_4b6e33f212ec").expect("cid"),
+                claim_a: ClaimId::try_from("claim_bbbbbbbbbbbb").expect("id"),
+                claim_a_text: "Releases happen on Monday.".to_string(),
+                claim_b: ClaimId::try_from("claim_cccccccccccc").expect("id"),
+                claim_b_text: "Releases go out on Friday.".to_string(),
+                reason: "contradictory current claims".to_string(),
+            }],
+        };
+        let md = render_onboarding(&context);
+        assert!(
+            md.contains("## Conflicts (unresolved"),
+            "conflict section present"
+        );
+        assert!(md.contains("Releases happen on Monday."));
+        assert!(md.contains("Releases go out on Friday."));
     }
 }
