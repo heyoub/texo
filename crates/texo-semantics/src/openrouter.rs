@@ -20,8 +20,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use texo_core::{
-    ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict, RelationVerdict, Reranker,
-    SemanticsError,
+    ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict, ProposedClaim, Proposer,
+    RelationVerdict, Reranker, SemanticsError,
 };
 
 use crate::error::BackendError;
@@ -67,6 +67,10 @@ const MAX_ERROR_BODY: usize = 2048;
 /// JSON answer; without ample headroom a long trace truncates the answer to empty
 /// content. Sized well above observed reasoning lengths so the verdict always fits.
 const MAX_COMPLETION_TOKENS: u32 = 1024;
+/// Completion-token ceiling for the Stage-1 proposer. A single span can yield
+/// several atomic claims plus a reasoning trace, so it needs more room than the
+/// single-verdict judges.
+const MAX_PROPOSE_TOKENS: u32 = 2048;
 
 /// How long to wait before the next retry. A server-supplied `Retry-After`
 /// (delta-seconds) wins when present; otherwise the wait is capped exponential
@@ -719,6 +723,141 @@ impl ClaimRelater for OpenRouterRelater {
     }
 }
 
+// =====================================================================
+// Claim proposal (Stage 1 extraction over chat/completions)
+// =====================================================================
+
+/// System prompt for the Stage-1 proposer. It must extract *atomic* claims and
+/// copy values verbatim — the deterministic faithfulness gate downstream rejects
+/// anything ungrounded, so faithfulness here is cheaper than a later rejection.
+const PROPOSE_SYSTEM_PROMPT: &str = "You extract atomic factual claims from one \
+span of a team's engineering documentation. An atomic claim states ONE fact: a \
+single subject, a single predicate, and a single value. Rules: copy entities, \
+names, numbers, dates, and values EXACTLY as they appear in the span — never \
+infer, generalize, or add anything not present. Preserve update wording such as \
+\"now\", \"moved to\", or \"no longer\" when the span uses it. Skip questions, \
+opinions, tasks, greetings, and meta-commentary. If the span states no factual \
+claim, return an empty list. For each claim provide: text (one faithful \
+declarative sentence), subject, predicate, object, and confidence (an integer \
+from 0 to 100). Respond with ONLY a JSON object of the form {\"claims\": \
+[{\"text\": ..., \"subject\": ..., \"predicate\": ..., \"object\": ..., \
+\"confidence\": ...}]}. No prose, no markdown, no code fences.";
+
+/// Default Stage-1 extractor model. A capable instruction-follower for prod;
+/// override with `OPENROUTER_EXTRACTOR_MODEL` (e.g. a free model for testing).
+/// Note the OpenRouter slug uses a dotted version (`4.8`), unlike the Anthropic
+/// API's dashed model id (`claude-opus-4-8`).
+const DEFAULT_EXTRACTOR_MODEL: &str = "anthropic/claude-opus-4.8";
+/// Environment variable overriding the extractor model.
+const ENV_EXTRACTOR_MODEL: &str = "OPENROUTER_EXTRACTOR_MODEL";
+
+/// Hosted Stage-1 claim proposer over OpenRouter chat completions. Implements
+/// [`texo_core::Proposer`].
+pub struct OpenRouterProposer {
+    client: OpenRouterClient,
+    model: String,
+}
+
+impl OpenRouterProposer {
+    /// Build a proposer. The model id is resolved from `model` (if `Some` and
+    /// non-empty), then `OPENROUTER_EXTRACTOR_MODEL`, then the default
+    /// ([`DEFAULT_EXTRACTOR_MODEL`]). Reads the API key and base URL from the
+    /// environment.
+    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
+        let client = OpenRouterClient::from_env()?;
+        let model = resolve_model(model, Some(ENV_EXTRACTOR_MODEL), DEFAULT_EXTRACTOR_MODEL);
+        Ok(Self { client, model })
+    }
+}
+
+impl Proposer for OpenRouterProposer {
+    fn propose(
+        &self,
+        span_text: &str,
+        heading_path: &[String],
+    ) -> Result<Vec<ProposedClaim>, SemanticsError> {
+        let body = build_propose_request(&self.model, span_text, heading_path);
+        let value = self.client.post_json("/chat/completions", &body)?;
+        let claims = parse_propose_response(&value)?;
+        Ok(claims)
+    }
+}
+
+/// The raw JSON shape of one proposed claim as returned by the model.
+#[derive(Debug, Deserialize)]
+struct ProposedClaimJson {
+    text: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    predicate: String,
+    #[serde(default)]
+    object: String,
+    /// Model confidence as an integer 0..=100 (rescaled to ppm on parse). Integer
+    /// keeps the whole path free of float→int casts (pedantic-clean) and `Eq`.
+    confidence: i64,
+}
+
+/// The proposer reply envelope.
+#[derive(Debug, Deserialize)]
+struct ProposeReply {
+    claims: Vec<ProposedClaimJson>,
+}
+
+/// Build the chat-completions request body for a Stage-1 proposal over one span.
+fn build_propose_request(model: &str, span_text: &str, heading_path: &[String]) -> Value {
+    let context = if heading_path.is_empty() {
+        String::new()
+    } else {
+        format!("Section: {}\n", heading_path.join(" > "))
+    };
+    let user = format!("{context}Span:\n{span_text}");
+    // No `response_format`: strict constrained decoding on Anthropic-via-OpenRouter
+    // can degenerate into repetition loops on the variable-length claim array.
+    // Anthropic emits clean JSON from the prompt alone, parsed defensively below.
+    json!({
+        "model": model,
+        "temperature": 0,
+        "max_tokens": MAX_PROPOSE_TOKENS,
+        "messages": [
+            { "role": "system", "content": PROPOSE_SYSTEM_PROMPT },
+            { "role": "user", "content": user }
+        ]
+    })
+}
+
+/// Parse a chat-completions response into proposed claims, defensively. Claims
+/// whose `text` is blank are dropped; confidence is clamped to `[0, 1]` and
+/// rescaled to parts-per-million.
+fn parse_propose_response(value: &Value) -> Result<Vec<ProposedClaim>, BackendError> {
+    let endpoint = "/chat/completions";
+    let content = extract_chat_content(value)?;
+    let object = extract_json_object(&content).ok_or_else(|| BackendError::UnexpectedResponse {
+        endpoint,
+        detail: format!("proposer reply contained no JSON object: {content:?}"),
+    })?;
+    let reply: ProposeReply =
+        serde_json::from_str(object).map_err(|source| BackendError::Parse { endpoint, source })?;
+
+    let mut claims = Vec::with_capacity(reply.claims.len());
+    for raw in reply.claims {
+        if raw.text.trim().is_empty() {
+            continue;
+        }
+        // Integer percent -> ppm; clamp keeps an out-of-range model value in bounds.
+        let pct = u32::try_from(raw.confidence.clamp(0, 100)).unwrap_or(0);
+        let confidence_ppm = pct * 10_000;
+        claims.push(ProposedClaim {
+            text: raw.text.trim().to_owned(),
+            subject: raw.subject.trim().to_owned(),
+            predicate: raw.predicate.trim().to_owned(),
+            object: raw.object.trim().to_owned(),
+            confidence_ppm,
+        });
+    }
+    Ok(claims)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,6 +1138,76 @@ mod tests {
     fn relation_response_missing_score_is_parse_error() {
         let value = chat_envelope("{\"relation\": \"unrelated\"}");
         let err = parse_relation_response(&value).expect_err("missing score");
+        assert!(matches!(err, BackendError::Parse { .. }));
+    }
+
+    // --- proposer parsing ---
+
+    #[test]
+    fn propose_request_includes_heading_context_and_schema() {
+        let body = build_propose_request(
+            "anthropic/claude-opus-4.8",
+            "Deploys moved to Tuesday.",
+            &["Operations".to_owned(), "Deploys".to_owned()],
+        );
+        assert_eq!(body["max_tokens"], 2048);
+        let user = body["messages"][1]["content"].as_str().expect("user");
+        assert!(user.contains("Operations > Deploys"), "heading path joined");
+        assert!(user.contains("Deploys moved to Tuesday."));
+    }
+
+    #[test]
+    fn propose_request_without_headings_has_no_section_line() {
+        let body = build_propose_request("m", "Some span.", &[]);
+        let user = body["messages"][1]["content"].as_str().expect("user");
+        assert!(!user.contains("Section:"));
+        assert!(user.starts_with("Span:"));
+    }
+
+    #[test]
+    fn propose_response_parses_claims_and_rescales_confidence() {
+        let value = chat_envelope(
+            "{\"claims\":[{\"text\":\"Deploys moved to Tuesday.\",\"subject\":\"deploys\",\"predicate\":\"scheduled\",\"object\":\"Tuesday\",\"confidence\":90}]}",
+        );
+        let claims = parse_propose_response(&value).expect("parse");
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].text, "Deploys moved to Tuesday.");
+        assert_eq!(claims[0].subject, "deploys");
+        assert_eq!(claims[0].confidence_ppm, 900_000);
+    }
+
+    #[test]
+    fn propose_response_drops_blank_text_and_clamps_confidence() {
+        let value = chat_envelope(
+            "{\"claims\":[{\"text\":\"   \",\"subject\":\"\",\"predicate\":\"\",\"object\":\"\",\"confidence\":50},{\"text\":\"Real claim.\",\"subject\":\"x\",\"predicate\":\"y\",\"object\":\"z\",\"confidence\":170}]}",
+        );
+        let claims = parse_propose_response(&value).expect("parse");
+        assert_eq!(claims.len(), 1, "blank-text claim dropped");
+        assert_eq!(claims[0].text, "Real claim.");
+        assert_eq!(claims[0].confidence_ppm, 1_000_000, "over-100 confidence clamped");
+    }
+
+    #[test]
+    fn propose_response_empty_list_is_ok() {
+        let value = chat_envelope("{\"claims\":[]}");
+        let claims = parse_propose_response(&value).expect("parse");
+        assert!(claims.is_empty());
+    }
+
+    #[test]
+    fn propose_response_tolerates_fences() {
+        let value = chat_envelope(
+            "```json\n{\"claims\":[{\"text\":\"A.\",\"subject\":\"a\",\"predicate\":\"b\",\"object\":\"c\",\"confidence\":40}]}\n```",
+        );
+        let claims = parse_propose_response(&value).expect("parse");
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].confidence_ppm, 400_000);
+    }
+
+    #[test]
+    fn propose_response_missing_claims_key_is_parse_error() {
+        let value = chat_envelope("{\"items\":[]}");
+        let err = parse_propose_response(&value).expect_err("missing claims");
         assert!(matches!(err, BackendError::Parse { .. }));
     }
 

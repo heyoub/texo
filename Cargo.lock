@@ -3405,6 +3405,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "texo-extract"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "serde",
+ "serde_json",
+ "texo-core",
+ "texo-semantics",
+ "thiserror",
+]
+
+[[package]]
 name = "texo-mcp"
 version = "0.1.0"
 dependencies = [

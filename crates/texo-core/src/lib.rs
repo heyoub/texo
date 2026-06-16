@@ -36,8 +36,9 @@ pub use events::{
     TexoEvent,
 };
 pub use extract::{
-    assess_faithfulness, extract_claims, extract_via_cmd, ExtractClaimsFn, ExtractError,
-    ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM, EXTRACTOR_KIND_HEURISTIC_V1,
+    assess_faithfulness, extract_claims, extract_via_cmd, normalize_line, ExtractClaimsFn,
+    ExtractError, ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM,
+    EXTRACTOR_KIND_HEURISTIC_V1,
 };
 pub use fixture::{
     DEFAULT_CONFIG_DIR, DEFAULT_STORE_PATH, DEFAULT_WORKSPACE_ID, FIXTURE_OBSERVED_AT_MS,
@@ -47,12 +48,14 @@ pub use render::{compile_artifacts, render_onboarding, CompileOutput};
 pub use replay::{ClaimState, ClaimView, ReplayError, ReplayedState};
 pub use semantics::{
     cosine_similarity, ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict,
-    RelationVerdict, Reranker, SemanticsError,
+    ProposedClaim, Proposer, RelationVerdict, Reranker, SemanticsError,
 };
 pub use semantics_pipeline::{
     group_claims, relate_claims, PipelineError, RelatedClaims, SupersessionEdge,
 };
-pub use source::{collect_markdown_files, MarkdownDocument, SourceError};
+pub use source::{
+    collect_markdown_files, segment_candidates, CandidateSpan, MarkdownDocument, SourceError,
+};
 pub use stale::{check_staleness, StalenessReport};
 pub use state::{
     Closed, IngestCommitted, IngestMode, IngestPlan, IngestReport, Journal, Open, TransitionError,

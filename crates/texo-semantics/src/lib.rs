@@ -36,7 +36,9 @@ pub use embedder::LocalEmbedder;
 pub use nli::LocalNli;
 
 #[cfg(feature = "openrouter")]
-pub use openrouter::{OpenRouterEmbedder, OpenRouterNli, OpenRouterRelater, OpenRouterReranker};
+pub use openrouter::{
+    OpenRouterEmbedder, OpenRouterNli, OpenRouterProposer, OpenRouterRelater, OpenRouterReranker,
+};
 
 #[cfg(all(test, feature = "local-onnx"))]
 mod local_smoke {

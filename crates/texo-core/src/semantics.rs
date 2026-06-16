@@ -100,6 +100,40 @@ pub trait ClaimRelater {
     fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError>;
 }
 
+/// One atomic claim proposed by a Stage-1 extractor, before grounding/journaling.
+///
+/// Plain data so it can cross the trait boundary without pulling in any model or
+/// HTTP dependency; `confidence_ppm` is integer parts-per-million (matching
+/// `confidence_ppm` elsewhere in texo), keeping the type `Eq` and float-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedClaim {
+    /// Faithful single-sentence statement of the claim.
+    pub text: String,
+    /// Subject of the claim.
+    pub subject: String,
+    /// Predicate of the claim.
+    pub predicate: String,
+    /// Object/value of the claim.
+    pub object: String,
+    /// Confidence in parts-per-million (`0..=1_000_000`).
+    pub confidence_ppm: u32,
+}
+
+/// Proposes atomic claims from one prose span (Stage 1 of the pipeline).
+///
+/// The implementor (an LLM-backed extractor) sees the span text and its heading
+/// context and returns zero or more [`ProposedClaim`]s. It is a trait so the
+/// orchestration that segments, proposes, and grounds can be tested with a
+/// deterministic stub — no model, no network.
+pub trait Proposer {
+    /// Propose atomic claims for `span_text`, given its `heading_path` context.
+    fn propose(
+        &self,
+        span_text: &str,
+        heading_path: &[String],
+    ) -> Result<Vec<ProposedClaim>, SemanticsError>;
+}
+
 /// Scores candidate documents against a query for relevance reranking.
 pub trait Reranker {
     /// Return one relevance score per entry in `docs`, in the same order.

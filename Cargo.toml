@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/texo-core", "crates/texo-cli", "crates/texo-mcp", "crates/texo-semantics"]
+members = [
+    "crates/texo-core",
+    "crates/texo-cli",
+    "crates/texo-extract",
+    "crates/texo-mcp",
+    "crates/texo-semantics",
+]
 default-members = ["crates/texo-cli"]
 
 [workspace.package]
