@@ -59,8 +59,13 @@ demo-helios:
     cargo build -q -p texo-extract -p texo-cli
     EXTRACT="$(pwd)/target/debug/texo-extract"
     TEXO="./target/debug/texo"
-    # Fresh helios workspace wired to the semantic pipeline (LLM extractor + relate).
-    rm -rf .texo public/helios
+    # Record-once caches live OUTSIDE the wiped journal, so a re-run replays the
+    # captured model output instantly and deterministically (first run fills them).
+    export TEXO_EXTRACT_CACHE="$(pwd)/.texo/cache/extract"
+    export TEXO_RELATE_CACHE="$(pwd)/.texo/cache/relate"
+    mkdir -p "$TEXO_EXTRACT_CACHE" "$TEXO_RELATE_CACHE"
+    # Fresh journal each run; the caches above are preserved.
+    rm -rf .texo/helios-store .texo/config.toml public/helios
     mkdir -p .texo/helios-store public/helios
     cat > .texo/config.toml <<TOML
     default_workspace = "helios"
@@ -75,16 +80,15 @@ demo-helios:
     TOML
     echo "==> ingest (LLM extraction via texo-extract; first run hits OpenRouter, then cached)"
     "$TEXO" ingest examples/helios/docs
-    echo "==> relate (semantic supersession + conflict pass)"
+    echo "==> relate (semantic supersession + conflict pass; cached + resumable)"
     "$TEXO" relate
-    echo "==> compile onboarding"
+    echo "==> compile onboarding -> public/helios/onboarding.generated.md"
     "$TEXO" compile --out public/helios
     echo
     echo "===================== CURRENT CLAIMS (what new hires/agents see) ====================="
     "$TEXO" claims
     echo
-    echo "===================== CONFLICTS (genuine disagreements surfaced) ======================"
-    "$TEXO" conflicts
+    echo "Stale + conflicts are in the trophy:  public/helios/onboarding.generated.md"
 
 ext-package:
     #!/usr/bin/env bash

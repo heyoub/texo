@@ -36,6 +36,39 @@ just demo-fresh
 
 Multi-workspace scopes live in `.texo/config.toml` under `[workspaces.<id>]`. Use `--workspace staging` on any CLI command.
 
+## Demo: the messy Helios corpus (1/5 → 5/5)
+
+The honest test isn't a happy-path doc — it's seven contradictory, half-rotted markdown files where the *truth has moved* and a later **noise** line buries the real decision. `examples/helios/docs/` is exactly that: the deploy day changes Friday → Wednesday → Tuesday across three docs, release approval moves Alice → Bob in a raw meeting dump, storage flips Postgres → BatPak, and a rogue partner runbook contradicts the release schedule.
+
+Dropped on that corpus, the dumb v0 heuristic **inverts the truth** (it scored 1/5 — a noise line supersedes the real decision). The semantic pipeline turns it into the correct current context:
+
+```sh
+OPENROUTER_API_KEY=sk-or-... just demo-helios
+```
+
+That runs the real pipeline end to end — AST segmentation → LLM extraction (`texo-extract`) → faithfulness gate → embed + LLM relation-judge (`texo relate`) → journal → compile — and prints the current claims + conflicts. The generated onboarding ([`examples/helios/onboarding.generated.md`](examples/helios/onboarding.generated.md)) is the trophy:
+
+```
+## Current claims
+  - Deploys moved to Tuesday.                 (04_release_runbook.md:8)
+  - Bob owns release approval now.            (05_meeting_dump.md:11)
+  - Postgres stays as the relational metadata store for tenant config.
+  - The event table was replaced with BatPak's content-addressed log.
+
+## Stale claims (do not trust)
+  - "Deploys happen on Friday."     superseded …      (→ the Tuesday chain)
+  - "Deploys moved to Wednesday."   superseded by …   (Tuesday)
+  - "Alice owns release approval."  superseded by …   (Bob)
+  - "The platform uses Postgres for storage."  superseded …  (BatPak/ADR-019)
+
+## Conflicts (unresolved — both claimed, neither wins)
+  - "Releases happen on Monday." vs "Releases go out on Friday."
+```
+
+Every claim carries a receipt and a source line; "stale" and "conflict" are computed from the journal, not guessed. The model runs **once** at ingest (record-once boundary) and its outputs are cached content-addressed, so replay/compile are deterministic and re-runs are instant. Design rationale + the measured findings that shaped it are in [ADR-001](ADR-001-semantic-pipeline.md).
+
+> Needs an `OPENROUTER_API_KEY`. The first run calls the models (a few minutes) and fills the cache; later runs replay from cache. Models are configurable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`) — Claude for prod, free models for testing.
+
 ## What this is not
 
 texo is not a database server, consensus system, Slack crawler, Google Docs clone, vector database, or LLM extraction framework.
