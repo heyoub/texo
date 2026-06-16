@@ -48,6 +48,10 @@ const ENV_BASE_URL: &str = "OPENROUTER_BASE_URL";
 const ENV_NLI_MODEL: &str = "OPENROUTER_NLI_MODEL";
 /// Environment variable overriding the claim-relation judge model.
 const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
+/// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
+/// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
+/// invalidates proposals produced by an older prompt.
+const PROPOSE_PROMPT_VERSION: u32 = 1;
 
 /// Per-request timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -795,6 +799,13 @@ impl Proposer for OpenRouterProposer {
         let value = self.client.post_json("/chat/completions", &body)?;
         let claims = parse_propose_response(&value)?;
         Ok(claims)
+    }
+
+    fn fingerprint(&self) -> String {
+        format!(
+            "openrouter:{}|propose-v{PROPOSE_PROMPT_VERSION}",
+            self.model
+        )
     }
 }
 

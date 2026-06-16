@@ -105,7 +105,8 @@ pub trait ClaimRelater {
 /// Plain data so it can cross the trait boundary without pulling in any model or
 /// HTTP dependency; `confidence_ppm` is integer parts-per-million (matching
 /// `confidence_ppm` elsewhere in texo), keeping the type `Eq` and float-free.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `serde` is derived so proposals can be persisted in a record-once cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProposedClaim {
     /// Faithful single-sentence statement of the claim.
     pub text: String,
@@ -132,6 +133,12 @@ pub trait Proposer {
         span_text: &str,
         heading_path: &[String],
     ) -> Result<Vec<ProposedClaim>, SemanticsError>;
+
+    /// A stable identity for this proposer's *output contract* — typically the
+    /// model id plus a prompt version. A record-once cache mixes this into its key
+    /// so that changing the model or prompt invalidates stale cached proposals
+    /// rather than silently reusing them.
+    fn fingerprint(&self) -> String;
 }
 
 /// Scores candidate documents against a query for relevance reranking.

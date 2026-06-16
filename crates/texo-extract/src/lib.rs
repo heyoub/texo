@@ -11,6 +11,10 @@
 //! `extract_via_cmd` contract in `texo-core`, so this binary drops in behind the
 //! existing external-extractor seam and `texo-core` stays HTTP/LLM-free.
 
+pub mod cache;
+
+pub use cache::CachingProposer;
+
 use serde::Serialize;
 use texo_core::{
     assess_faithfulness, normalize_line, segment_candidates, Proposer, SemanticsError,
@@ -147,6 +151,10 @@ mod tests {
                 });
             }
             Ok(self.proposals.clone())
+        }
+
+        fn fingerprint(&self) -> String {
+            "scripted".to_owned()
         }
     }
 

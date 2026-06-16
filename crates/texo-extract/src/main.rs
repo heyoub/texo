@@ -10,8 +10,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use texo_core::DEFAULT_GROUNDING_THRESHOLD_PPM;
-use texo_extract::{run_extraction, write_ndjson};
+use texo_extract::{run_extraction, write_ndjson, CachingProposer};
 use texo_semantics::OpenRouterProposer;
+
+/// Environment variable selecting the record-once cache directory.
+const ENV_CACHE_DIR: &str = "TEXO_EXTRACT_CACHE";
+/// Default cache directory (relative to the ingest working directory).
+const DEFAULT_CACHE_DIR: &str = ".texo/extract-cache";
 
 fn main() -> ExitCode {
     match run() {
@@ -38,7 +43,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source =
         std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
 
-    let proposer = OpenRouterProposer::new(None)?;
+    let cache_dir =
+        PathBuf::from(std::env::var_os(ENV_CACHE_DIR).unwrap_or_else(|| DEFAULT_CACHE_DIR.into()));
+    let proposer = CachingProposer::new(OpenRouterProposer::new(None)?, cache_dir);
     let claims = run_extraction(&source, &proposer, DEFAULT_GROUNDING_THRESHOLD_PPM)?;
 
     let stdout = std::io::stdout();
