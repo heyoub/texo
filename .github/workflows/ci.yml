@@ -7,8 +7,32 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # The runner was "losing communication" (resource exhaustion) ~48m into the
+    # build after the semantic crates expanded the dependency graph. A hard cap
+    # turns any future hang/thrash into a clean, log-preserving failure instead
+    # of an opaque runner crash.
+    timeout-minutes: 40
+    env:
+      # Incremental compilation is pure overhead in CI (cold target every run)
+      # and bloats disk/IO; off keeps the build lean.
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      CARGO_NET_RETRY: "3"
+      RUST_BACKTRACE: "1"
+      # Bound parallelism so peak memory stays well under the runner's: linking
+      # several test binaries that each statically pull reqwest/tokio/hyper/
+      # rustls/ring concurrently is the memory spike that crashed the runner.
+      CARGO_BUILD_JOBS: "2"
+      RUST_TEST_THREADS: "2"
     steps:
       - uses: actions/checkout@v4
+      # Reclaim ~20GB of preinstalled toolchains we don't use, so the expanded
+      # build can never hit the documented "Disk quota exceeded" wall.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/.ghcup "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
       - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt, clippy
