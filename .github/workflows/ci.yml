@@ -7,27 +7,22 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # The runner was "losing communication" (resource exhaustion) ~48m into the
-    # build after the semantic crates expanded the dependency graph. A hard cap
-    # turns any future hang/thrash into a clean, log-preserving failure instead
-    # of an opaque runner crash.
-    timeout-minutes: 40
+    # Comfortable ceiling for a cold first build of the expanded graph; cached
+    # runs finish far faster. A hang fails cleanly with logs instead of an opaque
+    # runner crash.
+    timeout-minutes: 60
     env:
-      # Incremental compilation is pure overhead in CI (cold target every run)
-      # and bloats disk/IO; off keeps the build lean.
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       CARGO_NET_RETRY: "3"
       RUST_BACKTRACE: "1"
-      # Bound parallelism so peak memory stays well under the runner's: linking
-      # several test binaries that each statically pull reqwest/tokio/hyper/
-      # rustls/ring concurrently is the memory spike that crashed the runner.
-      CARGO_BUILD_JOBS: "2"
+      # Bound only the test RUN's threads (cheap memory insurance) — NOT build
+      # parallelism, which we want at full core count for speed.
       RUST_TEST_THREADS: "2"
     steps:
       - uses: actions/checkout@v4
-      # Reclaim ~20GB of preinstalled toolchains we don't use, so the expanded
-      # build can never hit the documented "Disk quota exceeded" wall.
+      # Reclaim ~20GB of unused preinstalled toolchains so the build can't hit the
+      # "Disk quota exceeded" wall AGENTS.md documents (the likely original crash).
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
@@ -36,9 +31,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt, clippy
+      # Cache compiled dependencies (reqwest/tokio/hyper/rustls/ring + the rest)
+      # so only the first run pays the full cold build; later runs are fast.
+      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@just
       - uses: taiki-e/install-action@typos-cli
-      - run: cargo install cargo-deny --locked
+      # Precompiled cargo-deny (no ~2.5min source build per run).
+      - uses: taiki-e/install-action@cargo-deny
       - run: just verify
       - run: just demo
       - run: just ext-package
