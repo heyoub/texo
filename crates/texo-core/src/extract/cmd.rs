@@ -139,21 +139,23 @@ fn extract_via_cmd_with_timeout(
         buf
     });
 
-    // Enforce the deadline by polling. Killing the child on overrun closes its
-    // pipes, letting the reader threads reach EOF so we can join them below.
+    // Enforce the deadline by polling. On overrun the child is killed and we
+    // return the timeout error immediately.
     let status = match wait_with_timeout(&mut child, timeout) {
         Ok(status) => status,
         Err(e) => {
-            // Child already killed+reaped by wait_with_timeout. On Unix the
-            // process-group SIGKILL closed the pipes (incl. grandchildren), so
-            // these joins return promptly. On non-Unix the fallback kills only
-            // the immediate child; a grandchild holding the pipe could keep a
-            // reader thread blocked here — see `kill_tree`. The extractor always
-            // spawns `sh -c`, which is unix-only, so that path is unreachable in
-            // practice (spawn fails first on non-Unix).
-            let _ = collect_bytes(stdout_handle);
-            let stderr_text = collect_stderr(stderr_handle);
-            return Err(append_stderr(e, &stderr_text));
+            // Do NOT join the reader threads here. The process-group kill in
+            // `kill_tree` *usually* reaps grandchildren so the pipes close and
+            // the readers reach EOF — but that is not guaranteed across
+            // environments (observed flaky on CI), and if a grandchild survives
+            // and keeps stdout open, `join()` would block until it eventually
+            // exits, defeating the very timeout we are enforcing. Detaching the
+            // reader handles lets us return promptly; the orphaned threads exit
+            // when the pipe finally closes. The timeout error already carries the
+            // "timed out" context, so no stderr enrichment is needed here.
+            drop(stdout_handle);
+            drop(stderr_handle);
+            return Err(e);
         }
     };
 
