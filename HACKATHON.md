@@ -133,5 +133,9 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
   (ROADMAP v1.1 item): span-level byte ranges + extractor model/prompt
   version on every claim, `#[serde(default)]` back-compat, zero golden churn,
   claim IDs unchanged — precise "jump to source" for the memory agent.
-- **Jul 4 (in flight):** cluster-first relate (O(n²) fix), in an isolated
-  worktree, landing only if the full suite + goldens stay green.
+- **Jul 4:** cluster-first relate landed (O(n²) fix): judge pairs bounded to
+  within connected-component clusters (~O(n · cluster_size)), verdict
+  semantics unchanged, live-validated 5/5 on Helios. Default
+  `cosine_threshold` retuned 0.78 → 0.65 (measured Helios same-subject floor
+  ≈ 0.70; rationale at the constant). Directly serves the memory agent:
+  repeated relate passes over a growing memory corpus stay affordable.
