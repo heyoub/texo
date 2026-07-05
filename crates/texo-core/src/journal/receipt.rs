@@ -16,7 +16,7 @@ pub fn verify_and_view(
     scope: &str,
     entity: &str,
 ) -> Result<ReceiptView, JournalError> {
-    let verification = store.verify_append_receipt_detailed(receipt);
+    let verification = store.verify_append_receipt(receipt);
     if !verification.is_valid() {
         let detail = verification.error().map_or(ReceiptInvalid::Unknown, |e| {
             ReceiptInvalid::Verification(e.clone())

@@ -180,7 +180,10 @@ proptest! {
 
         let coord =
             Coordinate::new(format!("claim:{entity}"), workspace.scope()).expect("coordinate");
-        journal
+        // The receipt is deliberately unused: this case only needs the unknown-kind
+        // event committed so the decode path below can reject it (AppendReceipt is
+        // #[must_use] as of batpak 0.9.0).
+        let _receipt = journal
             .handle()
             .store()
             .append_typed(&coord, &UnknownKindEvent { note })

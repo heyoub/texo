@@ -103,7 +103,7 @@ impl ReceiptView {
     ) -> Self {
         ReceiptView {
             event_id: EventIdHex::from_event_id(u128::from(receipt.event_id)),
-            sequence: LocalSequence::new(receipt.sequence),
+            sequence: LocalSequence::new(receipt.global_sequence),
             kind: kind.to_string(),
             scope: scope.to_string(),
             entity: entity.to_string(),

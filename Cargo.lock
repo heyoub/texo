@@ -265,9 +265,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "batpak"
-version = "0.8.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b1f4181d63db794f4810896e353e22e1b010afd17191f22eada125c0a34b916"
+checksum = "6f2ed3182c3966ebe9263612e4421c2dbce097f2086ece575cf72f86fa89a290"
 dependencies = [
  "batpak-macros",
  "batpak-macros-support",
@@ -282,6 +282,7 @@ dependencies = [
  "proc-macro2",
  "rayon",
  "rmp-serde",
+ "rmpv",
  "serde",
  "serde_json",
  "syn",
@@ -294,9 +295,9 @@ dependencies = [
 
 [[package]]
 name = "batpak-macros"
-version = "0.8.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fee725d0c928c1818a0467f3f321ffa68725633a7bfbd0351996c731f9d4ce3"
+checksum = "d8051611bd7607182b71219a6ba08550ff0f3e0b8d0eb9239af7ce242984b918"
 dependencies = [
  "batpak-macros-support",
  "proc-macro2",
@@ -306,11 +307,12 @@ dependencies = [
 
 [[package]]
 name = "batpak-macros-support"
-version = "0.8.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e3b3297cdc14120dbfea9f9c0ba65bdce0fa68d848e681b6eaa11bb03f97bb"
+checksum = "285eda7215e16729b6639f30262de582471f3d1bafb6024378a3a5ea6f0f498b"
 dependencies = [
  "inventory",
+ "rmpv",
 ]
 
 [[package]]
@@ -2898,6 +2900,15 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "rmpv"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a4e1d4b9b938a26d2996af33229f0ca0956c652c1375067f0b45291c1df8417"
+dependencies = [
+ "rmp",
 ]
 
 [[package]]

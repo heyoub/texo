@@ -30,7 +30,7 @@ pub fn load_workspace_events(
         let Some(last) = page.last() else { break };
         after = Some(last.global_sequence());
         for entry in &page {
-            let event_id = EventId::from(entry.event_id());
+            let event_id = entry.event_id();
             let stored = store.get(event_id)?;
             // Strict policy: an unknown kind propagates as an error here rather
             // than being silently skipped (SPEC.md:73 — no silent partial state).
@@ -57,7 +57,7 @@ pub fn load_source_body_hashes(
         let Some(last) = page.last() else { break };
         after = Some(last.global_sequence());
         for entry in &page {
-            let event_id = EventId::from(entry.event_id());
+            let event_id = entry.event_id();
             let stored = store.get(event_id)?;
             // Decode against all five known kinds so a truly unknown kind still
             // errors (no silent skip), then filter to the SOURCE kind we want.
