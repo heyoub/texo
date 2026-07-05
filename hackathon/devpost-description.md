@@ -1,0 +1,41 @@
+# texo-agent — memory that knows when to stop believing things
+
+**Track 1: MemoryAgent**
+
+<!-- TODO: video link -->
+
+texo-agent is a chat agent whose persistent memory is an append-only claim-chain, not a vector store — memory that knows when to stop believing things. Facts you state across sessions become journaled claims; when a fact changes, the old claim is retired with a receipt recording *what* superseded it, *when*, and from *which source line*. The agent doesn't just remember — it can tell you the history of what it used to believe and why it stopped.
+
+## The problem with accumulate-only memory
+
+Most agent memory is RAG over a vector database: every fact ever stated gets embedded, and retrieval hopes the right one ranks first. When a preference changes — "deploys moved to Tuesday" — the Friday fact doesn't go away. It sits in the index forever, semantically near-identical to its replacement, waiting to be retrieved into a context window. Accumulate-only memory has no concept of *outdated*; it only has *less similar*. Contradictions aren't resolved, they're ranked.
+
+## How texo-agent works
+
+Each chat session is a transcript. On session end, the transcript is rendered to markdown, and an LLM extraction pass turns the user's utterances into atomic claims, appended to a hash-committed journal (built on BatPak, an event-sourcing log). A relate pass then embeds the current claims, clusters them, and puts candidate pairs in front of an LLM relation judge that decides: supersede, conflict, duplicate, or unrelated. A supersession retires the old claim with a receipt; a genuine disagreement is surfaced as an open conflict rather than silently resolved in favor of the newer statement.
+
+At the start of every turn, the journal is replayed into a projection: current claims are injected into the system prompt as trusted memory, superseded claims are injected as "outdated — do NOT trust" with what replaced them, and open conflicts are listed so the model presents both sides instead of picking one. Every claim carries full provenance: source `path:line`, span-level byte offsets into the transcript, and the extractor model + prompt version that produced it. Ask the agent what it remembers and it cites its receipts.
+
+<!-- TODO: architecture diagram -->
+
+## What makes it technically deep
+
+The journal is append-only and hash-committed, and replay is deterministic: the model runs exactly once, at ingest (a record-once perception boundary), its outputs cached content-addressed by `model | prompt_version | span` — re-ingesting a corpus went from 16 s to 4 ms, byte-identical. A deterministic faithfulness gate (integer parts-per-million token recall — journaled state contains no floats, so projections stay `Eq` and replay bit-for-bit) rejects extracted claims not grounded in the source text. The relation judge is cluster-bounded: candidate pairs are limited to connected components of the cosine-similarity graph, so judge calls scale with cluster size rather than O(n²) over the whole memory. And supersession requires explicit change wording ("moved to", "no longer"); a bare differing value is recorded as a conflict, because a memory system that silently trusts the newer sentence is just a slower way to be wrong.
+
+## Built on Qwen Cloud
+
+All three LLM roles — claim extraction, the relation judge, and chat — run on `qwen3.7-max`; the cosine prefilter uses `text-embedding-v4`. Both are served through Qwen Cloud's DashScope OpenAI-compatible mode (`dashscope-intl`, Singapore). The agent backend is deployed on an Alibaba Cloud ECS instance in Singapore (`ap-southeast-1`), same region as the model endpoint; the deploy configuration is committed in the repo.
+<!-- TODO: confirm ECS deployment details + repo path of deploy script before submitting -->
+
+## Pre-existing project disclosure
+
+The texo library (claim-chain journal, replay, CLI, MCP server) predates the submission window; the rules allow this when the project is significantly updated in-window, so here is exactly what was built during the window: **the agent itself** (`crates/texo-agent` — the chat loop, session-end memorization pipeline, memory-grounded prompting, live UI, and its real-store test suite); the **BatPak 0.9.0 migration**, behavior-preserving with an empirical store-compatibility proof (a 0.8.2-written store replays byte-identically under 0.9.0); **char-offset + model provenance** on every recorded claim (span byte ranges, extractor model, prompt version — back-compatible with old journals); **cluster-first relate**, the O(n²)→O(n·cluster) fix live-validated at 5/5 on the regression corpus; env-configurable embedding/rerank models; and the licensing/documentation compliance sweep. The full dated changelog is in `HACKATHON.md`.
+
+## Track 1 requirement mapping
+
+| Track 1 asks for | Mechanism |
+|---|---|
+| Persistent memory accumulating across sessions | append-only BatPak journal; session-end ingest; deterministic replay |
+| Timely forgetting of outdated information | supersession events with receipts — typed forgetting, not decay heuristics |
+| Recalling critical memories in limited context | replayed *current-claims* projection injected per turn; superseded claims quarantined |
+| Efficient storage & retrieval | content-addressed claims, embedding prefilter, cluster-bounded judging, record-once LLM cache |
