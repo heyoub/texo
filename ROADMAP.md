@@ -68,11 +68,16 @@ module can consume (no BatPak store access from wasm).
 
 ## Smaller hardening (review-driven)
 
-- **Source-self-assertion claims.** *Prompt fix landed Jul 4, 2026 (proposer
-  exclusion rule + `PROPOSE_PROMPT_VERSION` 3→4); pending live-model validation
-  on the next Helios run.* The extractor faithfully recorded meta-claims a
-  document makes about *itself* ("this wiki is the source of truth for new
-  engineers") as current claims — ironic for a "prose is not state" tool.
+- **Source-self-assertion claims.** *Attempted and reverted Jul 4, 2026:* a
+  proposer exclusion bullet (v4) shifted extraction wording broadly enough to
+  drop Helios to 4/5 live (the Postgres→BatPak supersession degraded to a
+  conflict — plausibly a wording→embedding→cluster-split interaction), so it
+  was reverted to v3 same day. Lesson: prompt changes are pipeline changes —
+  they must be iterated against the live oracle before landing, and ideally
+  with a self-assertion case added to the oracle corpus first. The underlying
+  issue stands: the extractor faithfully records meta-claims a document makes
+  about *itself* ("this wiki is the source of truth for new engineers") as
+  current claims — ironic for a "prose is not state" tool.
 - **VS Code extension manners.** *Done Jul 4, 2026:* `execFile` timeout
   (`texo.checkTimeoutMs`, default 30s), per-file trailing-edge debounce,
   status-bar indicator, and a once-per-session notice when

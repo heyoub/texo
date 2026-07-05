@@ -55,7 +55,7 @@ const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
-const PROPOSE_PROMPT_VERSION: u32 = 4;
+const PROPOSE_PROMPT_VERSION: u32 = 3;
 /// Version tag for the claim-relation prompt/output contract. Bump whenever
 /// `RELATION_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates verdicts produced by an older prompt.
@@ -821,10 +821,6 @@ done\");\n\
 - pure incident color with no decision in it (\"the rotation revolted\", \"a \
 Slack thread ensued\");\n\
 - opinions or judgments (\"Alice is a bottleneck\");\n\
-- a document's assertions about ITSELF — its own authority, freshness, or \
-role (\"this wiki is the source of truth\", \"this page is kept up to date\", \
-\"refer to this runbook for the latest process\"). A document vouching for \
-itself is not a fact about the system;\n\
 - low-level mechanics that merely ELABORATE a higher-level fact — prefer the \
 single headline statement. If the span says the platform now uses BatPak and \
 also describes the table-level mechanics of that migration, extract only the \
