@@ -1,4 +1,4 @@
-//! PROVES: cluster-first relate on a REAL BatPak store (no mocks).
+//! PROVES: cluster-first relate on a REAL BatPak store (no test doubles).
 //!
 //! Ingests two markdown sessions into a real journal, replays, runs
 //! [`relate_claims`] with deterministic in-test backends (pure trait stubs — the

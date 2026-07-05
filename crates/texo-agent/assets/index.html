@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>texo memory agent</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel2: #1d232b; --line: #2a323d;
+    --text: #e6e9ee; --dim: #8b95a3; --accent: #5cc8a8; --warn: #e0b45c;
+    --danger: #e07a7a; --user: #2b3a4d; --bot: #232a33;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--dim); font-size: 13px; }
+  header .session { margin-left: auto; color: var(--dim); font-size: 12px; font-family: ui-monospace, monospace; }
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* chat pane */
+  #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 72%; padding: 9px 13px; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user); }
+  .msg.bot { align-self: flex-start; background: var(--bot); border: 1px solid var(--line); }
+  .msg.note { align-self: center; background: none; color: var(--dim); font-size: 12.5px; text-align: center; }
+  .msg.error { align-self: center; color: var(--danger); font-size: 13px; }
+  .grounding { font-size: 11.5px; color: var(--dim); margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 5px; }
+  #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  #input {
+    flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font: inherit; outline: none;
+  }
+  #input:focus { border-color: var(--accent); }
+  button {
+    padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: wait; }
+  #end { color: var(--warn); }
+
+  /* memory sidebar */
+  #memory {
+    width: 360px; flex-shrink: 0; overflow-y: auto; border-left: 1px solid var(--line);
+    background: var(--panel); padding: 14px 16px;
+  }
+  #memory h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 18px 0 8px; }
+  #memory h2:first-child { margin-top: 0; }
+  .claim { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel2); }
+  .claim .text { display: block; }
+  .claim .src {
+    display: inline-block; margin-top: 6px; font-size: 11px; color: var(--accent);
+    font-family: ui-monospace, monospace;
+  }
+  .claim.stale { opacity: .75; }
+  .claim.stale .text { text-decoration: line-through; color: var(--dim); }
+  .claim.stale .by { display: block; margin-top: 6px; font-size: 12px; color: var(--warn); }
+  .claim.conflict { border-color: var(--danger); }
+  .claim.conflict .vs { color: var(--danger); font-size: 12px; }
+  .empty { color: var(--dim); font-size: 13px; }
+  #frontier { font-size: 11px; color: var(--dim); font-family: ui-monospace, monospace; margin-top: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>texo memory agent</h1>
+  <span class="sub">memory that knows when to stop believing things</span>
+  <span class="session" id="session-label"></span>
+</header>
+<main>
+  <section id="chat">
+    <div id="messages">
+      <div class="msg note">Tell me facts and preferences. End the session to memorize them —
+        changed facts are <em>retired with receipts</em>, not accumulated.</div>
+    </div>
+    <div id="composer">
+      <input id="input" placeholder="Say something… (Enter to send)" autocomplete="off">
+      <button id="send">Send</button>
+      <button id="end" title="Render this session's transcript, ingest it into the claim-chain, and relate">End session &amp; memorize</button>
+    </div>
+  </section>
+  <aside id="memory">
+    <h2>Current memory</h2>
+    <div id="current"><div class="empty">loading…</div></div>
+    <h2>Outdated (superseded)</h2>
+    <div id="stale"><div class="empty">none</div></div>
+    <h2>Conflicts</h2>
+    <div id="conflicts"><div class="empty">none</div></div>
+    <div id="frontier"></div>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const messages = $("messages"), input = $("input");
+
+let sessionId = newSessionId();
+function newSessionId() {
+  return "s-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+function showSession() { $("session-label").textContent = "session " + sessionId; }
+showSession();
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function addMsg(cls, text) {
+  const node = el("div", "msg " + cls, text);
+  messages.appendChild(node);
+  messages.scrollTop = messages.scrollHeight;
+  return node;
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? undefined : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || (res.status + " " + res.statusText));
+  return data;
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  addMsg("user", text);
+  setBusy(true);
+  try {
+    const data = await api("/api/chat", { session_id: sessionId, message: text });
+    const node = addMsg("bot", data.reply);
+    if (data.memory_used && data.memory_used.length) {
+      const count = data.memory_used.length;
+      const g = el("div", "grounding",
+        "grounded in " + count + (count === 1 ? " memory: " : " memories: ") +
+        data.memory_used.map((m) => m.source_path + ":" + m.line).join(", "));
+      node.appendChild(g);
+    }
+  } catch (err) {
+    addMsg("error", String(err.message || err));
+  } finally {
+    setBusy(false);
+    input.focus();
+  }
+}
+
+async function endSession() {
+  setBusy(true);
+  addMsg("note", "memorizing session… (extracting claims, relating memories)");
+  try {
+    const report = await api("/api/session/end", { session_id: sessionId });
+    let note = "memorized → " + report.doc_path + ": " + report.claims_recorded + " claim(s)";
+    const relate = report.relate || {};
+    if (relate.status === "ran") {
+      note += ", " + relate.supersessions + " superseded, " + relate.conflicts + " conflict(s)";
+    } else if (report.ingest_supersessions) {
+      note += ", " + report.ingest_supersessions + " superseded";
+    }
+    addMsg("note", note + " — new session started");
+    sessionId = newSessionId();
+    showSession();
+    refreshMemory();
+  } catch (err) {
+    addMsg("error", "session end failed: " + String(err.message || err));
+  } finally {
+    setBusy(false);
+    input.focus();
+  }
+}
+
+function setBusy(busy) {
+  $("send").disabled = busy;
+  $("end").disabled = busy;
+  input.disabled = busy;
+}
+
+function renderList(container, items, render, emptyText) {
+  container.replaceChildren();
+  if (!items.length) {
+    container.appendChild(el("div", "empty", emptyText));
+    return;
+  }
+  for (const item of items) container.appendChild(render(item));
+}
+
+function renderMemory(snapshot) {
+  renderList($("current"), snapshot.current, (claim) => {
+    const node = el("div", "claim");
+    node.appendChild(el("span", "text", claim.text));
+    node.appendChild(el("span", "src",
+      claim.source_path + ":" + claim.line + " · bytes " + claim.char_start + "–" + claim.char_end));
+    node.title = claim.claim_id;
+    return node;
+  }, "no memories yet — chat, then end the session");
+  renderList($("stale"), snapshot.stale, (stale) => {
+    const node = el("div", "claim stale");
+    node.appendChild(el("span", "text", stale.text));
+    node.appendChild(el("span", "by", "superseded by: " + (stale.superseded_by_text || stale.superseded_by)));
+    node.title = stale.claim_id;
+    return node;
+  }, "none");
+  renderList($("conflicts"), snapshot.conflicts, (conflict) => {
+    const node = el("div", "claim conflict");
+    node.appendChild(el("span", "text", "“" + conflict.claim_a_text + "”"));
+    node.appendChild(el("span", "vs", " vs "));
+    node.appendChild(el("span", "text", "“" + conflict.claim_b_text + "”"));
+    return node;
+  }, "none");
+  $("frontier").textContent =
+    "workspace " + snapshot.workspace_id + " · replayed through seq " + snapshot.replayed_through_sequence;
+}
+
+async function refreshMemory() {
+  try {
+    renderMemory(await api("/api/memory"));
+  } catch (err) {
+    $("frontier").textContent = "memory unavailable: " + String(err.message || err);
+  }
+}
+
+$("send").addEventListener("click", send);
+$("end").addEventListener("click", endSession);
+input.addEventListener("keydown", (event) => { if (event.key === "Enter") send(); });
+refreshMemory();
+setInterval(refreshMemory, 3000);
+input.focus();
+</script>
+</body>
+</html>

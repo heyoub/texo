@@ -60,6 +60,7 @@ CLI: global `--workspace <id>`. VS Code: `texo.workspaceId`.
 
 - **CLI** (`texo`) — ingest, claims, relate, staleness, compile, conflicts, verify
 - **MCP** — read-only tools over replay (spawn_blocking for BatPak I/O)
+- **Memory agent** (`texo-agent`) — HTTP chat agent whose persistent memory is the claim-chain: current claims injected as trusted context, session-end transcript → ingest → relate
 - **VS Code extension** — thin shell over CLI diagnostics
 - **Static compile** — `public/` trophy case (onboarding, claims JSON, index)
 

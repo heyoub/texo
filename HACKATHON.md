@@ -26,7 +26,7 @@ Track-1 requirement → texo mechanism:
 - [x] Public repo (`github.com/heyoub/texo`)
 - [x] Open-source license, detectable in About (LICENSE-MIT + LICENSE-APACHE, matches Cargo.toml)
 - [ ] Uses Qwen models on Qwen Cloud (DashScope OpenAI-compatible mode — see gaps below)
-- [ ] The agent itself (Track 1 wants an *agent*, not a library — new thin consumer, see below)
+- [x] The agent itself (Track 1 wants an *agent*, not a library — `crates/texo-agent`, see below)
 - [ ] Backend deployed on Alibaba Cloud + short proof recording + judge-visible code file using Alibaba Cloud APIs
 - [ ] Architecture diagram (Qwen Cloud ↔ backend ↔ journal ↔ agent surfaces)
 - [ ] ~3-min public demo video (YouTube/Vimeo)
@@ -47,13 +47,19 @@ description must say so explicitly.
 2. **Validate the pipeline on Qwen models.** Extractor + relater prompts
    demand strict JSON; verify with the config below. Oracle: the key-gated
    live tests + the Helios corpus (must stay 5/5).
-3. **The memory agent.** A thin Qwen-powered chat agent as a new consumer of
+3. ~~**The memory agent.**~~ **Done pending Qwen validation (Jul 5).**
+   `crates/texo-agent` — an axum HTTP chat agent as a new thin consumer of
    texo (sibling to the MCP surface — texo stays the substrate, journal stays
    source of truth):
-   - session start → inject compiled current context (current claims only);
-   - session end → transcript rendered to markdown → `texo ingest`
-     (existing `texo-extract` LLM path) → `texo relate`;
-   - changed preferences get *superseded*, and the agent can show the chain.
+   - every turn injects the replayed *current* claims as trusted memory (with
+     `path:line` + byte-span receipts) and lists superseded claims as
+     "outdated — do not trust";
+   - `POST /api/session/end` → transcript rendered to `sessions/<id>.md` →
+     ingest (`texo-extract` LLM path via `extractor_cmd`) → relate;
+   - changed preferences get *superseded*, and the one-file UI at `/` shows
+     the chain live (current, struck-through stale + what replaced it,
+     conflicts). Chat model via `OPENROUTER_CHAT_MODEL`; remaining work is
+     validating the whole loop on Qwen models (gap 2).
 4. **Alibaba Cloud deployment.** Agent backend on ECS; deploy config/script in
    repo doubles as the judge-visible "uses Alibaba Cloud" code file.
 5. **Env-var naming (optional, optics).** The seam is generic OpenAI-compatible
@@ -139,3 +145,15 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
   `cosine_threshold` retuned 0.78 → 0.65 (measured Helios same-subject floor
   ≈ 0.70; rationale at the constant). Directly serves the memory agent:
   repeated relate passes over a growing memory corpus stay affordable.
+- **Jul 5:** `texo-agent` landed — the Track-1 memory agent (axum server +
+  one-file vanilla-JS UI). Chat is grounded in the replayed current claims
+  (every injected memory carries `path:line` + byte-span receipts;
+  superseded claims are injected as "outdated — do not trust"); session end
+  renders the transcript to `sessions/<id>.md`, ingests through the
+  `texo-extract` seam, and runs the relate pass so the next session sees the
+  updated chain. Self-bootstraps its workspace (`extractor_cmd` +
+  `[semantics] enabled`), honors the record-once cache env vars, keeps
+  BatPak I/O on `spawn_blocking` behind texo-core APIs. Real-store tests
+  only (cross-session supersession, span receipts slicing the transcript,
+  HTTP surface in-process); the LLM call is isolated behind a unit-tested
+  pure request builder.

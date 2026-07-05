@@ -6,6 +6,7 @@ members = [
     "crates/texo-extract",
     "crates/texo-mcp",
     "crates/texo-semantics",
+    "crates/texo-agent",
 ]
 default-members = ["crates/texo-cli"]
 
@@ -36,6 +37,8 @@ predicates = "3"
 trybuild = "1"
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 schemars = "1.2"
+axum = "0.8"
+tower = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

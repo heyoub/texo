@@ -7,6 +7,7 @@
 - [`crates/texo-mcp/`](crates/texo-mcp/) — read-only MCP stdio tools
 - [`crates/texo-semantics/`](crates/texo-semantics/) — optional ML backends (OpenAI-compatible hosted API, base-URL overridable — OpenRouter default; local ONNX opt-in)
 - [`crates/texo-extract/`](crates/texo-extract/) — LLM extractor binary (`extract_via_cmd` seam) + record-once cache
+- [`crates/texo-agent/`](crates/texo-agent/) — memory-agent HTTP server (`texo-agent` binary): chat + live memory UI over the claim-chain, session-end transcript ingest + relate
 - [`extensions/vscode/`](extensions/vscode/) — thin diagnostics shell over CLI
 - [`sample_sources/`](sample_sources/) — demo markdown inputs
 - [`examples/helios/`](examples/helios/) — the messy dogfood corpus + ground truth + committed trophy
