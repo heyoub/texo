@@ -109,6 +109,35 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
   live instance. Check the "Alibaba Resource Guide" + "Proof of Deployment"
   Drive docs on the Devpost resources page before provisioning.
 
+## Architecture
+
+```mermaid
+flowchart TB
+  UI["Browser: chat + live memory UI<br/>(single self-contained page)"]
+  subgraph ECS["Alibaba Cloud ECS — ap-southeast-1 (provisioned via deploy/)"]
+    AGENT["texo-agent (axum)<br/>session transcripts in memory"]
+    EXTRACT["texo-extract<br/>record-once LLM extractor + faithfulness gate"]
+    JOURNAL[("BatPak journal (.texo store)<br/>append-only · hash-chained · receipts")]
+  end
+  subgraph QWEN["Qwen Cloud — DashScope compatible mode"]
+    CHAT["qwen3.7-max · chat"]
+    PROP["qwen3.7-max · claim extraction"]
+    EMB["text-embedding-v4 · cluster prefilter"]
+    JUDGE["qwen3.7-max · relation judge"]
+  end
+  UI <-->|"/api/chat · /api/memory · /api/session/end"| AGENT
+  AGENT <-->|"chat/completions"| CHAT
+  AGENT -->|"session end: transcript → sessions/id.md"| EXTRACT
+  EXTRACT <-->|"chat/completions"| PROP
+  EXTRACT -->|"claims + char-span/model provenance"| JOURNAL
+  AGENT <-->|"embeddings"| EMB
+  AGENT <-->|"supersede / conflict / duplicate"| JUDGE
+  AGENT -->|"relate verdicts as events"| JOURNAL
+  JOURNAL -->|"deterministic replay → current context<br/>(stale claims quarantined with receipts)"| AGENT
+```
+
+*(GitHub renders this; screenshot it for the Devpost image field.)*
+
 ## Plan
 
 - **Jul 4** — docs/compliance sweep (this commit); register on Devpost, claim

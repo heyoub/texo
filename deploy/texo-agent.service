@@ -1,0 +1,19 @@
+[Unit]
+Description=texo memory agent (claim-chain memory over Qwen Cloud)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/texo-agent/env
+Environment=TEXO_AGENT_ROOT=/opt/texo-agent/workspace
+Environment=TEXO_AGENT_ADDR=0.0.0.0:8787
+Environment=TEXO_EXTRACT_BIN=/opt/texo-agent/bin/texo-extract
+ExecStart=/opt/texo-agent/bin/texo-agent
+Restart=on-failure
+RestartSec=2
+# The journal is the durable state; give it a stable home.
+WorkingDirectory=/opt/texo-agent/workspace
+
+[Install]
+WantedBy=multi-user.target
