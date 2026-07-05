@@ -13,6 +13,10 @@ pub struct MarkdownLine {
     pub number: u32,
     /// Raw line text.
     pub text: String,
+    /// Byte offset of the line's first byte into the source body, so
+    /// `source[char_start..char_start + text.len()] == text`. Line terminators
+    /// (`\n` / `\r\n`) are not part of `text` and sit past that range.
+    pub char_start: usize,
 }
 
 /// Parsed markdown source.
@@ -61,7 +65,22 @@ fn parse_lines(text: &str) -> Vec<MarkdownLine> {
     let mut skipping_frontmatter = false;
     let mut frontmatter_done = false;
 
-    for (idx, raw) in text.lines().enumerate() {
+    // Iterate with `split_inclusive('\n')` (terminators kept) so each line's
+    // byte offset is the running sum of the previous segments. Stripping the
+    // trailing `\n` / `\r\n` reproduces exactly what `text.lines()` yields, so
+    // the retained-line filtering below is unchanged.
+    let mut offset = 0usize;
+    for (idx, segment) in text.split_inclusive('\n').enumerate() {
+        let char_start = offset;
+        offset += segment.len();
+
+        // Match `str::lines()` exactly: strip a trailing `\n`, and a `\r` only
+        // when it immediately preceded that `\n` (a lone `\r` at EOF stays).
+        let raw = match segment.strip_suffix('\n') {
+            Some(no_newline) => no_newline.strip_suffix('\r').unwrap_or(no_newline),
+            None => segment,
+        };
+
         let number = u32::try_from(idx + 1).unwrap_or(u32::MAX);
         if !frontmatter_done && idx == 0 && raw.trim() == "---" {
             skipping_frontmatter = true;
@@ -86,6 +105,7 @@ fn parse_lines(text: &str) -> Vec<MarkdownLine> {
         lines.push(MarkdownLine {
             number,
             text: raw.to_string(),
+            char_start,
         });
     }
     lines
@@ -365,6 +385,34 @@ mod tests {
             .lines
             .iter()
             .all(|l| l.text != "title: X" && l.text != "---"));
+    }
+
+    #[test]
+    fn line_char_start_slices_source_back_to_line_text() {
+        // Every retained line's byte offset must slice the ORIGINAL source back
+        // to exactly that line's text, across frontmatter (dropped), fences
+        // (dropped), CRLF terminators, and multi-byte characters.
+        let source =
+            "---\ntitle: X\n---\n# Heading\r\n\n```\ncode\n```\nDeploys — happen on Friday.\n";
+        let doc = MarkdownDocument::from_bytes("offsets.md", source.as_bytes()).expect("parse");
+        assert!(!doc.lines.is_empty());
+        for line in &doc.lines {
+            assert_eq!(
+                &source[line.char_start..line.char_start + line.text.len()],
+                line.text,
+                "line {} offset must slice back to its text",
+                line.number
+            );
+        }
+        // Spot-check the prose line: it follows the fence and keeps its real
+        // byte position in the raw file.
+        let prose = doc
+            .lines
+            .iter()
+            .find(|l| l.text.contains("Friday"))
+            .expect("prose line retained");
+        let expected = source.find("Deploys").expect("prose exists in source");
+        assert_eq!(prose.char_start, expected);
     }
 
     #[test]

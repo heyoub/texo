@@ -29,6 +29,8 @@ fn deploy_claim(claim_id: &str, day: &str) -> ClaimRecorded {
         source_path: "schedule.md".to_string(),
         line_start: 1,
         line_end: 1,
+        char_start: 0,
+        char_end: 0,
         text: format!("Deploy window is {day}."),
         normalized_text: format!("deploy window is {day}"),
         subject_hint: "deploy-process".to_string(),
@@ -36,6 +38,8 @@ fn deploy_claim(claim_id: &str, day: &str) -> ClaimRecorded {
         object_hint: day.to_string(),
         confidence_ppm: 600_000,
         extractor_kind: "test".to_string(),
+        extractor_model: String::new(),
+        prompt_version: String::new(),
         observed_at_ms: FIXTURE_OBSERVED_AT_MS,
     }
 }

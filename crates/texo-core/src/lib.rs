@@ -36,8 +36,8 @@ pub use events::{
     TexoEvent,
 };
 pub use extract::{
-    assess_faithfulness, extract_claims, extract_via_cmd, normalize_line, ExtractClaimsFn,
-    ExtractError, ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM,
+    assess_faithfulness, byte_offset_u32, extract_claims, extract_via_cmd, normalize_line,
+    ExtractClaimsFn, ExtractError, ExtractedClaim, Faithfulness, DEFAULT_GROUNDING_THRESHOLD_PPM,
     EXTRACTOR_KIND_HEURISTIC_V1,
 };
 pub use fixture::{

@@ -1,5 +1,7 @@
-//! PROVES: extract output stays within source lines; normalize is idempotent;
-//! the faithfulness gate is total, bounded, reflexive, and monotone in coverage.
+//! PROVES: extract output stays within source lines; claim byte offsets stay
+//! within the source body and slice back to the claim text; normalize is
+//! idempotent; the faithfulness gate is total, bounded, reflexive, and monotone
+//! in coverage.
 
 mod common;
 
@@ -18,12 +20,20 @@ use common::proptest::config;
 
 fn arb_doc() -> impl Strategy<Value = MarkdownDocument> {
     prop::collection::vec(any::<String>(), 0..24).prop_map(|lines| {
+        // Synthetic offsets consistent with a newline-joined body: each line
+        // starts one byte (the '\n') after the previous line's end.
+        let mut offset = 0usize;
         let numbered = lines
             .into_iter()
             .enumerate()
-            .map(|(idx, text)| MarkdownLine {
-                number: u32::try_from(idx + 1).expect("line number"),
-                text,
+            .map(|(idx, text)| {
+                let char_start = offset;
+                offset += text.len() + 1;
+                MarkdownLine {
+                    number: u32::try_from(idx + 1).expect("line number"),
+                    text,
+                    char_start,
+                }
             })
             .collect();
         MarkdownDocument {
@@ -61,6 +71,25 @@ proptest! {
                 .text
                 .clone();
             prop_assert_eq!(claim.payload.text, source_text);
+        }
+    }
+
+    // INV: for a document parsed from real bytes, every extracted claim's byte
+    // span is ordered, ends within the source body (`char_end <= source.len()`),
+    // and slices the ORIGINAL source back to exactly the claim text.
+    #[test]
+    fn extracted_claim_offsets_stay_within_source(source in any::<String>()) {
+        let doc = MarkdownDocument::from_bytes("fixture.md", source.as_bytes())
+            .expect("valid utf-8 source must parse");
+        let source_id = SourceId::try_from("src_abc123def456").expect("source id");
+        let extracted = extract_claims(&doc, &source_id, "demo", FIXTURE_OBSERVED_AT_MS)
+            .expect("extract");
+        for claim in extracted {
+            let start = usize::try_from(claim.payload.char_start).expect("start fits usize");
+            let end = usize::try_from(claim.payload.char_end).expect("end fits usize");
+            prop_assert!(start <= end);
+            prop_assert!(end <= source.len());
+            prop_assert_eq!(&source[start..end], claim.payload.text.as_str());
         }
     }
 

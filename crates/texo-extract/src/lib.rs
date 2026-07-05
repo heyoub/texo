@@ -17,7 +17,8 @@ pub use cache::{CachingProposer, CachingRelater};
 
 use serde::Serialize;
 use texo_core::{
-    assess_faithfulness, normalize_line, segment_candidates, Proposer, SemanticsError,
+    assess_faithfulness, byte_offset_u32, normalize_line, segment_candidates, Proposer,
+    SemanticsError,
 };
 
 /// Hint value used when the proposer leaves a subject/predicate field blank,
@@ -38,6 +39,13 @@ pub enum ExtractRunError {
 pub struct OutputClaim {
     /// Raw 1-based source line the claim's span starts on.
     pub line_start: u32,
+    /// Byte offset (inclusive start) of the claim's source span. The claim is a
+    /// paraphrase, so the emitted range is the Stage-0 span's byte range —
+    /// "this claim came from bytes X..Y of this doc". Saturates at `u32::MAX`
+    /// (see `texo_core::byte_offset_u32`).
+    pub char_start: u32,
+    /// Byte offset (exclusive end) of the claim's source span.
+    pub char_end: u32,
     /// Faithful claim text.
     pub text: String,
     /// Normalized claim text (texo-core's `normalize_line`).
@@ -50,6 +58,24 @@ pub struct OutputClaim {
     pub object_hint: String,
     /// Confidence in parts-per-million.
     pub confidence_ppm: u32,
+    /// Model identity that proposed this claim (from the proposer fingerprint).
+    pub extractor_model: String,
+    /// Extraction prompt version (from the proposer fingerprint).
+    pub prompt_version: String,
+}
+
+/// Split a [`Proposer::fingerprint`] into `(extractor_model, prompt_version)`.
+///
+/// By convention the fingerprint is `{model identity}|{prompt version}` (e.g.
+/// `openrouter:anthropic/claude-opus-4.8|propose-v3`) — the same string that
+/// keys the record-once cache, so the journaled provenance can never drift from
+/// the cache identity. A fingerprint without a `|` yields the whole string as
+/// the model and an empty prompt version.
+fn provenance_from_fingerprint(fingerprint: &str) -> (String, String) {
+    match fingerprint.rsplit_once('|') {
+        Some((model, prompt)) => (model.to_owned(), prompt.to_owned()),
+        None => (fingerprint.to_owned(), String::new()),
+    }
 }
 
 /// Non-blank value, else [`UNKNOWN_HINT`].
@@ -72,6 +98,7 @@ pub fn run_extraction(
     proposer: &dyn Proposer,
     threshold_ppm: u32,
 ) -> Result<Vec<OutputClaim>, ExtractRunError> {
+    let (extractor_model, prompt_version) = provenance_from_fingerprint(&proposer.fingerprint());
     let spans = segment_candidates(source);
     let mut out = Vec::new();
     for span in &spans {
@@ -88,12 +115,16 @@ pub fn run_extraction(
             };
             out.push(OutputClaim {
                 line_start: span.line_start,
+                char_start: byte_offset_u32(span.char_start),
+                char_end: byte_offset_u32(span.char_end),
                 text: proposal.text,
                 normalized_text,
                 subject_hint: hint_or_unknown(proposal.subject),
                 predicate_hint: hint_or_unknown(proposal.predicate),
                 object_hint,
                 confidence_ppm: proposal.confidence_ppm,
+                extractor_model: extractor_model.clone(),
+                prompt_version: prompt_version.clone(),
             });
         }
     }
@@ -190,6 +221,62 @@ mod tests {
     }
 
     #[test]
+    fn emitted_offsets_are_the_spans_byte_range() {
+        // The claim is a paraphrase; the emitted offsets are the SOURCE SPAN's
+        // byte range, so they must slice DOC back to the span text and stay
+        // within the source body.
+        let proposer = ScriptedProposer::ok(vec![proposal(
+            "Deploys moved to Tuesday.",
+            "deploys",
+            "Tuesday",
+        )]);
+        let out = run_extraction(DOC, &proposer, texo_core::DEFAULT_GROUNDING_THRESHOLD_PPM)
+            .expect("run");
+        assert_eq!(out.len(), 1);
+        let c = &out[0];
+        let start = usize::try_from(c.char_start).expect("start fits");
+        let end = usize::try_from(c.char_end).expect("end fits");
+        assert!(start < end, "span range must be non-empty and ordered");
+        assert!(end <= DOC.len(), "char_end must stay within the source");
+        assert_eq!(
+            &DOC[start..end],
+            "Deploys moved to Tuesday.",
+            "offsets must slice back to the Stage-0 span"
+        );
+    }
+
+    #[test]
+    fn provenance_is_split_from_the_proposer_fingerprint() {
+        // "scripted" has no '|' separator: the whole fingerprint is the model
+        // identity and the prompt version is empty.
+        let proposer = ScriptedProposer::ok(vec![proposal(
+            "Deploys moved to Tuesday.",
+            "deploys",
+            "Tuesday",
+        )]);
+        let out = run_extraction(DOC, &proposer, texo_core::DEFAULT_GROUNDING_THRESHOLD_PPM)
+            .expect("run");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].extractor_model, "scripted");
+        assert_eq!(out[0].prompt_version, "");
+    }
+
+    #[test]
+    fn provenance_from_fingerprint_splits_model_and_prompt() {
+        assert_eq!(
+            provenance_from_fingerprint("openrouter:anthropic/claude-opus-4.8|propose-v3"),
+            (
+                "openrouter:anthropic/claude-opus-4.8".to_owned(),
+                "propose-v3".to_owned()
+            )
+        );
+        assert_eq!(
+            provenance_from_fingerprint("scripted"),
+            ("scripted".to_owned(), String::new())
+        );
+    }
+
+    #[test]
     fn ungrounded_proposal_is_dropped_by_the_gate() {
         // The proposer hallucinates a claim with no tokens from the span.
         let proposer = ScriptedProposer::ok(vec![proposal(
@@ -237,21 +324,29 @@ mod tests {
         let claims = vec![
             OutputClaim {
                 line_start: 3,
+                char_start: 9,
+                char_end: 11,
                 text: "A.".to_owned(),
                 normalized_text: "a".to_owned(),
                 subject_hint: "a".to_owned(),
                 predicate_hint: "is".to_owned(),
                 object_hint: "x".to_owned(),
                 confidence_ppm: 700_000,
+                extractor_model: "openrouter:test-model".to_owned(),
+                prompt_version: "propose-v3".to_owned(),
             },
             OutputClaim {
                 line_start: 5,
+                char_start: 13,
+                char_end: 15,
                 text: "B.".to_owned(),
                 normalized_text: "b".to_owned(),
                 subject_hint: "b".to_owned(),
                 predicate_hint: "is".to_owned(),
                 object_hint: "y".to_owned(),
                 confidence_ppm: 600_000,
+                extractor_model: "openrouter:test-model".to_owned(),
+                prompt_version: "propose-v3".to_owned(),
             },
         ];
         let mut buf = Vec::new();
@@ -263,5 +358,10 @@ mod tests {
         assert_eq!(first["line_start"], 3);
         assert_eq!(first["text"], "A.");
         assert_eq!(first["confidence_ppm"], 700_000);
+        // The v1.1 offset + provenance fields ride the same NDJSON line.
+        assert_eq!(first["char_start"], 9);
+        assert_eq!(first["char_end"], 11);
+        assert_eq!(first["extractor_model"], "openrouter:test-model");
+        assert_eq!(first["prompt_version"], "propose-v3");
     }
 }

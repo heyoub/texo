@@ -20,6 +20,8 @@ fn recorded(claim_id: &str) -> ClaimRecorded {
         source_path: "x.md".to_string(),
         line_start: 1,
         line_end: 1,
+        char_start: 0,
+        char_end: 0,
         text: "x".to_string(),
         normalized_text: "x".to_string(),
         subject_hint: "s".to_string(),
@@ -27,6 +29,8 @@ fn recorded(claim_id: &str) -> ClaimRecorded {
         object_hint: "x".to_string(),
         confidence_ppm: 500_000,
         extractor_kind: "test".to_string(),
+        extractor_model: String::new(),
+        prompt_version: String::new(),
         observed_at_ms: FIXTURE_OBSERVED_AT_MS,
     }
 }

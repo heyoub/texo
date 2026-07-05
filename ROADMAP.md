@@ -8,8 +8,11 @@ and *what it entails*, so picking it up later needs no re-discovery.
 
 ## Char-offset + model provenance on `ClaimRecorded`
 
-**Status:** deferred (v1.1). Not needed for the demo; the value is precise
-"jump to source" and a per-model audit trail.
+**Status:** done (v1.1). `ClaimRecorded` now carries `char_start`/`char_end`
+(the source **span's** byte range) plus `extractor_model`/`prompt_version`, all
+`#[serde(default)]` so pre-v1.1 journals replay unchanged; both extraction
+paths populate them and the NDJSON seam threads them through. The entry below
+is kept for the design rationale.
 
 **Why deferred:** it is a *versioned event-schema change* with a back-compat
 obligation, and it touches both extraction paths plus several goldens — real

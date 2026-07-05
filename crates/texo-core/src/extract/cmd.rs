@@ -52,6 +52,16 @@ struct CmdClaimLine {
     predicate_hint: Option<String>,
     object_hint: Option<String>,
     confidence_ppm: Option<u32>,
+    /// Byte offset (inclusive start) of the claim's source span. Optional so
+    /// extractors predating v1.1 keep working; when absent the journaled
+    /// offsets take the serde default (`0`), matching pre-v1.1 events.
+    char_start: Option<u32>,
+    /// Byte offset (exclusive end) of the claim's source span; see `char_start`.
+    char_end: Option<u32>,
+    /// Model identity that produced this claim; optional, defaults to empty.
+    extractor_model: Option<String>,
+    /// Extraction prompt version; optional, defaults to empty.
+    prompt_version: Option<String>,
 }
 
 /// Run an external extractor command and parse newline-delimited JSON claims.
@@ -241,6 +251,21 @@ fn max_raw_line(doc: &MarkdownDocument) -> u32 {
     doc.lines.iter().map(|l| l.number).max().unwrap_or(0)
 }
 
+/// Largest valid exclusive byte offset for a claim span in this document.
+///
+/// The bound is the end of the last retained line (`char_start + text.len()`),
+/// in the RAW source-byte domain that `parse_lines` records. Legitimate claim
+/// spans are prose, and prose lines are always retained, so a span's `char_end`
+/// never exceeds this. The bound saturates into `u32` alongside the offsets it
+/// validates (see [`super::byte_offset_u32`]).
+fn max_char_end(doc: &MarkdownDocument) -> u32 {
+    doc.lines
+        .iter()
+        .map(|l| super::byte_offset_u32(l.char_start.saturating_add(l.text.len())))
+        .max()
+        .unwrap_or(0)
+}
+
 /// Wait for `child` to exit within `timeout` by polling `try_wait`.
 ///
 /// std has no wait-with-timeout. We keep ownership of the child here and poll so
@@ -304,10 +329,42 @@ fn kill_tree(child: &mut Child) {
     let _ = child.kill();
 }
 
+/// Validate an optional `char_start`/`char_end` pair from an extractor line.
+///
+/// Both absent is fine (pre-v1.1 extractors) and yields `(0, 0)` — identical to
+/// the serde default an old journaled event decodes to. When present the pair
+/// must come together, be ordered, and end within the source byte domain.
+fn validate_char_span(
+    char_start: Option<u32>,
+    char_end: Option<u32>,
+    max_end: u32,
+) -> Result<(u32, u32), ExtractError> {
+    match (char_start, char_end) {
+        (None, None) => Ok((0, 0)),
+        (Some(start), Some(end)) => {
+            if start > end {
+                return Err(ExtractError::Cmd(format!(
+                    "char span {start}..{end} invalid (start exceeds end)"
+                )));
+            }
+            if end > max_end {
+                return Err(ExtractError::Cmd(format!(
+                    "char_end {end} out of range (source spans {max_end} bytes)"
+                )));
+            }
+            Ok((start, end))
+        }
+        _ => Err(ExtractError::Cmd(
+            "char_start and char_end must be provided together".to_string(),
+        )),
+    }
+}
+
 /// Validate one parsed JSON line and build the corresponding claim.
 ///
 /// Rejects out-of-range `line_start` (must be in `1..=max_line`, since file lines
-/// are 1-based) and out-of-range `confidence_ppm` (must be in `0..=1_000_000`).
+/// are 1-based), out-of-range `confidence_ppm` (must be in `0..=1_000_000`), and
+/// inconsistent `char_start`/`char_end` (see [`validate_char_span`]).
 fn build_claim(
     parsed: CmdClaimLine,
     max_line: u32,
@@ -336,6 +393,9 @@ fn build_claim(
         None => super::DEFAULT_CONFIDENCE_PPM,
     };
 
+    let (char_start, char_end) =
+        validate_char_span(parsed.char_start, parsed.char_end, max_char_end(doc))?;
+
     let normalized = parsed
         .normalized_text
         .unwrap_or_else(|| super::normalize::normalize_line(&parsed.text));
@@ -349,6 +409,8 @@ fn build_claim(
             source_path: doc.path.clone(),
             line_start: parsed.line_start,
             line_end: parsed.line_start,
+            char_start,
+            char_end,
             text: parsed.text,
             normalized_text: normalized,
             subject_hint: parsed.subject_hint.unwrap_or_else(|| "unknown".to_string()),
@@ -358,6 +420,11 @@ fn build_claim(
             object_hint,
             confidence_ppm,
             extractor_kind: extractor_kind.to_string(),
+            // Provenance travels on the NDJSON line when the extractor knows
+            // it (texo-extract does); absent means "not stated", journaled as
+            // the same empty default a pre-v1.1 event decodes to.
+            extractor_model: parsed.extractor_model.unwrap_or_default(),
+            prompt_version: parsed.prompt_version.unwrap_or_default(),
             observed_at_ms,
         },
     })
@@ -467,6 +534,67 @@ mod tests {
         let claims = run(cmd, &doc, Duration::from_secs(5)).expect("should accept");
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].payload.confidence_ppm, 1_000_000);
+    }
+
+    #[test]
+    fn char_span_and_provenance_are_threaded_into_the_payload() {
+        // A v1.1 extractor line carrying byte offsets and model provenance must
+        // land those values on the journaled ClaimRecorded unchanged.
+        let body = b"alpha\nDeploys happen on Friday.\n";
+        let doc = MarkdownDocument::from_bytes("t.md", body).expect("doc");
+        let cmd = r#"printf '{"line_start": 2, "text": "Deploys happen on Friday.", "char_start": 6, "char_end": 31, "extractor_model": "openrouter:test-model", "prompt_version": "propose-v3"}\n'"#;
+        let claims = run(cmd, &doc, Duration::from_secs(5)).expect("should accept");
+        assert_eq!(claims.len(), 1);
+        let payload = &claims[0].payload;
+        assert_eq!(payload.char_start, 6);
+        assert_eq!(payload.char_end, 31);
+        assert_eq!(payload.extractor_model, "openrouter:test-model");
+        assert_eq!(payload.prompt_version, "propose-v3");
+        // The offsets slice the raw body back to the claimed span.
+        let text = std::str::from_utf8(body).expect("utf8");
+        assert_eq!(&text[6..31], "Deploys happen on Friday.");
+    }
+
+    #[test]
+    fn missing_char_span_and_provenance_default_like_old_events() {
+        // A pre-v1.1 extractor line (no new fields) must keep working, with the
+        // journaled defaults matching what an old event decodes to.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x"}\n'"#;
+        let claims = run(cmd, &doc, Duration::from_secs(5)).expect("should accept");
+        assert_eq!(claims.len(), 1);
+        let payload = &claims[0].payload;
+        assert_eq!(payload.char_start, 0);
+        assert_eq!(payload.char_end, 0);
+        assert_eq!(payload.extractor_model, "");
+        assert_eq!(payload.prompt_version, "");
+    }
+
+    #[test]
+    fn one_sided_char_span_is_rejected() {
+        // char_start without char_end (or vice versa) is inconsistent output,
+        // not a decodable claim span.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x", "char_start": 0}\n'"#;
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("together"));
+    }
+
+    #[test]
+    fn inverted_char_span_is_rejected() {
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x", "char_start": 5, "char_end": 2}\n'"#;
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("start exceeds end"));
+    }
+
+    #[test]
+    fn char_end_past_source_is_rejected() {
+        // Body is 11 bytes; a char_end of 999 points outside the source.
+        let doc = MarkdownDocument::from_bytes("t.md", b"alpha\nbeta\n").expect("doc");
+        let cmd = r#"printf '{"line_start": 1, "text": "x", "char_start": 0, "char_end": 999}\n'"#;
+        let err = run(cmd, &doc, Duration::from_secs(5)).expect_err("should reject");
+        assert_matches!(err, ExtractError::Cmd(msg) if msg.contains("char_end 999 out of range"));
     }
 
     #[test]
