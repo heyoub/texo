@@ -1,0 +1,1 @@
+//! Claim-domain scaffolding.
