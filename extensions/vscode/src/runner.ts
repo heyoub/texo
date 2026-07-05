@@ -4,6 +4,25 @@ import * as vscode from "vscode";
 
 const execFileAsync = promisify(execFile);
 
+/** Default wall-clock budget for a single CLI invocation, in milliseconds. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Raised when a CLI invocation exceeds its time budget and the child is killed. */
+export class TexoTimeoutError extends Error {
+  constructor(binary: string, timeoutMs: number) {
+    super(`\`${binary}\` timed out after ${timeoutMs}ms; the check was killed.`);
+    this.name = "TexoTimeoutError";
+  }
+}
+
+/** True when `err` came from an AbortSignal cancelling a superseded run. */
+export function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  return err.name === "AbortError" || (err as NodeJS.ErrnoException).code === "ABORT_ERR";
+}
+
 export interface StalenessDiagnostic {
   file: string;
   line_start: number;
@@ -62,19 +81,47 @@ function texoArgs(extra: string[]): string[] {
   return ["--workspace", workspaceId, ...extra];
 }
 
-export async function runCheckStaleness(root: string, target: string): Promise<StalenessReport> {
+/**
+ * Run the texo CLI with a wall-clock timeout (child killed on expiry) and an
+ * optional AbortSignal so a superseded run can be cancelled outright.
+ */
+async function execTexo(
+  root: string,
+  extra: string[],
+  signal?: AbortSignal,
+): Promise<{ stdout: string }> {
   const cfg = vscode.workspace.getConfiguration("texo");
   const binary = cfg.get<string>("binaryPath", "texo");
-  const { stdout } = await execFileAsync(binary, texoArgs(["check-staleness", target, "--json"]), {
-    cwd: root,
-  });
+  const timeoutMs = cfg.get<number>("checkTimeoutMs", DEFAULT_TIMEOUT_MS);
+  try {
+    return await execFileAsync(binary, texoArgs(extra), {
+      cwd: root,
+      timeout: timeoutMs,
+      killSignal: "SIGTERM",
+      signal,
+    });
+  } catch (err) {
+    // An abort is a deliberate cancellation, not a timeout — rethrow as-is.
+    // Checked first in case an aborted child also reports `killed`.
+    if (isAbortError(err)) {
+      throw err;
+    }
+    if (err instanceof Error && (err as { killed?: boolean }).killed === true) {
+      throw new TexoTimeoutError(binary, timeoutMs);
+    }
+    throw err;
+  }
+}
+
+export async function runCheckStaleness(
+  root: string,
+  target: string,
+  signal?: AbortSignal,
+): Promise<StalenessReport> {
+  const { stdout } = await execTexo(root, ["check-staleness", target, "--json"], signal);
   return parseStalenessReport(stdout);
 }
 
 export async function runAgentContext(root: string, outPath: string): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("texo");
-  const binary = cfg.get<string>("binaryPath", "texo");
-  await execFileAsync(binary, texoArgs(["agent-context", "--out", outPath]), {
-    cwd: root,
-  });
+  await execTexo(root, ["agent-context", "--out", outPath]);
 }

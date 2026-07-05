@@ -20,6 +20,13 @@ Stale markdown diagnostics powered by the [`texo`](https://github.com/heyoub/tex
 | `texo.workspaceId` | `demo` | BatPak workspace scope (matches `--workspace`) |
 | `texo.checkOnSave` | `true` | Check markdown on save |
 | `texo.checkOnOpen` | `false` | Check markdown on open |
+| `texo.checkTimeoutMs` | `30000` | Kill CLI invocations that exceed this many milliseconds |
+
+Save-triggered checks are debounced per file (trailing edge, 400ms); a newer
+save cancels a superseded in-flight check. The status bar shows a `texo` item
+while a check runs (spinner) and after a failure (warning; details in the
+`texo` output channel). If `.texo/config.toml` is missing, checks are skipped
+and the extension says so once per session.
 
 ## Package locally
 
