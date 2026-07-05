@@ -180,6 +180,11 @@ fn embedding_text(view: &ClaimView) -> &str {
 /// Returns groups as vectors of indices into `claims`. Indices within a group and
 /// the groups themselves are ordered by ascending first member index, so the
 /// result is deterministic for a given input order.
+///
+/// # Errors
+///
+/// Returns [`PipelineError::Semantics`] when the [`Embedder`] fails to embed the
+/// claim texts.
 pub fn group_claims(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
@@ -317,6 +322,11 @@ pub struct RelatedClaims {
 /// Pure and deterministic for a given input order and backend behavior:
 /// clustering, pair enumeration, and all output ordering depend only on slice
 /// order and journal sequence, never on hash-map iteration order.
+///
+/// # Errors
+///
+/// Returns [`PipelineError::Semantics`] when the [`Embedder`] fails to embed the
+/// claim texts or the [`ClaimRelater`] fails to judge a candidate pair.
 pub fn relate_claims(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
@@ -798,6 +808,10 @@ mod tests {
     /// (cluster split or prefilter) drops a pair before any judge call.
     struct NeverRelater;
     impl ClaimRelater for NeverRelater {
+        #[expect(
+            clippy::panic,
+            reason = "test guard: reaching the judge for a gated-out pair is the failure being detected"
+        )]
         fn relate(&self, _older: &str, _newer: &str) -> Result<RelationVerdict, SemanticsError> {
             panic!("relater must not be called for gated-out pairs");
         }

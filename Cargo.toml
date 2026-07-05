@@ -39,18 +39,34 @@ assert_cmd = "2"
 predicates = "3"
 assert_matches = "1"
 
+# Lint bar: batpak's workspace lints verbatim (the composition bar), plus
+# pedantic-as-warn which texo already carried. Exceptions are per-site
+# #[expect(..)] with a reason, never table-level allows.
 [lints.rust]
 missing_docs = "warn"
+deprecated = "deny"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+panic = "deny"
+needless_return = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+wildcard_enum_match_arm = "warn"
+assertions_on_constants = "deny"
+disallowed_methods = "deny"
+large_enum_variant = "warn"
+clone_on_ref_ptr = "warn"
+needless_pass_by_value = "warn"
+module_name_repetitions = "allow"
 must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-doc_markdown = "allow"
-implicit_hasher = "allow"
-format_push_string = "allow"
-vec_init_then_push = "allow"
+missing_errors_doc = "warn"
 
 [profile.dev]
 debug = 1

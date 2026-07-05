@@ -1,4 +1,4 @@
-//! BatPak family risk spikes for WO-0.
+//! `BatPak` family risk spikes for WO-0.
 
 use std::cell::RefCell;
 use std::sync::Arc;

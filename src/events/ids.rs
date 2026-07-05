@@ -109,6 +109,11 @@ pub struct WorkspaceId(String);
 
 impl WorkspaceId {
     /// Construct a workspace id from a validated segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdParseError::InvalidWorkspace`] when the segment is empty or
+    /// contains a path-unsafe character (`/`, `\`, or NUL).
     pub fn new(value: impl Into<String>) -> Result<Self, IdParseError> {
         let value = value.into();
         validate_workspace(&value)?;
@@ -120,7 +125,7 @@ impl WorkspaceId {
         &self.0
     }
 
-    /// BatPak scope string: `workspace:{id}`.
+    /// `BatPak` scope string: `workspace:{id}`.
     pub fn scope(&self) -> String {
         format!("workspace:{}", self.0)
     }
@@ -155,6 +160,11 @@ const SOURCE_ID_HASH_LEN: usize = 12;
 /// hash would be silently truncated to a different, ambiguous id, so it is
 /// rejected instead. Callers derive the input from [`blake3_bytes_hex`], which
 /// always yields 64 characters, so this error path is unreachable in practice.
+///
+/// # Errors
+///
+/// Returns [`IdParseError::HashTooShort`] when `body_hash_hex` has fewer than
+/// [`SOURCE_ID_HASH_LEN`] characters.
 pub fn source_id_from_hash(body_hash_hex: &str) -> Result<SourceId, IdParseError> {
     let prefix = body_hash_hex
         .get(..SOURCE_ID_HASH_LEN)
@@ -186,7 +196,7 @@ pub fn conflict_id_from_pair(a: &ClaimId, b: &ClaimId) -> ConflictId {
     ConflictId::new_unchecked(format!("conflict_{}", &hash[..12]))
 }
 
-/// BLAKE3 hex digest for app-level content hashing (distinct from BatPak event hashes).
+/// BLAKE3 hex digest for app-level content hashing (distinct from `BatPak` event hashes).
 pub fn blake3_hash_hex(input: &str) -> String {
     blake3::hash(input.as_bytes()).to_hex().to_string()
 }

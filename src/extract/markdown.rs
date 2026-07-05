@@ -34,6 +34,11 @@ pub struct MarkdownDocument {
 
 impl MarkdownDocument {
     /// Parse markdown from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Io`] when the file cannot be read; otherwise the
+    /// [`Self::from_bytes`] errors on its content.
     pub fn from_path(path: &Path, root: &Path) -> Result<Self, SourceError> {
         let bytes = std::fs::read(path).map_err(SourceError::Io)?;
         let rel = path
@@ -45,6 +50,11 @@ impl MarkdownDocument {
     }
 
     /// Parse markdown bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Utf8`] when `bytes` are not valid UTF-8;
+    /// [`SourceError::Id`] when a source id cannot be derived from the body hash.
     pub fn from_bytes(path: &str, bytes: &[u8]) -> Result<Self, SourceError> {
         let body_hash_hex = blake3_bytes_hex(bytes);
         let source_id = source_id_from_hash(&body_hash_hex)?.to_string();
@@ -113,7 +123,7 @@ fn parse_lines(text: &str) -> Vec<MarkdownLine> {
 
 /// A prose block that may carry a durable claim.
 ///
-/// Candidates are emitted by [`segment_candidates`] from the CommonMark AST.
+/// Candidates are emitted by [`segment_candidates`] from the `CommonMark` AST.
 /// Structural and non-durable nodes (headings, code, frontmatter, HTML, tables,
 /// blockquotes) are excluded; only paragraphs and list items survive.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +155,10 @@ struct HeadingFrame {
 /// tables, and blockquotes (and all their contents) are excluded. Empty or
 /// degenerate input yields an empty vector.
 #[must_use]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "pulldown-cmark Event is a foreign enum that grows variants; only the matched events matter here"
+)]
 pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -283,6 +297,12 @@ pub enum SourceError {
 }
 
 /// Collect markdown files under a directory.
+///
+/// # Errors
+///
+/// Currently never returns `Err`: unreadable entries are skipped during the
+/// walk. The [`SourceError`] return type is kept so collection failures can
+/// surface later without a signature change.
 pub fn collect_markdown_files(input: &Path) -> Result<Vec<PathBuf>, SourceError> {
     let mut files = Vec::new();
     if input.is_file() {
@@ -441,8 +461,8 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("examples/helios/docs")
             .join(name);
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read helios doc {}: {e}", path.display()))
+        let context = format!("read helios doc {}", path.display());
+        std::fs::read_to_string(&path).expect(&context)
     }
 
     #[test]

@@ -67,13 +67,13 @@ impl Default for SemanticsConfig {
     }
 }
 
-/// Resolved configuration for one BatPak workspace scope.
+/// Resolved configuration for one `BatPak` workspace scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
-    /// Workspace identifier for BatPak scope partitioning.
+    /// Workspace identifier for `BatPak` scope partitioning.
     pub workspace_id: String,
-    /// Relative or absolute path to the BatPak store directory.
+    /// Relative or absolute path to the `BatPak` store directory.
     pub store_path: String,
     /// Glob for default markdown sources.
     pub docs_glob: String,
@@ -92,7 +92,7 @@ pub type TexoConfig = WorkspaceConfig;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceEntry {
-    /// Relative or absolute path to the BatPak store directory.
+    /// Relative or absolute path to the `BatPak` store directory.
     pub store_path: String,
     /// Glob for default markdown sources.
     pub docs_glob: String,
@@ -163,6 +163,12 @@ impl TexoRootConfig {
     }
 
     /// Load configuration from a TOML file (legacy flat or nested workspaces).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Io`] when the config file cannot be read;
+    /// [`ConfigError::Parse`] when it is valid as neither the legacy flat shape
+    /// nor the nested root shape.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
         if let Ok(legacy) = toml::from_str::<LegacyFlatConfig>(&raw) {
@@ -185,6 +191,12 @@ impl TexoRootConfig {
     }
 
     /// Write configuration to a TOML file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Serialize`] when the config cannot be rendered as
+    /// TOML; [`ConfigError::Io`] when the parent directory cannot be created or
+    /// the file cannot be written.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(ConfigError::Io)?;
@@ -194,6 +206,11 @@ impl TexoRootConfig {
     }
 
     /// Resolve a workspace by id or fall back to the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::UnknownWorkspace`] when the requested (or default)
+    /// id has no entry in [`Self::workspaces`].
     pub fn resolve(&self, workspace_id: Option<&str>) -> Result<WorkspaceConfig, ConfigError> {
         let id = workspace_id.unwrap_or(self.default_workspace.as_str());
         let entry = self
@@ -232,11 +249,23 @@ impl WorkspaceConfig {
     }
 
     /// Load a single workspace from a legacy flat config file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Io`] or [`ConfigError::Parse`] when
+    /// [`TexoRootConfig::load`] fails; [`ConfigError::UnknownWorkspace`] when the
+    /// file's default workspace has no entry.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         TexoRootConfig::load(path)?.resolve(None)
     }
 
     /// Write a legacy flat config file containing only this workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Serialize`] when the config cannot be rendered as
+    /// TOML; [`ConfigError::Io`] when the parent directory cannot be created or
+    /// the file cannot be written (via [`TexoRootConfig::save`]).
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let mut root = TexoRootConfig::demo();
         root.default_workspace.clone_from(&self.workspace_id);
@@ -253,6 +282,11 @@ impl WorkspaceConfig {
     }
 
     /// Parse the configured workspace id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidWorkspace`] when `workspace_id` is empty or
+    /// contains a path-unsafe character (`/`, `\`, or NUL).
     pub fn workspace(&self) -> Result<WorkspaceId, ConfigError> {
         WorkspaceId::try_from(self.workspace_id.as_str()).map_err(|_| ConfigError::InvalidWorkspace)
     }

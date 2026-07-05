@@ -15,12 +15,22 @@ use serde::{Deserialize, Serialize};
 /// degrades gracefully on length mismatch.
 pub trait Embedder {
     /// Embed a single piece of text.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return a [`SemanticsError`] (typically
+    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
     fn embed(&self, text: &str) -> Result<Vec<f32>, SemanticsError>;
 
     /// Embed a batch of texts.
     ///
     /// The default implementation loops over [`Embedder::embed`]; implementors
     /// backed by a batching runtime should override this for efficiency.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from [`Embedder::embed`]: the default
+    /// implementation fails on the first text that cannot be embedded.
     fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, SemanticsError> {
         texts.iter().map(|text| self.embed(text)).collect()
     }
@@ -51,6 +61,11 @@ pub struct NliVerdict {
 pub trait Nli {
     /// Classify whether `premise` entails, is neutral toward, or contradicts
     /// `hypothesis`.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return a [`SemanticsError`] (typically
+    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
     fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError>;
 }
 
@@ -97,6 +112,11 @@ pub struct RelationVerdict {
 /// remains available as a lower-level building block.
 pub trait ClaimRelater {
     /// Judge how the more-recent `newer` claim relates to the older `older` claim.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return a [`SemanticsError`] (typically
+    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
     fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError>;
 
     /// A stable identity for this relater's *output contract* — typically the
@@ -133,6 +153,11 @@ pub struct ProposedClaim {
 /// deterministic stub — no model, no network.
 pub trait Proposer {
     /// Propose atomic claims for `span_text`, given its `heading_path` context.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return a [`SemanticsError`] (typically
+    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
     fn propose(
         &self,
         span_text: &str,
@@ -151,6 +176,11 @@ pub trait Reranker {
     /// Return one relevance score per entry in `docs`, in the same order.
     ///
     /// Implementors must return exactly `docs.len()` scores.
+    ///
+    /// # Errors
+    ///
+    /// Implementors return a [`SemanticsError`] (typically
+    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
     fn rerank(&self, query: &str, docs: &[&str]) -> Result<Vec<f32>, SemanticsError>;
 }
 

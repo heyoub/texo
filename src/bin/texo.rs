@@ -12,7 +12,7 @@ struct Cli {
     #[arg(long, global = true, default_value = ".")]
     root: PathBuf,
 
-    /// BatPak workspace scope id (defaults to config default).
+    /// `BatPak` workspace scope id (defaults to config default).
     #[arg(long, global = true)]
     workspace: Option<String>,
 
@@ -73,7 +73,7 @@ enum Command {
         #[arg(long, default_value = "public")]
         out: PathBuf,
     },
-    /// Semantic supersession + conflict pass (OpenRouter; needs OPENROUTER_API_KEY).
+    /// Semantic supersession + conflict pass (`OpenRouter`; needs `OPENROUTER_API_KEY`).
     Relate {
         #[arg(long)]
         json: bool,
@@ -120,6 +120,10 @@ enum HostCmd {
     Fingerprint,
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI contract: fatal startup errors are reported on stderr"
+)]
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -205,6 +209,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "CLI contract: not-yet-wired commands report on stderr"
+)]
 fn unimplemented_command(name: &str) -> ExitCode {
     eprintln!("texo: '{name}' is not wired yet (rebuild in progress)");
     ExitCode::FAILURE
