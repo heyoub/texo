@@ -11,7 +11,7 @@ test:
     cargo test
 
 test-invariants:
-    cargo test --test spike_family
+    cargo test --test projection_laws --test compile_fail --test spike_family
 
 test-hygiene:
     #!/usr/bin/env bash
