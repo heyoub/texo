@@ -125,6 +125,13 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
 - **Jul 4:** proposer now skips document self-assertions (ROADMAP hardening
   item; `PROPOSE_PROMPT_VERSION` 3→4) — directly relevant to memory-agent
   transcripts, which constantly assert about themselves.
-- **Jul 4 (in flight):** batpak 0.9.0 migration, char-offset+provenance event
-  schema, cluster-first relate, VS Code extension manners — each in an
-  isolated worktree, landing only if the full suite + goldens stay green.
+- **Jul 4:** VS Code extension manners landed (timeout, debounce, status bar,
+  missing-config notice).
+- **Jul 4:** batpak 0.8.2 → 0.9.0 migration landed, behavior-preserving, with
+  empirical store-compat proof (0.8.2-written store replays byte-identically).
+- **Jul 4:** char offsets + model provenance on `ClaimRecorded` landed
+  (ROADMAP v1.1 item): span-level byte ranges + extractor model/prompt
+  version on every claim, `#[serde(default)]` back-compat, zero golden churn,
+  claim IDs unchanged — precise "jump to source" for the memory agent.
+- **Jul 4 (in flight):** cluster-first relate (O(n²) fix), in an isolated
+  worktree, landing only if the full suite + goldens stay green.

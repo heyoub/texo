@@ -83,6 +83,7 @@ module can consume (no BatPak store access from wasm).
   on the next Helios run.* The extractor faithfully recorded meta-claims a
   document makes about *itself* ("this wiki is the source of truth for new
   engineers") as current claims — ironic for a "prose is not state" tool.
-- **VS Code extension manners.** Check-on-save calls the CLI directly; add a
-  timeout around `execFile`, a per-file debounce, a status indicator, and a
-  graceful message when `.texo/config.toml` is missing.
+- **VS Code extension manners.** *Done Jul 4, 2026:* `execFile` timeout
+  (`texo.checkTimeoutMs`, default 30s), per-file trailing-edge debounce,
+  status-bar indicator, and a once-per-session notice when
+  `.texo/config.toml` is missing.
