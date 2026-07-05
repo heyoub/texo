@@ -120,6 +120,18 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
 - **Jul 8** — demo video, Devpost description, blog post. **Submit Jul 8**,
   one day early.
 
+## Known demo consideration (transcript phrasing)
+
+Chat transcripts are **first-person prose**. The extractor tends to normalize
+subjects ("we deploy on Fridays" → "The team deploys on Fridays"), and the
+faithfulness gate — correctly — rejects paraphrases whose entities aren't
+grounded in the source, so a first-person fact can fail to journal. Observed
+live Jul 5 (the claim was proposed, then gated). Declaratively-phrased facts
+journal reliably; the demo script should phrase facts with explicit subjects.
+Proper fix is extractor-prompt iteration against a transcript-style oracle
+case (same discipline as the reverted self-assertion rule) — post-submission
+unless time allows.
+
 ## In-window changelog (the "significantly updated" evidence)
 
 - **Jul 4:** license files added; docs generalized to OpenAI-compatible
@@ -128,9 +140,9 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
   (`OPENROUTER_EMBED_MODEL`, `OPENROUTER_RERANK_MODEL`) — the last two roles
   whose models could only be set programmatically; model-precedence logic
   factored pure (`pick_model`) and unit-tested.
-- **Jul 4:** proposer now skips document self-assertions (ROADMAP hardening
-  item; `PROPOSE_PROMPT_VERSION` 3→4) — directly relevant to memory-agent
-  transcripts, which constantly assert about themselves.
+- **Jul 4:** proposer self-assertion rule attempted (`PROPOSE_PROMPT_VERSION`
+  3→4) and **reverted the same day** after the live integrated oracle dropped
+  to 4/5 — see ROADMAP for the lesson (prompt changes are pipeline changes).
 - **Jul 4:** VS Code extension manners landed (timeout, debounce, status bar,
   missing-config notice).
 - **Jul 4:** batpak 0.8.2 → 0.9.0 migration landed, behavior-preserving, with
@@ -157,3 +169,7 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
   only (cross-session supersession, span receipts slicing the transcript,
   HTTP surface in-process); the LLM call is isolated behind a unit-tested
   pure request builder.
+- **Jul 5:** memory agent driven live end-to-end (three-session demo: teach →
+  change → recall; supersession with receipts and cited recall all verified
+  against real models). Transcript ingestion narrowed to user utterances only
+  — the assistant's restatements were journaling every fact twice.

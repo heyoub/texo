@@ -149,9 +149,18 @@ pub fn session_doc_path(root: &Path, session_id: &str) -> PathBuf {
 /// line is its own prose span). Newlines and runs of whitespace inside an
 /// utterance are collapsed so the one-line invariant holds; blank utterances
 /// are dropped. Deterministic: same transcript, same bytes.
+///
+/// Only USER utterances are rendered. The assistant restates the user's facts
+/// back at them ("Got it — deploys are on Tuesdays now"), and ingesting those
+/// echoes journals every fact twice (observed live: duplicate current claims
+/// per fact, one from each speaker). Memory is what the user said, not the
+/// model's paraphrase of it.
 pub fn render_transcript(session_id: &str, utterances: &[Utterance]) -> String {
     let mut out = format!("# Session {session_id}\n");
     for utterance in utterances {
+        if utterance.speaker != Speaker::User {
+            continue;
+        }
         let clean = utterance
             .text
             .split_whitespace()
@@ -388,15 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn transcript_renders_one_speaker_prefixed_line_per_utterance() {
+    fn transcript_renders_user_lines_only() {
         let transcript = vec![
             utterance(Speaker::User, "Deploys happen on Friday."),
-            utterance(Speaker::Assistant, "Okay, noted."),
+            utterance(
+                Speaker::Assistant,
+                "Okay, noted — deploys happen on Friday.",
+            ),
+            utterance(Speaker::User, "Alice approves releases."),
         ];
         let rendered = render_transcript("session-1", &transcript);
+        // The assistant's echo is NOT ingested — it would journal the fact twice.
         assert_eq!(
             rendered,
-            "# Session session-1\n\nUser: Deploys happen on Friday.\n\nAssistant: Okay, noted.\n"
+            "# Session session-1\n\nUser: Deploys happen on Friday.\n\nUser: Alice approves releases.\n"
         );
     }
 
