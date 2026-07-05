@@ -44,6 +44,10 @@ const DEFAULT_RELATER_MODEL: &str = "nvidia/nemotron-3-ultra-550b-a55b";
 const ENV_API_KEY: &str = "OPENROUTER_API_KEY";
 /// Environment variable overriding the API base URL.
 const ENV_BASE_URL: &str = "OPENROUTER_BASE_URL";
+/// Environment variable overriding the embeddings model.
+const ENV_EMBED_MODEL: &str = "OPENROUTER_EMBED_MODEL";
+/// Environment variable overriding the rerank model.
+const ENV_RERANK_MODEL: &str = "OPENROUTER_RERANK_MODEL";
 /// Environment variable overriding the NLI judge model.
 const ENV_NLI_MODEL: &str = "OPENROUTER_NLI_MODEL";
 /// Environment variable overriding the claim-relation judge model.
@@ -51,7 +55,7 @@ const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
-const PROPOSE_PROMPT_VERSION: u32 = 3;
+const PROPOSE_PROMPT_VERSION: u32 = 4;
 /// Version tag for the claim-relation prompt/output contract. Bump whenever
 /// `RELATION_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates verdicts produced by an older prompt.
@@ -224,19 +228,21 @@ impl OpenRouterClient {
 }
 
 /// Resolve a model id: explicit `Some` wins; else the environment variable if
-/// set and non-empty; else `default`.
+/// set and non-empty; else `default`. The env read is the only impure step;
+/// precedence lives in [`pick_model`] so it is unit-testable without touching
+/// process environment.
 fn resolve_model(explicit: Option<String>, env_var: Option<&str>, default: &str) -> String {
-    if let Some(model) = explicit.filter(|m| !m.trim().is_empty()) {
-        return model;
-    }
-    if let Some(var) = env_var {
-        if let Ok(value) = std::env::var(var) {
-            if !value.trim().is_empty() {
-                return value;
-            }
-        }
-    }
-    default.to_owned()
+    let env_value = env_var.and_then(|var| std::env::var(var).ok());
+    pick_model(explicit, env_value, default)
+}
+
+/// Pure precedence over already-read values: non-blank explicit, then
+/// non-blank env value, then `default`.
+fn pick_model(explicit: Option<String>, env_value: Option<String>, default: &str) -> String {
+    explicit
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| env_value.filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| default.to_owned())
 }
 
 // =====================================================================
@@ -251,11 +257,12 @@ pub struct OpenRouterEmbedder {
 
 impl OpenRouterEmbedder {
     /// Build an embedder. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then the default ([`DEFAULT_EMBEDDING_MODEL`]). Reads the API
-    /// key and base URL from the environment.
+    /// non-empty), then `OPENROUTER_EMBED_MODEL`, then the default
+    /// ([`DEFAULT_EMBEDDING_MODEL`]). Reads the API key and base URL from the
+    /// environment.
     pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
         let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, None, DEFAULT_EMBEDDING_MODEL);
+        let model = resolve_model(model, Some(ENV_EMBED_MODEL), DEFAULT_EMBEDDING_MODEL);
         Ok(Self { client, model })
     }
 }
@@ -352,11 +359,12 @@ pub struct OpenRouterReranker {
 
 impl OpenRouterReranker {
     /// Build a reranker. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then the default ([`DEFAULT_RERANK_MODEL`]). Reads the API
-    /// key and base URL from the environment.
+    /// non-empty), then `OPENROUTER_RERANK_MODEL`, then the default
+    /// ([`DEFAULT_RERANK_MODEL`]). Reads the API key and base URL from the
+    /// environment.
     pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
         let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, None, DEFAULT_RERANK_MODEL);
+        let model = resolve_model(model, Some(ENV_RERANK_MODEL), DEFAULT_RERANK_MODEL);
         Ok(Self { client, model })
     }
 }
@@ -813,6 +821,10 @@ done\");\n\
 - pure incident color with no decision in it (\"the rotation revolted\", \"a \
 Slack thread ensued\");\n\
 - opinions or judgments (\"Alice is a bottleneck\");\n\
+- a document's assertions about ITSELF — its own authority, freshness, or \
+role (\"this wiki is the source of truth\", \"this page is kept up to date\", \
+\"refer to this runbook for the latest process\"). A document vouching for \
+itself is not a fact about the system;\n\
 - low-level mechanics that merely ELABORATE a higher-level fact — prefer the \
 single headline statement. If the span says the platform now uses BatPak and \
 also describes the table-level mechanics of that migration, extract only the \
@@ -1320,6 +1332,31 @@ mod tests {
     fn resolve_model_ignores_blank_explicit() {
         let model = resolve_model(Some("   ".to_owned()), None, "default/model");
         assert_eq!(model, "default/model");
+    }
+
+    #[test]
+    fn pick_model_env_sits_between_explicit_and_default() {
+        assert_eq!(
+            pick_model(None, Some("env/model".to_owned()), "default/model"),
+            "env/model"
+        );
+        assert_eq!(
+            pick_model(
+                Some("explicit/model".to_owned()),
+                Some("env/model".to_owned()),
+                "default/model"
+            ),
+            "explicit/model"
+        );
+        assert_eq!(pick_model(None, None, "default/model"), "default/model");
+    }
+
+    #[test]
+    fn pick_model_ignores_blank_env() {
+        assert_eq!(
+            pick_model(None, Some("   ".to_owned()), "default/model"),
+            "default/model"
+        );
     }
 
     // --- retry backoff ---
