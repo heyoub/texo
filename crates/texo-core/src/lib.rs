@@ -51,7 +51,7 @@ pub use semantics::{
     ProposedClaim, Proposer, RelationVerdict, Reranker, SemanticsError,
 };
 pub use semantics_pipeline::{
-    group_claims, relate_claims, PipelineError, RelatedClaims, SupersessionEdge,
+    group_claims, relate_claims, PipelineError, RelateThresholds, RelatedClaims, SupersessionEdge,
 };
 pub use source::{
     collect_markdown_files, segment_candidates, CandidateSpan, MarkdownDocument, SourceError,

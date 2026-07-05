@@ -9,14 +9,19 @@
 
 use texo_core::types::ids::SourceId;
 use texo_core::types::receipt::receipt_view;
-use texo_core::{relate_claims, ClaimId, ClaimStatus, ClaimView};
+use texo_core::{relate_claims, ClaimId, ClaimStatus, ClaimView, RelateThresholds};
 use texo_semantics::{OpenRouterEmbedder, OpenRouterRelater};
 
-/// Coarse cosine **prefilter** for gemini-embedding-2: pairs below this are never
-/// sent to the relation judge. It must sit *below* the lowest same-subject
-/// similarity in the corpus (measured: Postgres↔BatPak ≈ 0.70) so no true pair is
-/// dropped — the relater, not this threshold, does the subject separation.
-const PREFILTER: f32 = 0.60;
+/// Cluster-first thresholds for gemini-embedding-2, mirroring `texo relate`.
+/// Both must sit *below* the lowest same-subject similarity in the corpus
+/// (measured: Postgres↔BatPak ≈ 0.70) so no true pair is split across clusters
+/// or dropped by the prefilter — the relater, not these thresholds, does the
+/// subject separation. `cluster` matches the `[semantics]` cosine_threshold
+/// default.
+const THRESHOLDS: RelateThresholds = RelateThresholds {
+    cluster: 0.65,
+    prefilter: 0.60,
+};
 
 /// Build a claim. `seq` is the journal sequence (recency: higher = newer) and also the
 /// unique id seed; `text` is the claim sentence; `src` the originating doc.
@@ -95,7 +100,7 @@ fn helios_relations_hold_with_real_models() {
     let embedder = OpenRouterEmbedder::new(None).expect("embedder");
     let relater = OpenRouterRelater::new(None).expect("relater");
 
-    let out = relate_claims(&claims, &embedder, &relater, PREFILTER).expect("relate");
+    let out = relate_claims(&claims, &embedder, &relater, THRESHOLDS).expect("relate");
     let edges = &out.supersessions;
     let conflicts = &out.conflicts;
 

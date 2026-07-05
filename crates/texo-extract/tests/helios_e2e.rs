@@ -15,13 +15,22 @@ use std::path::PathBuf;
 
 use texo_core::types::ids::SourceId;
 use texo_core::types::receipt::receipt_view;
-use texo_core::{relate_claims, ClaimId, ClaimStatus, ClaimView, DEFAULT_GROUNDING_THRESHOLD_PPM};
+use texo_core::{
+    relate_claims, ClaimId, ClaimStatus, ClaimView, RelateThresholds,
+    DEFAULT_GROUNDING_THRESHOLD_PPM,
+};
 use texo_extract::run_extraction;
 use texo_semantics::{OpenRouterEmbedder, OpenRouterProposer, OpenRouterRelater};
 
-/// Coarse cosine prefilter for relating (below the lowest true same-subject
-/// similarity; the relater does the real separation).
-const PREFILTER: f32 = 0.60;
+/// Cluster-first candidate generation, mirroring `texo relate`: connected-
+/// component clustering at the default `[semantics]` cosine_threshold (0.65 —
+/// below the measured Postgres↔BatPak same-subject floor of ≈ 0.70), then a
+/// coarse cosine prefilter within each cluster (below the lowest true
+/// same-subject similarity; the relater does the real separation).
+const THRESHOLDS: RelateThresholds = RelateThresholds {
+    cluster: 0.65,
+    prefilter: 0.60,
+};
 
 fn docs_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/helios/docs")
@@ -120,7 +129,7 @@ fn helios_corpus_reaches_five_of_five() {
 
     let embedder = OpenRouterEmbedder::new(None).expect("embedder");
     let relater = OpenRouterRelater::new(None).expect("relater");
-    let out = relate_claims(&claims, &embedder, &relater, PREFILTER).expect("relate");
+    let out = relate_claims(&claims, &embedder, &relater, THRESHOLDS).expect("relate");
 
     let text_of = |id: &ClaimId| -> String {
         claims

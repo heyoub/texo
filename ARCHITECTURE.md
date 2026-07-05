@@ -4,7 +4,7 @@
 markdown sources
    ↓ ingest — heuristic extract (default)  OR  AST → texo-extract (LLM) → faithfulness gate
 BatPak journal (.texo/store)
-   ↓ relate (optional): embed prefilter → LLM relation-judge → supersede/conflict events
+   ↓ relate (optional): embed → cluster (connected components) → within-cluster prefilter → LLM relation-judge → supersede/conflict events
    ↓ append typed events + verify receipts
 replay (query_entries_after)
    ↓ ClaimState projection (errors propagate)

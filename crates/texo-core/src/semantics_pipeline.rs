@@ -5,9 +5,11 @@
 //! and [`crate::conflicts::detect`]) with **meaning-based** logic driven by two
 //! injected backends:
 //!
-//! * an [`Embedder`] — used as a coarse cosine prefilter (and by [`group_claims`]
-//!   for connected-component clustering), so obviously-unrelated claims never
-//!   reach the judge;
+//! * an [`Embedder`] — used for **cluster-first candidate generation**: claims
+//!   are clustered into connected components over the cosine-similarity graph
+//!   (see [`group_claims`]), and only *within-cluster* pairs that also pass a
+//!   coarse cosine prefilter ever reach the judge, so obviously-unrelated claims
+//!   never cost a judge call;
 //! * a [`ClaimRelater`] — an LLM-as-judge that, for one candidate pair, makes the
 //!   single richer call embeddings + 3-way NLI cannot: are the claims about the
 //!   same subject, and does the newer one *update* the older (supersede) or merely
@@ -71,15 +73,25 @@ pub fn group_claims(
     embedder: &dyn Embedder,
     threshold: f32,
 ) -> Result<Vec<Vec<usize>>, PipelineError> {
-    let n = claims.len();
-    if n == 0 {
+    if claims.is_empty() {
         return Ok(Vec::new());
     }
-
     let texts: Vec<&str> = claims.iter().map(|(_, v)| embedding_text(v)).collect();
     let embeddings = embedder.embed_batch(&texts)?;
+    Ok(similarity_components(&embeddings, threshold))
+}
 
-    // Union-find over claim indices.
+/// Connected components of the cosine-similarity link graph over `embeddings`.
+///
+/// Two indices are linked when their cosine similarity is `>= threshold`; the
+/// components of that graph are returned as vectors of indices. The result is
+/// **deterministic for a given input order**: it depends only on slice order
+/// (never on hash-map iteration), members within a component are ascending, and
+/// components are ordered by their first (smallest) member.
+fn similarity_components(embeddings: &[Vec<f32>], threshold: f32) -> Vec<Vec<usize>> {
+    let n = embeddings.len();
+
+    // Union-find over indices.
     let mut parent: Vec<usize> = (0..n).collect();
     for i in 0..n {
         for j in (i + 1)..n {
@@ -105,7 +117,7 @@ pub fn group_claims(
             groups.push(vec![i]);
         }
     }
-    Ok(groups)
+    groups
 }
 
 /// Path-compressing union-find root lookup over a `parent` slice.
@@ -120,6 +132,23 @@ fn union_find_root(parent: &mut [usize], mut x: usize) -> usize {
 /// Sequence rank used to order claims oldest-to-newest within a group.
 fn sequence_rank(view: &ClaimView) -> u64 {
     view.receipt.sequence.get()
+}
+
+/// Thresholds governing candidate generation in [`relate_claims`].
+///
+/// Both are in-memory cosine similarities (never journaled, so floats are fine
+/// here — determinism of the *recorded* output comes from the record-once event
+/// boundary, not from these gates).
+#[derive(Debug, Clone, Copy)]
+pub struct RelateThresholds {
+    /// Link threshold for connected-component **clustering** (candidate
+    /// generation). Pairs split across clusters are never judged; see
+    /// [`relate_claims`]. Typically the `[semantics]` `cosine_threshold`.
+    pub cluster: f32,
+    /// Coarse per-pair cosine **prefilter** applied within a cluster. Must sit
+    /// below the lowest same-subject similarity in the corpus (the relater does
+    /// the real separating), so it is intentionally lower than `cluster`.
+    pub prefilter: f32,
 }
 
 /// Both relations the semantic pipeline derives, in a single pass.
@@ -141,26 +170,46 @@ pub struct RelatedClaims {
 /// deploy" from "Friday release". A [`ClaimRelater`] answers both questions
 /// (shared subject? update or conflict?) at once.
 ///
-/// Pipeline:
-/// 1. Embed every claim once; consider only pairs whose cosine similarity is
-///    `>= prefilter_threshold`. The prefilter is a *coarse* recall gate to bound
-///    the number of judge calls — it should sit **below** the lowest same-subject
-///    similarity in the corpus, never high enough to do the separating itself
-///    (that is the relater's job).
-/// 2. Order each surviving pair oldest→newest (by `receipt.sequence`, index as a
+/// Candidate generation is **cluster-first** so the judge-call count scales with
+/// cluster sizes, not with the corpus:
+/// 1. Embed every claim once; cluster the claims into connected components of the
+///    cosine-similarity graph at [`RelateThresholds::cluster`] (the same
+///    clustering as [`group_claims`]).
+/// 2. Within each cluster, consider only pairs whose cosine similarity is
+///    `>= prefilter` — a *coarse* recall gate that should sit **below** the
+///    lowest same-subject similarity in the corpus, never high enough to do the
+///    separating itself (that is the relater's job).
+/// 3. Order each surviving pair oldest→newest (by `receipt.sequence`, index as a
 ///    deterministic tiebreak) and ask the relater how the newer relates to the
 ///    older. Identical-normalized-text pairs are skipped as duplicates.
-/// 3. [`ClaimRelation::Supersedes`] → the older is superseded; among all claims
+/// 4. [`ClaimRelation::Supersedes`] → the older is superseded; among all claims
 ///    that supersede it, the **newest** wins (one canonical edge per stale claim).
-/// 4. [`ClaimRelation::Conflict`] → a candidate conflict, kept only if **neither**
-///    side was superseded in step 3 (a superseded claim is no longer current).
+/// 5. [`ClaimRelation::Conflict`] → a candidate conflict, kept only if **neither**
+///    side was superseded in step 4 (a superseded claim is no longer current).
 ///
-/// Pure and deterministic for a given input order and backend behavior.
+/// # Cross-cluster pairs are deliberately skipped
+///
+/// A pair whose claims land in different clusters is **never judged**, even when
+/// its cosine similarity clears the prefilter — that skip is the point: it bounds
+/// judge calls to `Σ (|cluster| choose 2)` (roughly `O(n · max_cluster)`) instead
+/// of `O(n²)` over the whole corpus, which is what makes relate practical on
+/// large corpora. Same-subject claims embed well above any sane cluster
+/// threshold (and components link transitively), so a genuinely related pair
+/// landing in two clusters means the cluster threshold is set above the corpus's
+/// same-subject similarity floor — lower `[semantics]` `cosine_threshold` rather
+/// than the prefilter. With `cluster <= prefilter` the judged pair set is
+/// identical to the pre-clustering behavior (every pair passing the prefilter is
+/// by definition intra-cluster). For any pair that *is* judged, the verdict and
+/// event semantics are exactly those of the pre-clustering pipeline.
+///
+/// Pure and deterministic for a given input order and backend behavior:
+/// clustering, pair enumeration, and all output ordering depend only on slice
+/// order and journal sequence, never on hash-map iteration order.
 pub fn relate_claims(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
     relater: &dyn ClaimRelater,
-    prefilter_threshold: f32,
+    thresholds: RelateThresholds,
 ) -> Result<RelatedClaims, PipelineError> {
     let n = claims.len();
     if n < 2 {
@@ -170,49 +219,55 @@ pub fn relate_claims(
     let texts: Vec<&str> = claims.iter().map(|(_, v)| embedding_text(v)).collect();
     let embeddings = embedder.embed_batch(&texts)?;
 
+    // Cluster first: the judge only ever sees within-cluster pairs.
+    let clusters = similarity_components(&embeddings, thresholds.cluster);
+
     // old_idx -> newest superseding new_idx; conflict pairs as (min_idx, max_idx).
     let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
     let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
 
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if cosine_similarity(&embeddings[i], &embeddings[j]) < prefilter_threshold {
-                continue;
-            }
-            // Order the pair oldest -> newest; index breaks sequence ties.
-            let (old_idx, new_idx) =
-                if (sequence_rank(&claims[i].1), i) <= (sequence_rank(&claims[j].1), j) {
-                    (i, j)
-                } else {
-                    (j, i)
-                };
-            let old_view = &claims[old_idx].1;
-            let new_view = &claims[new_idx].1;
-            if old_view.normalized_text == new_view.normalized_text {
-                continue;
-            }
-
-            // The relater is an LLM judge: feed it the *raw* claim text, not the
-            // normalized (lowercased) form used for embedding — case and natural
-            // wording carry the update-intent signal it reasons over.
-            let verdict = relater.relate(&old_view.text, &new_view.text)?;
-            match verdict.relation {
-                ClaimRelation::Supersedes => {
-                    let better = match winners.get(&old_idx) {
-                        None => true,
-                        Some(&cur) => {
-                            (sequence_rank(&claims[new_idx].1), new_idx)
-                                > (sequence_rank(&claims[cur].1), cur)
-                        }
+    for cluster in &clusters {
+        for (pos, &i) in cluster.iter().enumerate() {
+            for &j in &cluster[pos + 1..] {
+                // Cluster members are ascending, so i < j always holds here.
+                if cosine_similarity(&embeddings[i], &embeddings[j]) < thresholds.prefilter {
+                    continue;
+                }
+                // Order the pair oldest -> newest; index breaks sequence ties.
+                let (old_idx, new_idx) =
+                    if (sequence_rank(&claims[i].1), i) <= (sequence_rank(&claims[j].1), j) {
+                        (i, j)
+                    } else {
+                        (j, i)
                     };
-                    if better {
-                        winners.insert(old_idx, new_idx);
+                let old_view = &claims[old_idx].1;
+                let new_view = &claims[new_idx].1;
+                if old_view.normalized_text == new_view.normalized_text {
+                    continue;
+                }
+
+                // The relater is an LLM judge: feed it the *raw* claim text, not
+                // the normalized (lowercased) form used for embedding — case and
+                // natural wording carry the update-intent signal it reasons over.
+                let verdict = relater.relate(&old_view.text, &new_view.text)?;
+                match verdict.relation {
+                    ClaimRelation::Supersedes => {
+                        let better = match winners.get(&old_idx) {
+                            None => true,
+                            Some(&cur) => {
+                                (sequence_rank(&claims[new_idx].1), new_idx)
+                                    > (sequence_rank(&claims[cur].1), cur)
+                            }
+                        };
+                        if better {
+                            winners.insert(old_idx, new_idx);
+                        }
                     }
+                    ClaimRelation::Conflict => {
+                        conflict_pairs.push((old_idx.min(new_idx), old_idx.max(new_idx)));
+                    }
+                    ClaimRelation::Duplicate | ClaimRelation::Unrelated => {}
                 }
-                ClaimRelation::Conflict => {
-                    conflict_pairs.push((old_idx.min(new_idx), old_idx.max(new_idx)));
-                }
-                ClaimRelation::Duplicate | ClaimRelation::Unrelated => {}
             }
         }
     }
@@ -358,6 +413,14 @@ mod tests {
         fn fingerprint(&self) -> String {
             "scripted".to_owned()
         }
+    }
+
+    /// Shorthand for [`RelateThresholds`]. Passing `cluster == prefilter`
+    /// reproduces the pre-clustering judged pair set exactly (every pair passing
+    /// the prefilter is intra-cluster by definition), which is what the original
+    /// single-threshold tests exercised.
+    fn th(cluster: f32, prefilter: f32) -> RelateThresholds {
+        RelateThresholds { cluster, prefilter }
     }
 
     fn claim(id: &str, subject: &str, text: &str, sequence: u64) -> (ClaimId, ClaimView) {
@@ -529,7 +592,8 @@ mod tests {
             ("friday", "tuesday", ClaimRelation::Supersedes),
             ("wednesday", "tuesday", ClaimRelation::Supersedes),
         ]);
-        let out = relate_claims(&claims, &deploy_embedder(), &relater, 0.9).expect("relate");
+        let out =
+            relate_claims(&claims, &deploy_embedder(), &relater, th(0.9, 0.9)).expect("relate");
 
         // Friday and Wednesday each superseded by Tuesday (the newest winner).
         assert_eq!(out.supersessions.len(), 2);
@@ -559,7 +623,8 @@ mod tests {
         // Monday vs Friday disagree with no update intent -> conflict. Approval is
         // a different subject and never grouped with the schedule pair.
         let relater = ScriptedRelater::new(vec![("monday", "friday", ClaimRelation::Conflict)]);
-        let out = relate_claims(&claims, &release_embedder(), &relater, 0.9).expect("relate");
+        let out =
+            relate_claims(&claims, &release_embedder(), &relater, th(0.9, 0.9)).expect("relate");
 
         assert!(
             out.supersessions.is_empty(),
@@ -596,7 +661,7 @@ mod tests {
             ],
             3,
         );
-        let out = relate_claims(&claims, &embedder, &relater, 0.9).expect("relate");
+        let out = relate_claims(&claims, &embedder, &relater, th(0.9, 0.9)).expect("relate");
         // Friday and Monday are both superseded by Tuesday, so the Friday/Monday
         // conflict is dropped.
         assert_eq!(out.supersessions.len(), 2);
@@ -615,36 +680,57 @@ mod tests {
         let embedder = FixedEmbedder::new(vec![("tuesday", vec![1.0, 0.0])], 2);
         // Even if the judge would fire, identical normalized text is never judged.
         let relater = ScriptedRelater::new(vec![("tuesday", "tuesday", ClaimRelation::Supersedes)]);
-        let out = relate_claims(&claims, &embedder, &relater, 0.9).expect("relate");
+        let out = relate_claims(&claims, &embedder, &relater, th(0.9, 0.9)).expect("relate");
+        assert!(out.supersessions.is_empty());
+        assert!(out.conflicts.is_empty());
+    }
+
+    /// A relater that panics if ever called: proves a candidate-generation gate
+    /// (cluster split or prefilter) drops a pair before any judge call.
+    struct NeverRelater;
+    impl ClaimRelater for NeverRelater {
+        fn relate(&self, _older: &str, _newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            panic!("relater must not be called for gated-out pairs");
+        }
+        fn fingerprint(&self) -> String {
+            "never".to_owned()
+        }
+    }
+
+    #[test]
+    fn relate_prefilter_skips_low_similarity_pairs_within_a_cluster() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "alpha subject", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "beta subject", 2),
+        ];
+        // Cosine ~0.30: above the cluster link threshold (0.2), so both claims
+        // share one cluster — but below the prefilter (0.5), so the pair must
+        // still be gated out before any judge call.
+        let embedder = FixedEmbedder::new(
+            vec![("alpha", vec![1.0, 0.0]), ("beta", vec![0.3, 0.954])],
+            2,
+        );
+        let out = relate_claims(&claims, &embedder, &NeverRelater, th(0.2, 0.5)).expect("relate");
         assert!(out.supersessions.is_empty());
         assert!(out.conflicts.is_empty());
     }
 
     #[test]
-    fn relate_prefilter_skips_low_similarity_pairs_without_judging() {
-        // A relater that panics if ever called proves the cosine prefilter gates
-        // out below-threshold pairs before any judge call.
-        struct NeverRelater;
-        impl ClaimRelater for NeverRelater {
-            fn relate(
-                &self,
-                _older: &str,
-                _newer: &str,
-            ) -> Result<RelationVerdict, SemanticsError> {
-                panic!("relater must not be called for sub-threshold pairs");
-            }
-            fn fingerprint(&self) -> String {
-                "never".to_owned()
-            }
-        }
+    fn relate_skips_cross_cluster_pairs_without_judging() {
+        // Cosine ~0.87: the pair clears the coarse prefilter (0.6) — under the
+        // pre-clustering pipeline it WOULD have been judged — but it falls below
+        // the cluster link threshold (0.95), so the two claims land in different
+        // clusters and the pair is deliberately never judged. This is the
+        // documented cross-cluster skip that bounds judge calls.
         let claims = vec![
             claim("claim_aaaaaaaaaaaa", "x", "alpha subject", 1),
             claim("claim_bbbbbbbbbbbb", "x", "beta subject", 2),
         ];
-        // Orthogonal embeddings -> cosine 0 < threshold -> never judged.
-        let embedder =
-            FixedEmbedder::new(vec![("alpha", vec![1.0, 0.0]), ("beta", vec![0.0, 1.0])], 2);
-        let out = relate_claims(&claims, &embedder, &NeverRelater, 0.5).expect("relate");
+        let embedder = FixedEmbedder::new(
+            vec![("alpha", vec![1.0, 0.0]), ("beta", vec![0.87, 0.493])],
+            2,
+        );
+        let out = relate_claims(&claims, &embedder, &NeverRelater, th(0.95, 0.6)).expect("relate");
         assert!(out.supersessions.is_empty());
         assert!(out.conflicts.is_empty());
     }
@@ -653,11 +739,11 @@ mod tests {
     fn relate_empty_and_singleton_inputs_are_inert() {
         let embedder = FixedEmbedder::new(Vec::new(), 2);
         let relater = ScriptedRelater::new(Vec::new());
-        let empty = relate_claims(&[], &embedder, &relater, 0.5).expect("relate empty");
+        let empty = relate_claims(&[], &embedder, &relater, th(0.5, 0.5)).expect("relate empty");
         assert!(empty.supersessions.is_empty() && empty.conflicts.is_empty());
 
         let one = vec![claim("claim_aaaaaaaaaaaa", "x", "Deploys on Tuesday", 1)];
-        let single = relate_claims(&one, &embedder, &relater, 0.5).expect("relate one");
+        let single = relate_claims(&one, &embedder, &relater, th(0.5, 0.5)).expect("relate one");
         assert!(single.supersessions.is_empty() && single.conflicts.is_empty());
     }
 
@@ -677,7 +763,185 @@ mod tests {
             claim("claim_bbbbbbbbbbbb", "x", "two", 2),
         ];
         let relater = ScriptedRelater::new(Vec::new());
-        let err = relate_claims(&claims, &FailingEmbedder, &relater, 0.5).expect_err("propagate");
+        let err = relate_claims(&claims, &FailingEmbedder, &relater, th(0.5, 0.5))
+            .expect_err("propagate");
         assert!(matches!(err, PipelineError::Semantics(_)));
+    }
+
+    // --- cluster-first candidate generation (the O(n²) fix) ---
+
+    /// Deterministic relater that counts every judge call and always answers
+    /// [`ClaimRelation::Unrelated`], so candidate generation alone decides how
+    /// many calls happen.
+    struct CountingRelater {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingRelater {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ClaimRelater for CountingRelater {
+        fn relate(&self, _older: &str, _newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(RelationVerdict {
+                relation: ClaimRelation::Unrelated,
+                score: 1.0,
+            })
+        }
+        fn fingerprint(&self) -> String {
+            "counting".to_owned()
+        }
+    }
+
+    /// Corpus of `k = 3` well-separated clusters of size `m = 3` (n = 9), as 2-D
+    /// unit vectors at angular offsets: within-cluster spread ≤ 2° (cosine
+    /// ≥ 0.999), adjacent clusters 30° apart (cosine ≈ 0.85–0.88 — above the 0.6
+    /// prefilter, below the 0.98 cluster threshold), far clusters 60° apart
+    /// (cosine < 0.6).
+    fn three_cluster_corpus() -> (Vec<(ClaimId, ClaimView)>, FixedEmbedder) {
+        // (distinct keyword, degrees) — no keyword is a substring of another.
+        let spec: [(&str, f32); 9] = [
+            ("aardvark", 0.0),
+            ("abacus", 1.0),
+            ("acorn", 2.0),
+            ("baboon", 30.0),
+            ("badger", 31.0),
+            ("bagel", 32.0),
+            ("cactus", 60.0),
+            ("camel", 61.0),
+            ("candle", 62.0),
+        ];
+        let table: Vec<(&'static str, Vec<f32>)> = spec
+            .iter()
+            .map(|(key, deg)| {
+                let rad = deg.to_radians();
+                (*key, vec![rad.cos(), rad.sin()])
+            })
+            .collect();
+        let claims: Vec<(ClaimId, ClaimView)> = spec
+            .iter()
+            .enumerate()
+            .map(|(idx, (key, _))| {
+                let seq = u64::try_from(idx).expect("small index") + 1;
+                let id = format!("claim_{idx:012x}");
+                claim(&id, "x", &format!("the {key} subject"), seq)
+            })
+            .collect();
+        (claims, FixedEmbedder::new(table, 2))
+    }
+
+    const CORPUS_THRESHOLDS: RelateThresholds = RelateThresholds {
+        cluster: 0.98,
+        prefilter: 0.6,
+    };
+
+    #[test]
+    fn judge_calls_bounded_by_within_cluster_pairs() {
+        let (claims, embedder) = three_cluster_corpus();
+        let n = claims.len();
+
+        // Sanity: the corpus clusters as 3 components of 3 at the cluster
+        // threshold, so the within-cluster pair bound is Σ (3 choose 2) = 9.
+        let groups = group_claims(&claims, &embedder, CORPUS_THRESHOLDS.cluster).expect("group");
+        let sizes: Vec<usize> = groups.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![3, 3, 3]);
+        let within_cluster_pairs: usize = sizes.iter().map(|m| m * (m - 1) / 2).sum();
+
+        // The pre-clustering pipeline judged every pair clearing the prefilter —
+        // count those pairs to show the bound is a strict improvement here.
+        let texts: Vec<&str> = claims.iter().map(|(_, v)| v.text.as_str()).collect();
+        let embeddings = embedder.embed_batch(&texts).expect("embed");
+        let mut prefilter_pairs = 0usize;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if cosine_similarity(&embeddings[i], &embeddings[j]) >= CORPUS_THRESHOLDS.prefilter
+                {
+                    prefilter_pairs += 1;
+                }
+            }
+        }
+
+        let relater = CountingRelater::new();
+        let out = relate_claims(&claims, &embedder, &relater, CORPUS_THRESHOLDS).expect("relate");
+        assert!(out.supersessions.is_empty() && out.conflicts.is_empty());
+
+        assert!(
+            relater.count() <= within_cluster_pairs,
+            "judge calls ({}) must be bounded by Σ (m_i choose 2) = {within_cluster_pairs}",
+            relater.count()
+        );
+        assert_eq!(
+            relater.count(),
+            within_cluster_pairs,
+            "every distinct-text within-cluster pair passes the prefilter here"
+        );
+        assert!(
+            relater.count() < prefilter_pairs,
+            "clustering must judge strictly fewer pairs than the prefilter alone \
+             ({} vs {prefilter_pairs})",
+            relater.count()
+        );
+        assert!(
+            prefilter_pairs < n * (n - 1) / 2,
+            "sanity: some pairs fall below the prefilter too"
+        );
+    }
+
+    #[test]
+    fn clustering_is_deterministic_across_runs() {
+        let (claims, embedder) = three_cluster_corpus();
+        let first = group_claims(&claims, &embedder, CORPUS_THRESHOLDS.cluster).expect("group");
+        for _ in 0..5 {
+            let again = group_claims(&claims, &embedder, CORPUS_THRESHOLDS.cluster).expect("group");
+            assert_eq!(first, again, "same input must yield identical clusters");
+        }
+        // Stable ordering: members ascend within a group; groups are ordered by
+        // their first (smallest) member index — never hash-map iteration order.
+        for group in &first {
+            assert!(group.windows(2).all(|w| w[0] < w[1]));
+        }
+        let firsts: Vec<usize> = first.iter().map(|g| g[0]).collect();
+        assert!(firsts.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn relate_is_deterministic_across_runs() {
+        let (claims, embedder) = three_cluster_corpus();
+        // Script a supersession and a conflict inside two different clusters so
+        // both output vectors are non-empty.
+        let relater = ScriptedRelater::new(vec![
+            ("aardvark", "acorn", ClaimRelation::Supersedes),
+            ("baboon", "bagel", ClaimRelation::Conflict),
+        ]);
+        let first = relate_claims(&claims, &embedder, &relater, CORPUS_THRESHOLDS).expect("relate");
+        assert_eq!(first.supersessions.len(), 1);
+        assert_eq!(first.conflicts.len(), 1);
+        for _ in 0..5 {
+            let again =
+                relate_claims(&claims, &embedder, &relater, CORPUS_THRESHOLDS).expect("relate");
+            assert_eq!(
+                first.supersessions, again.supersessions,
+                "supersessions must be identical across runs"
+            );
+            let ids = |out: &RelatedClaims| -> Vec<String> {
+                out.conflicts
+                    .iter()
+                    .map(|c| c.conflict_id.to_string())
+                    .collect()
+            };
+            assert_eq!(
+                ids(&first),
+                ids(&again),
+                "conflict ids must be identical across runs"
+            );
+        }
     }
 }

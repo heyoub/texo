@@ -8,7 +8,16 @@ use serde::{Deserialize, Serialize};
 use crate::types::ids::WorkspaceId;
 
 /// Default cosine-similarity acceptance threshold for the semantics pipeline.
-const DEFAULT_COSINE_THRESHOLD: f32 = 0.78;
+///
+/// Used by `texo relate` as the **cluster link threshold** for connected-component
+/// candidate generation (see `texo-core`'s `semantics_pipeline`): claims are
+/// clustered at this similarity and the LLM judge only sees within-cluster pairs.
+/// It must sit at or below the corpus's lowest same-subject similarity so no true
+/// pair is split across clusters — measured on the Helios corpus with the hosted
+/// embedder, the floor is Postgres↔BatPak ≈ 0.70, hence 0.65 (margin below the
+/// floor, above the 0.60 relate prefilter). Raise it per workspace to prune more
+/// aggressively on corpora whose subjects separate more cleanly.
+const DEFAULT_COSINE_THRESHOLD: f32 = 0.65;
 
 fn default_cosine_threshold() -> f32 {
     DEFAULT_COSINE_THRESHOLD
@@ -32,7 +41,10 @@ pub struct SemanticsConfig {
     /// Pinned revision/identifier for the NLI model.
     #[serde(default)]
     pub nli_model_revision: String,
-    /// Cosine-similarity acceptance threshold.
+    /// Cosine-similarity acceptance threshold; `texo relate` uses it as the
+    /// cluster link threshold for candidate generation. Must sit at or below the
+    /// corpus's lowest same-subject similarity (default 0.65; see the module
+    /// source for the measured rationale).
     #[serde(default = "default_cosine_threshold")]
     pub cosine_threshold: f32,
     /// Optional override for the semantic extractor model.

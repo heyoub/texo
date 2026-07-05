@@ -54,16 +54,6 @@ each claim it produced: "this claim came from bytes X–Y of this doc."
 **Risks:** replay back-compat (must test), the two extraction paths agreeing on
 field semantics, golden review, and `usize -> u32` conversion/overflow on offsets.
 
-## Relate does not scale to large corpora (O(n²))
-
-**Status:** deferred. Surfaced dogfooding texo on its own docs (145 claims): the
-relate pass judges candidate pairs after a cosine prefilter, but the pair set is
-still O(n²), so a large corpus is impractical (the Helios demo, ~50 claims, is
-fine). Fix: cluster/group claims first (connected components over a similarity
-graph — `group_claims` already exists) and relate only *within* a cluster, which
-bounds the judge calls to roughly O(n · cluster_size). Until then, semantic
-relate is intended for focused workspaces, not whole-repo doc sweeps.
-
 ## texo-core replay → WASM (browser replay, portable extension checker)
 
 **Status:** deferred (post-hackathon). The full pipeline cannot target WASM —
