@@ -10,15 +10,14 @@ const OBSERVED_AT_MS: u64 = 1_700_000_000_000;
 #[test]
 fn claims_json() -> TestResult {
     let dir = TempDir::new()?;
-    std::fs::create_dir_all(dir.path().join("docs"))?;
-    std::fs::write(
-        dir.path().join("docs/friday.md"),
-        "Deploys happen on Friday.\n",
-    )?;
-    std::fs::write(
-        dir.path().join("docs/tuesday.md"),
-        "Decision: deploys moved to Tuesday.\n",
-    )?;
+    // The bundled demo corpus — the same fixture the pre-v2 golden used.
+    let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample_sources");
+    let dest = dir.path().join("sample_sources");
+    std::fs::create_dir_all(&dest)?;
+    for entry in std::fs::read_dir(&sample)? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), dest.join(entry.file_name()))?;
+    }
 
     texo_cmd()?
         .arg("--root")
@@ -29,18 +28,8 @@ fn claims_json() -> TestResult {
     texo_cmd()?
         .arg("--root")
         .arg(dir.path())
-        .args(["ingest", "docs/friday.md"])
+        .args(["ingest", "sample_sources"])
         .env("TEXO_OBSERVED_AT_MS", OBSERVED_AT_MS.to_string())
-        .assert()
-        .success();
-    texo_cmd()?
-        .arg("--root")
-        .arg(dir.path())
-        .args(["ingest", "docs/tuesday.md"])
-        .env(
-            "TEXO_OBSERVED_AT_MS",
-            OBSERVED_AT_MS.saturating_add(1).to_string(),
-        )
         .assert()
         .success();
 

@@ -6,13 +6,28 @@ expression: onboarding
 
 _This document is a projection replayed from the texo claim-chain. It is not source truth._
 
-_Replayed through local store sequence 13._
+_Replayed through local store sequence 33._
 
 ## Current claims
 
-- **claim_a90d072e7bdd** (deploy-process): Decision: deploys moved to Tuesday.  
-  _source: docs/tuesday.md:1_
+- **claim_6f1e2a2aef13** (the-onboarding-process-uses-the-current): The onboarding process uses the current checklist.  
+  _source: sample_sources/current_architecture.md:9_
+- **claim_83d08c5b0d58** (the-onboarding-process-uses-the-old): The onboarding process uses the old checklist.  
+  _source: sample_sources/old_process.md:7_
+- **claim_854bccbe8ce8** (release-process): Ben owns release approval now.  
+  _source: sample_sources/meeting_notes.md:5_
+- **claim_a496fa30ea83** (the-platform-uses-batpak-for-appendonly): The platform uses BatPak for append-only event storage.  
+  _source: sample_sources/current_architecture.md:3_
 
 ## Stale claims (do not trust)
 
-- claim_7a40ce474f6e: "Deploys happen on Friday." superseded by claim_a90d072e7bdd
+- claim_2e3b9fcf2e18: "Decision: deploys moved to Tuesday." superseded by claim_99a832a6ce66
+- claim_41ae8efef753: "Deploys happen on Tuesday after the release meeting." superseded by claim_2e3b9fcf2e18
+- claim_51e452705640: "Deploys happen on Friday." superseded by claim_2e3b9fcf2e18
+- claim_591c69e84c12: "Deploys happen on Friday." superseded by claim_2e3b9fcf2e18
+- claim_69f8b22cdd6f: "# Old Release Process" superseded by claim_854bccbe8ce8
+- claim_74a582198da0: "# Release Meeting Notes" superseded by claim_854bccbe8ce8
+- claim_7b88773ca445: "Ben owns release approval." superseded by claim_854bccbe8ce8
+- claim_956c3fdbcd20: "Alice owns release approval." superseded by claim_854bccbe8ce8
+- claim_99a832a6ce66: "The old Friday deploy process is no longer current." superseded by claim_2e3b9fcf2e18
+- claim_f4d0eee19d1e: "Alice owns release approval." superseded by claim_854bccbe8ce8

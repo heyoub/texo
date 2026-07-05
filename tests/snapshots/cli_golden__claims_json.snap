@@ -4,39 +4,254 @@ expression: value
 ---
 [
   {
-    "claim_id": "claim_7a40ce474f6e",
+    "claim_id": "claim_2e3b9fcf2e18",
     "receipt": {
       "event_id": "[event-id]",
       "sequence": "[sequence]"
     },
     "source": {
-      "line_start": 1,
-      "path": "docs/friday.md",
-      "source_id": "src_3495c4212aec"
+      "line_start": 3,
+      "path": "sample_sources/meeting_notes.md",
+      "source_id": "src_cc3e771e0840"
     },
     "status": "superseded",
     "subject_hint": "deploy-process",
-    "superseded_by": "claim_a90d072e7bdd",
+    "superseded_by": "claim_99a832a6ce66",
+    "supersedes": [
+      "claim_41ae8efef753",
+      "claim_51e452705640",
+      "claim_591c69e84c12",
+      "claim_99a832a6ce66"
+    ],
+    "text": "Decision: deploys moved to Tuesday."
+  },
+  {
+    "claim_id": "claim_41ae8efef753",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 5,
+      "path": "sample_sources/current_architecture.md",
+      "source_id": "src_4db604a3a6be"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_2e3b9fcf2e18",
+    "supersedes": [],
+    "text": "Deploys happen on Tuesday after the release meeting."
+  },
+  {
+    "claim_id": "claim_51e452705640",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 3,
+      "path": "sample_sources/old_process.md",
+      "source_id": "src_f1fcc08b34d2"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_2e3b9fcf2e18",
     "supersedes": [],
     "text": "Deploys happen on Friday."
   },
   {
-    "claim_id": "claim_a90d072e7bdd",
+    "claim_id": "claim_591c69e84c12",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 5,
+      "path": "sample_sources/stale_onboarding.md",
+      "source_id": "src_fb046e6f15c1"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_2e3b9fcf2e18",
+    "supersedes": [],
+    "text": "Deploys happen on Friday."
+  },
+  {
+    "claim_id": "claim_69f8b22cdd6f",
     "receipt": {
       "event_id": "[event-id]",
       "sequence": "[sequence]"
     },
     "source": {
       "line_start": 1,
-      "path": "docs/tuesday.md",
-      "source_id": "src_7005b5d3fe81"
+      "path": "sample_sources/old_process.md",
+      "source_id": "src_f1fcc08b34d2"
+    },
+    "status": "superseded",
+    "subject_hint": "release-process",
+    "superseded_by": "claim_854bccbe8ce8",
+    "supersedes": [],
+    "text": "# Old Release Process"
+  },
+  {
+    "claim_id": "claim_6f1e2a2aef13",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 9,
+      "path": "sample_sources/current_architecture.md",
+      "source_id": "src_4db604a3a6be"
     },
     "status": "current",
-    "subject_hint": "deploy-process",
+    "subject_hint": "the-onboarding-process-uses-the-current",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The onboarding process uses the current checklist."
+  },
+  {
+    "claim_id": "claim_74a582198da0",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 1,
+      "path": "sample_sources/meeting_notes.md",
+      "source_id": "src_cc3e771e0840"
+    },
+    "status": "superseded",
+    "subject_hint": "release-process",
+    "superseded_by": "claim_854bccbe8ce8",
+    "supersedes": [],
+    "text": "# Release Meeting Notes"
+  },
+  {
+    "claim_id": "claim_7b88773ca445",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 7,
+      "path": "sample_sources/current_architecture.md",
+      "source_id": "src_4db604a3a6be"
+    },
+    "status": "superseded",
+    "subject_hint": "release-process",
+    "superseded_by": "claim_854bccbe8ce8",
+    "supersedes": [],
+    "text": "Ben owns release approval."
+  },
+  {
+    "claim_id": "claim_83d08c5b0d58",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 7,
+      "path": "sample_sources/old_process.md",
+      "source_id": "src_f1fcc08b34d2"
+    },
+    "status": "current",
+    "subject_hint": "the-onboarding-process-uses-the-old",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The onboarding process uses the old checklist."
+  },
+  {
+    "claim_id": "claim_854bccbe8ce8",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 5,
+      "path": "sample_sources/meeting_notes.md",
+      "source_id": "src_cc3e771e0840"
+    },
+    "status": "current",
+    "subject_hint": "release-process",
     "superseded_by": null,
     "supersedes": [
-      "claim_7a40ce474f6e"
+      "claim_69f8b22cdd6f",
+      "claim_74a582198da0",
+      "claim_7b88773ca445",
+      "claim_956c3fdbcd20",
+      "claim_f4d0eee19d1e"
     ],
-    "text": "Decision: deploys moved to Tuesday."
+    "text": "Ben owns release approval now."
+  },
+  {
+    "claim_id": "claim_956c3fdbcd20",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 7,
+      "path": "sample_sources/stale_onboarding.md",
+      "source_id": "src_fb046e6f15c1"
+    },
+    "status": "superseded",
+    "subject_hint": "release-process",
+    "superseded_by": "claim_854bccbe8ce8",
+    "supersedes": [],
+    "text": "Alice owns release approval."
+  },
+  {
+    "claim_id": "claim_99a832a6ce66",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 7,
+      "path": "sample_sources/meeting_notes.md",
+      "source_id": "src_cc3e771e0840"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_2e3b9fcf2e18",
+    "supersedes": [
+      "claim_2e3b9fcf2e18"
+    ],
+    "text": "The old Friday deploy process is no longer current."
+  },
+  {
+    "claim_id": "claim_a496fa30ea83",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 3,
+      "path": "sample_sources/current_architecture.md",
+      "source_id": "src_4db604a3a6be"
+    },
+    "status": "current",
+    "subject_hint": "the-platform-uses-batpak-for-appendonly",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The platform uses BatPak for append-only event storage."
+  },
+  {
+    "claim_id": "claim_f4d0eee19d1e",
+    "receipt": {
+      "event_id": "[event-id]",
+      "sequence": "[sequence]"
+    },
+    "source": {
+      "line_start": 5,
+      "path": "sample_sources/old_process.md",
+      "source_id": "src_f1fcc08b34d2"
+    },
+    "status": "superseded",
+    "subject_hint": "release-process",
+    "superseded_by": "claim_854bccbe8ce8",
+    "supersedes": [],
+    "text": "Alice owns release approval."
   }
 ]

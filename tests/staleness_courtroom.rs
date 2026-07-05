@@ -9,7 +9,7 @@ use support::{ingest_courtroom, TestResult, TestWorkspace};
 fn stale_source_line_reports_supersession() -> TestResult {
     let mut workspace = TestWorkspace::new()?;
     ingest_courtroom(&mut workspace)?;
-    let report = workspace.invoke("texo.staleness.check", json!({"path": "docs/friday.md"}))?;
+    let report = workspace.invoke("texo.staleness.check", &json!({"path": "docs/friday.md"}))?;
     let diagnostics = report["diagnostics"].as_array().expect("diagnostics array");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0]["line_start"], 1);

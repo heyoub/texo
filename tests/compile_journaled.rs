@@ -11,7 +11,7 @@ fn compile_writes_outputs_and_receipt() -> TestResult {
     ingest_courtroom(&mut workspace)?;
     let output = workspace.invoke(
         "texo.compile.run",
-        json!({"out_dir": "public", "observed_at_ms": OBSERVED_AT_MS + 3}),
+        &json!({"out_dir": "public", "observed_at_ms": OBSERVED_AT_MS + 3}),
     )?;
     assert!(output.get("receipt").is_some());
     for name in [

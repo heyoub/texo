@@ -3,15 +3,15 @@
 mod support;
 
 use serde_json::json;
-use support::{ingest_courtroom, TestResult, TestWorkspace, OBSERVED_AT_MS};
+use support::{ingest_sample_sources, TestResult, TestWorkspace, OBSERVED_AT_MS};
 
 #[test]
 fn compile_demo() -> TestResult {
     let mut workspace = TestWorkspace::new()?;
-    ingest_courtroom(&mut workspace)?;
+    let _report = ingest_sample_sources(&mut workspace)?;
     let output = workspace.invoke(
         "texo.compile.run",
-        json!({"out_dir": "public", "observed_at_ms": OBSERVED_AT_MS + 3}),
+        &json!({"out_dir": "public", "observed_at_ms": OBSERVED_AT_MS + 3}),
     )?;
     let onboarding =
         std::fs::read_to_string(workspace.root().join("public/onboarding.generated.md"))?;

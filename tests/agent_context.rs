@@ -11,7 +11,7 @@ fn agent_context_contains_current_and_stale_claims() -> TestResult {
     ingest_courtroom(&mut workspace)?;
     let context = workspace.invoke(
         "texo.context.agent",
-        json!({"subject": null, "include_stale": true}),
+        &json!({"subject": null, "include_stale": true}),
     )?;
     assert_eq!(context["workspace_id"], "demo");
     assert!(context["claims"]
