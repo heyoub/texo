@@ -69,6 +69,8 @@ Every claim carries a receipt and a source line; "stale" and "conflict" are comp
 
 > Needs an `OPENROUTER_API_KEY`. The first run calls the models (a few minutes) and fills the cache; later runs replay from cache. Models are configurable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`) — Claude for prod, free models for testing.
 >
+> The backend is any **OpenAI-compatible endpoint**, not OpenRouter specifically: `OPENROUTER_BASE_URL` overrides the host (e.g. Qwen via DashScope compatible mode), and every role's model is overridable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`, `OPENROUTER_EMBED_MODEL`, `OPENROUTER_NLI_MODEL`, `OPENROUTER_RERANK_MODEL`). Qwen Cloud setup lives in [HACKATHON.md](HACKATHON.md).
+>
 > **Trust note:** `extractor_cmd` is **trusted local code** that `texo ingest` executes. Review `.texo/config.toml` before ingesting an untrusted repo.
 >
 > v0 records `extractor_kind` + source line on each claim. Per-model provenance and source-span byte offsets are the next event-schema revision, tracked in [ROADMAP.md](ROADMAP.md).
@@ -94,3 +96,7 @@ Docs are not state.
 A claim-chain is closer to a single-writer app-chain for team beliefs: append-only transitions, deterministic replay, hash-committed provenance, and projections for humans and agents.
 
 No consensus is claimed. One workspace scope has one local writer. The output frontier means “replayed through local store sequence N,” not “globally agreed by a network.”
+
+## License
+
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.

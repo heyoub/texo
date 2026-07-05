@@ -3,6 +3,9 @@
 Tracked, deliberately-deferred items. Each entry records *why* it was deferred
 and *what it entails*, so picking it up later needs no re-discovery.
 
+*Active (not deferred) work for the Qwen Cloud hackathon lives in
+[HACKATHON.md](HACKATHON.md).*
+
 ## Char-offset + model provenance on `ClaimRecorded`
 
 **Status:** deferred (v1.1). Not needed for the demo; the value is precise
@@ -58,12 +61,25 @@ graph — `group_claims` already exists) and relate only *within* a cluster, whi
 bounds the judge calls to roughly O(n · cluster_size). Until then, semantic
 relate is intended for focused workspaces, not whole-repo doc sweeps.
 
+## texo-core replay → WASM (browser replay, portable extension checker)
+
+**Status:** deferred (post-hackathon). The full pipeline cannot target WASM —
+`reqwest::blocking` needs sockets, `extractor_cmd` spawns a subprocess, the
+BatPak store is real file I/O — and for cloud deployment a native binary is
+already maximally portable. But the *replay/projection core* is HTTP-free,
+subprocess-free, and float-free by design (integer ppm), so it would compile
+to wasm32 cleanly and replay **bit-identically**. Payoffs: VS Code extension
+ships a wasm module instead of per-platform binaries; the static trophy page
+replays the journal live in-browser. Needs a journal-export format the wasm
+module can consume (no BatPak store access from wasm).
+
 ## Smaller hardening (review-driven)
 
-- **Source-self-assertion claims.** The extractor faithfully records meta-claims
-  a document makes about *itself* ("this wiki is the source of truth for new
-  engineers") as current claims — ironic for a "prose is not state" tool. Teach
-  the proposer to skip/flag document-self-assertions.
+- **Source-self-assertion claims.** *Prompt fix landed Jul 4, 2026 (proposer
+  exclusion rule + `PROPOSE_PROMPT_VERSION` 3→4); pending live-model validation
+  on the next Helios run.* The extractor faithfully recorded meta-claims a
+  document makes about *itself* ("this wiki is the source of truth for new
+  engineers") as current claims — ironic for a "prose is not state" tool.
 - **VS Code extension manners.** Check-on-save calls the CLI directly; add a
   timeout around `execFile`, a per-file debounce, a status indicator, and a
   graceful message when `.texo/config.toml` is missing.

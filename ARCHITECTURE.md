@@ -13,7 +13,9 @@ agent JSON / staleness / compile / MCP / VS Code CLI shell
 
 The semantic path is opt-in per workspace (`[semantics]`) and stays **outside**
 `texo-core`'s HTTP-free boundary: `texo-extract` (binary, via the `extract_via_cmd`
-seam) and `texo-semantics` (OpenRouter/ONNX backends) hold all model/HTTP code;
+seam) and `texo-semantics` (hosted OpenAI-compatible backends — OpenRouter by
+default, any compatible host via `OPENROUTER_BASE_URL` — plus local ONNX) hold
+all model/HTTP code;
 the model runs once at ingest (record-once) and only its journaled events feed
 replay. See [`ADR-001`](ADR-001-semantic-pipeline.md).
 

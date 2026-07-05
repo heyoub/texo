@@ -5,7 +5,7 @@
 - [`crates/texo-core/`](crates/texo-core/) — domain logic, BatPak journal adapter, replay, staleness, semantic trait seams + relate logic
 - [`crates/texo-cli/`](crates/texo-cli/) — `texo` binary (incl. `texo relate`)
 - [`crates/texo-mcp/`](crates/texo-mcp/) — read-only MCP stdio tools
-- [`crates/texo-semantics/`](crates/texo-semantics/) — optional ML backends (OpenRouter default, local ONNX opt-in)
+- [`crates/texo-semantics/`](crates/texo-semantics/) — optional ML backends (OpenAI-compatible hosted API, base-URL overridable — OpenRouter default; local ONNX opt-in)
 - [`crates/texo-extract/`](crates/texo-extract/) — LLM extractor binary (`extract_via_cmd` seam) + record-once cache
 - [`extensions/vscode/`](extensions/vscode/) — thin diagnostics shell over CLI
 - [`sample_sources/`](sample_sources/) — demo markdown inputs
