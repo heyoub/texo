@@ -5,6 +5,7 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use batpak::event::{EventKind, EventPayload};
@@ -14,11 +15,12 @@ use serde::{Deserialize, Serialize};
 use syncbat::{CoreBuilder, HandlerError, HandlerResult, OperationRegisterItem};
 
 use crate::claims::card::ClaimCard;
+use crate::claims::conflict::ConflictCard;
 use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
 use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
 use crate::error::TexoError;
-use crate::events::coordinate::{entity_for_claim, scope_for_workspace};
+use crate::events::coordinate::{entity_for_claim, entity_for_conflict, scope_for_workspace};
 use crate::events::ids::{claim_id_from_parts, SourceId};
 use crate::events::machines::{
     transition_record, TransitionCauseV1, CLAIM_EDGES, CLAIM_MACHINE, CONFLICT_EDGES,
@@ -32,6 +34,7 @@ use crate::extract::hints::hints_from_line;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
 use crate::ops::env::{self, ReceiptNote};
+use crate::relate::heuristic;
 
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
 const CLAIM_EXPLAIN_PROJECTION: &str = "texo.claim.explain.v2";
@@ -434,6 +437,312 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
+#[syncbat::operation(
+    descriptor = STALENESS_CHECK,
+    register = register_staleness_check,
+    register_item = staleness_check_item,
+    name = "texo.staleness.check",
+    effect = Inspect,
+    input_schema = "texo.staleness.check.input.v2",
+    output_schema = "texo.staleness.check.output.v2",
+    receipt_kind = "receipt.texo.staleness.check.v2",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn staleness_check(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.staleness.check", || {
+        let input: StalenessCheckInput = parse_input("texo.staleness.check", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.staleness.check", error))?;
+        let view = assemble_current_view()?;
+        let (root, workspace_id) =
+            env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
+        let path = resolve_path(&root, &input.path);
+        check_staleness_from_view(&view, &workspace_id, &root, &path)
+    })
+}
+
+#[syncbat::operation(
+    descriptor = CONTEXT_AGENT,
+    register = register_context_agent,
+    register_item = context_agent_item,
+    name = "texo.context.agent",
+    effect = Inspect,
+    input_schema = "texo.context.agent.input.v2",
+    output_schema = "texo.context.agent.output.v2",
+    receipt_kind = "receipt.texo.context.agent.v2",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn context_agent(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.context.agent", || {
+        let input: ContextAgentInput = parse_input("texo.context.agent", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.context.agent", error))?;
+        let view = assemble_current_view()?;
+        build_agent_context_from_view(&view, input.subject.as_deref(), input.include_stale)
+    })
+}
+
+#[syncbat::operation(
+    descriptor = COMPILE_RUN,
+    register = register_compile_run,
+    register_item = compile_run_item,
+    name = "texo.compile.run",
+    effect = Persist,
+    input_schema = "texo.compile.run.input.v2",
+    output_schema = "texo.compile.run.output.v2",
+    receipt_kind = "receipt.texo.compile.run.v2",
+    appends_events = ["evt.e005"],
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.compile.run", || {
+        let input: CompileRunInput = parse_input("texo.compile.run", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.compile.run", error))?;
+        let view = assemble_current_view()?;
+        let context = build_agent_context_from_view(&view, None, true)?;
+        let conflict_report = heuristic::detect_conflicts(&view)?;
+        let (root, workspace_id) =
+            env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
+        let out_dir = resolve_path(&root, &input.out_dir);
+        let stale_report = StalenessReport {
+            workspace_id: workspace_id.clone(),
+            checked_path: ".".to_string(),
+            replayed_through_sequence: view.frontier,
+            diagnostics: Vec::new(),
+        };
+        let files = compile_artifacts(&context, &view, &stale_report, &conflict_report)?;
+        for file in &files {
+            let path = out_dir.join(&file.name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, file.contents.as_bytes())?;
+        }
+        let source_claim_ids = view
+            .claims
+            .iter()
+            .map(|claim| claim.card.claim_id.clone())
+            .collect::<Vec<_>>();
+        let doc_id = format!(
+            "doc_{}",
+            &blake3::hash(out_dir.to_string_lossy().as_bytes()).to_hex()[..12]
+        );
+        append_json(
+            "texo.compile.run",
+            cx,
+            <OnboardingCompiledV2 as EventPayload>::KIND,
+            &OnboardingCompiledV2 {
+                doc_id,
+                workspace_id,
+                output_path: input.out_dir.to_string_lossy().to_string(),
+                source_claim_ids,
+                replayed_through_sequence: view.frontier,
+                compiled_at_ms: input.observed_at_ms,
+            },
+        )?;
+        Ok(CompileRunOutput {
+            files: files.into_iter().map(|file| file.name).collect::<Vec<_>>(),
+            receipt: take_one_receipt("texo.compile.run")?,
+        })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = CONFLICTS_LIST,
+    register = register_conflicts_list,
+    register_item = conflicts_list_item,
+    name = "texo.conflicts.list",
+    effect = Inspect,
+    input_schema = "texo.conflicts.list.input.v2",
+    output_schema = "texo.conflicts.list.output.v2",
+    receipt_kind = "receipt.texo.conflicts.list.v2",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn conflicts_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.conflicts.list", || {
+        let _input: ConflictsListInput = parse_input("texo.conflicts.list", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.conflicts.list", error))?;
+        let view = assemble_current_view()?;
+        Ok(conflicts_output(&view))
+    })
+}
+
+#[syncbat::operation(
+    descriptor = CONFLICTS_COMMIT,
+    register = register_conflicts_commit,
+    register_item = conflicts_commit_item,
+    name = "texo.conflicts.commit",
+    effect = Persist,
+    input_schema = "texo.conflicts.commit.input.v2",
+    output_schema = "texo.conflicts.commit.output.v2",
+    receipt_kind = "receipt.texo.conflicts.commit.v2",
+    appends_events = ["evt.e004"],
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn conflicts_commit(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.conflicts.commit", || {
+        let input: ConflictsCommitInput = parse_input("texo.conflicts.commit", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.conflicts.commit", error))?;
+        let view = assemble_current_view()?;
+        let detected = heuristic::detect_conflicts(&view)?;
+        let existing = view
+            .conflicts
+            .iter()
+            .map(|conflict| conflict.conflict_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut committed = Vec::new();
+        for entry in detected.conflicts {
+            if existing.contains(&entry.conflict_id) {
+                continue;
+            }
+            let newer = newer_claim(&view, &entry.claim_a, &entry.claim_b)?;
+            append_json(
+                "texo.conflicts.commit",
+                cx,
+                <ConflictOpenedV2 as EventPayload>::KIND,
+                &ConflictOpenedV2 {
+                    conflict_id: entry.conflict_id.clone(),
+                    workspace_id: view.workspace_id.clone(),
+                    claim_a: entry.claim_a.clone(),
+                    claim_b: entry.claim_b.clone(),
+                    reason: entry.reason.clone(),
+                    detector: "heuristic-v1".to_string(),
+                    observed_at_ms: input.observed_at_ms,
+                    transition: transition_record(
+                        CONFLICT_MACHINE,
+                        &entity_for_conflict(&entry.conflict_id),
+                        0,
+                        1,
+                        vec![TransitionCauseV1 {
+                            lane: 0,
+                            key: format!("ingest:{}", newer.source_id),
+                        }],
+                        input.observed_at_ms,
+                    ),
+                },
+            )?;
+            let receipt = take_one_receipt("texo.conflicts.commit")?;
+            committed.push(CommittedConflict {
+                conflict_id: entry.conflict_id,
+                sequence: receipt.global_sequence,
+                receipt,
+            });
+        }
+        Ok(committed)
+    })
+}
+
+#[syncbat::operation(
+    descriptor = CONFLICT_RESOLVE,
+    register = register_conflict_resolve,
+    register_item = conflict_resolve_item,
+    name = "texo.conflict.resolve",
+    effect = Persist,
+    input_schema = "texo.conflict.resolve.input.v2",
+    output_schema = "texo.conflict.resolve.output.v2",
+    receipt_kind = "receipt.texo.conflict.resolve.v2",
+    appends_events = ["evt.e006"],
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.conflict.resolve", || {
+        let input: ConflictResolveInput = parse_input("texo.conflict.resolve", input)?;
+        if input.resolution != "resolved" && input.resolution != "ignored" {
+            return Err(TexoError::StatusParse {
+                value: input.resolution,
+            });
+        }
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.conflict.resolve", error))?;
+        let entity = entity_for_conflict(&input.conflict_id);
+        let card = env::with(|op_env| {
+            op_env
+                .store
+                .project::<ConflictCard>(&entity, &Freshness::Consistent)
+        })??;
+        let card = card.ok_or_else(|| TexoError::MissingEntity {
+            entity: entity.clone(),
+        })?;
+        if card.phase != 1 {
+            return Err(TexoError::Transition {
+                machine: CONFLICT_MACHINE.to_string(),
+                from: card.phase,
+                to: if input.resolution == "resolved" { 2 } else { 3 },
+            });
+        }
+        append_json(
+            "texo.conflict.resolve",
+            cx,
+            <ConflictResolvedV2 as EventPayload>::KIND,
+            &ConflictResolvedV2 {
+                conflict_id: input.conflict_id.clone(),
+                workspace_id: card.workspace_id,
+                resolution: input.resolution.clone(),
+                resolved_by: input.resolved_by,
+                observed_at_ms: input.observed_at_ms,
+                transition: transition_record(
+                    CONFLICT_MACHINE,
+                    &entity,
+                    1,
+                    if input.resolution == "resolved" { 2 } else { 3 },
+                    vec![TransitionCauseV1 {
+                        lane: 0,
+                        key: format!("conflict:{}", input.conflict_id),
+                    }],
+                    input.observed_at_ms,
+                ),
+            },
+        )?;
+        Ok(ConflictResolveOutput {
+            conflict_id: input.conflict_id,
+            resolution: input.resolution,
+            receipt: take_one_receipt("texo.conflict.resolve")?,
+        })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = HOST_FINGERPRINT,
+    register = register_host_fingerprint,
+    register_item = host_fingerprint_item,
+    name = "texo.host.fingerprint",
+    effect = Inspect,
+    input_schema = "texo.host.fingerprint.input.v2",
+    output_schema = "texo.host.fingerprint.output.v2",
+    receipt_kind = "receipt.texo.host.fingerprint.v2"
+)]
+#[tracing::instrument(skip_all)]
+fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.host.fingerprint", || {
+        let _input: HostFingerprintInput = parse_input("texo.host.fingerprint", input)?;
+        // TODO(hostbat-0.9.1): replace the interim bare-Core shape with hostbat
+        // module/host/interface fingerprints after the re-mount lands.
+        let operations = catalog()
+            .into_iter()
+            .map(|item| item.descriptor().name().to_string())
+            .collect::<Vec<_>>();
+        Ok(HostFingerprintOutput {
+            status: "pending-hostbat-0.9.1".to_string(),
+            operations,
+        })
+    })
+}
+
 const DOMAIN_KINDS: [EventKind; 8] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
@@ -445,7 +754,7 @@ const DOMAIN_KINDS: [EventKind; 8] = [
     <SessionTurnV1 as EventPayload>::KIND,
 ];
 
-/// Return the six operation registration items.
+/// Return the operation registration items.
 #[must_use]
 pub fn catalog() -> Vec<OperationRegisterItem> {
     vec![
@@ -455,6 +764,13 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         claim_explain_item(),
         claim_supersede_item(),
         verify_run_item(),
+        staleness_check_item(),
+        context_agent_item(),
+        compile_run_item(),
+        conflicts_list_item(),
+        conflicts_commit_item(),
+        conflict_resolve_item(),
+        host_fingerprint_item(),
     ]
 }
 
@@ -470,6 +786,13 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_claim_explain(builder)?;
     register_claim_supersede(builder)?;
     register_verify_run(builder)?;
+    register_staleness_check(builder)?;
+    register_context_agent(builder)?;
+    register_compile_run(builder)?;
+    register_conflicts_list(builder)?;
+    register_conflicts_commit(builder)?;
+    register_conflict_resolve(builder)?;
+    register_host_fingerprint(builder)?;
     Ok(())
 }
 
@@ -550,6 +873,159 @@ struct VerifyRunOutput {
     journal_ok: bool,
     transitions_ok: bool,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StalenessCheckInput {
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+struct StalenessReport {
+    workspace_id: String,
+    checked_path: String,
+    replayed_through_sequence: u64,
+    diagnostics: Vec<StaleDiagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+struct StaleDiagnostic {
+    file: String,
+    line_start: u32,
+    line_end: u32,
+    severity: DiagnosticSeverity,
+    message: String,
+    claim_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    superseded_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<DiagnosticSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt: Option<AgentReceiptRow>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DiagnosticSeverity {
+    Warning,
+}
+
+#[derive(Debug, Serialize)]
+struct DiagnosticSource {
+    path: String,
+    line_start: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextAgentInput {
+    subject: Option<String>,
+    include_stale: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentContextOutput {
+    workspace_id: String,
+    replayed_through_sequence: u64,
+    freshness: FreshnessView,
+    claims: Vec<AgentClaimRow>,
+    stale_claims: Vec<AgentStaleClaimRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    conflicts: Vec<AgentConflictRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct FreshnessView {
+    kind: String,
+    description: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentStaleClaimRow {
+    claim_id: String,
+    text: String,
+    superseded_by: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentConflictRow {
+    conflict_id: String,
+    claim_a: String,
+    claim_a_text: String,
+    claim_b: String,
+    claim_b_text: String,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompileRunInput {
+    out_dir: PathBuf,
+    observed_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CompileRunOutput {
+    files: Vec<String>,
+    receipt: ReceiptNote,
+}
+
+struct CompileFile {
+    name: String,
+    contents: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConflictsListInput {}
+
+#[derive(Debug, Serialize)]
+struct ConflictsOutput {
+    open: Vec<ConflictRow>,
+    resolved: Vec<ConflictRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConflictRow {
+    conflict_id: String,
+    claim_a: String,
+    claim_b: String,
+    subject_hint: String,
+    reason: String,
+    status: crate::claims::status::ConflictStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConflictsCommitInput {
+    observed_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CommittedConflict {
+    conflict_id: String,
+    sequence: u64,
+    receipt: ReceiptNote,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConflictResolveInput {
+    conflict_id: String,
+    resolution: String,
+    resolved_by: String,
+    observed_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ConflictResolveOutput {
+    conflict_id: String,
+    resolution: String,
+    receipt: ReceiptNote,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostFingerprintInput {}
+
+#[derive(Debug, Serialize)]
+struct HostFingerprintOutput {
+    status: String,
+    operations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -932,6 +1408,418 @@ fn claim_list_rows(
         });
     }
     Ok(rows)
+}
+
+fn build_agent_context_from_view(
+    view: &WorkspaceView,
+    subject: Option<&str>,
+    include_stale: bool,
+) -> Result<AgentContextOutput, TexoError> {
+    let claims = claim_list_rows(view, subject)?
+        .into_iter()
+        .filter(|claim| claim.status != crate::claims::status::ClaimStatus::Superseded)
+        .collect::<Vec<_>>();
+    let stale_claims = if include_stale {
+        view.claims
+            .iter()
+            .filter(|claim| claim.card.phase == 2)
+            .filter(|claim| {
+                subject.is_none_or(|wanted| claim.card.subject_hint.as_deref() == Some(wanted))
+            })
+            .filter_map(|claim| {
+                claim
+                    .card
+                    .superseded_by
+                    .as_ref()
+                    .map(|superseded_by| AgentStaleClaimRow {
+                        claim_id: claim.card.claim_id.clone(),
+                        text: claim.card.text.clone(),
+                        superseded_by: superseded_by.clone(),
+                    })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut conflicts = Vec::new();
+    for conflict in &view.conflicts {
+        if conflict.phase != 1 {
+            continue;
+        }
+        conflicts.push(AgentConflictRow {
+            conflict_id: conflict.conflict_id.clone(),
+            claim_a: conflict.claim_a.clone(),
+            claim_a_text: claim_text(view, &conflict.claim_a),
+            claim_b: conflict.claim_b.clone(),
+            claim_b_text: claim_text(view, &conflict.claim_b),
+            reason: conflict.reason.clone(),
+        });
+    }
+    conflicts.sort_by(|left, right| left.conflict_id.cmp(&right.conflict_id));
+    let mut seen_pairs = BTreeSet::new();
+    conflicts.retain(|conflict| {
+        let mut pair = [
+            conflict.claim_a_text.to_ascii_lowercase(),
+            conflict.claim_b_text.to_ascii_lowercase(),
+        ];
+        pair.sort();
+        seen_pairs.insert(pair)
+    });
+
+    Ok(AgentContextOutput {
+        workspace_id: view.workspace_id.clone(),
+        replayed_through_sequence: view.frontier,
+        freshness: FreshnessView {
+            kind: "batpak-local-frontier".to_string(),
+            description: format!(
+                "Projection replayed through local store sequence {}. No global order or consensus is claimed.",
+                view.frontier
+            ),
+        },
+        claims,
+        stale_claims,
+        conflicts,
+    })
+}
+
+fn check_staleness_from_view(
+    view: &WorkspaceView,
+    workspace_id: &str,
+    root: &Path,
+    input: &Path,
+) -> Result<StalenessReport, TexoError> {
+    let checked_path = input
+        .strip_prefix(root)
+        .unwrap_or(input)
+        .to_string_lossy()
+        .to_string();
+    let files = collect_markdown_files(input).map_err(|error| TexoError::Source {
+        path: input.to_string_lossy().to_string(),
+        detail: error.to_string(),
+    })?;
+    let by_id = view
+        .claims
+        .iter()
+        .map(|claim| (claim.card.claim_id.clone(), claim))
+        .collect::<BTreeMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    for path in files {
+        let doc = MarkdownDocument::from_path(&path, root).map_err(|error| TexoError::Source {
+            path: path.to_string_lossy().to_string(),
+            detail: error.to_string(),
+        })?;
+        let source_id = SourceId::try_from(doc.source_id.as_str())?;
+        for line in &doc.lines {
+            let normalized = normalize_line(&line.text);
+            if normalized.is_empty() {
+                continue;
+            }
+            let claim_id = claim_id_from_parts(&source_id, line.number, &normalized).to_string();
+            let Some(claim) = by_id.get(&claim_id) else {
+                continue;
+            };
+            if claim.card.phase != 2 {
+                continue;
+            }
+            let superseded_by = claim.card.superseded_by.clone();
+            let source = superseded_by
+                .as_ref()
+                .and_then(|id| by_id.get(id))
+                .map(|superseder| DiagnosticSource {
+                    path: superseder.card.source_path.clone(),
+                    line_start: superseder.card.line_start,
+                });
+            let receipt = superseded_by
+                .as_ref()
+                .and_then(|id| claim_receipt(id).ok())
+                .or_else(|| claim_receipt(&claim.card.claim_id).ok());
+            let message = format!(
+                "Claim appears stale: superseded by {} at {}.",
+                superseded_by.as_deref().unwrap_or("unknown"),
+                receipt.as_ref().map_or_else(
+                    || "unknown seq".to_string(),
+                    |receipt| format!("local seq {}", receipt.sequence)
+                )
+            );
+            diagnostics.push(StaleDiagnostic {
+                file: doc.path.clone(),
+                line_start: line.number,
+                line_end: line.number,
+                severity: DiagnosticSeverity::Warning,
+                message,
+                claim_id,
+                superseded_by,
+                source,
+                receipt,
+            });
+        }
+    }
+    Ok(StalenessReport {
+        workspace_id: workspace_id.to_string(),
+        checked_path,
+        replayed_through_sequence: view.frontier,
+        diagnostics,
+    })
+}
+
+fn compile_artifacts(
+    context: &AgentContextOutput,
+    view: &WorkspaceView,
+    stale: &StalenessReport,
+    conflicts: &heuristic::ConflictReport,
+) -> Result<Vec<CompileFile>, TexoError> {
+    Ok(vec![
+        CompileFile {
+            name: "onboarding.generated.md".to_string(),
+            contents: render_onboarding(context),
+        },
+        CompileFile {
+            name: "claims.json".to_string(),
+            contents: serde_json::to_string_pretty(view)?,
+        },
+        CompileFile {
+            name: "stale-context.json".to_string(),
+            contents: serde_json::to_string_pretty(stale)?,
+        },
+        CompileFile {
+            name: "conflicts.json".to_string(),
+            contents: serde_json::to_string_pretty(conflicts)?,
+        },
+        CompileFile {
+            name: "agent-context.json".to_string(),
+            contents: serde_json::to_string_pretty(context)?,
+        },
+        CompileFile {
+            name: "index.html".to_string(),
+            contents: render_index_html(context, stale, conflicts)?,
+        },
+    ])
+}
+
+fn render_onboarding(context: &AgentContextOutput) -> String {
+    let mut out = String::from("# Generated Onboarding\n\n");
+    out.push_str(
+        "_This document is a projection replayed from the texo claim-chain. \
+         It is not source truth._\n\n",
+    );
+    writeln!(
+        &mut out,
+        "_Replayed through local store sequence {}._\n",
+        context.replayed_through_sequence
+    )
+    .expect("writing to a String cannot fail");
+    out.push_str("## Current claims\n\n");
+    for claim in &context.claims {
+        writeln!(
+            &mut out,
+            "- **{}** ({}): {}  \n  _source: {}:{}_",
+            claim.claim_id,
+            claim.subject_hint.clone().unwrap_or_default(),
+            claim.text,
+            claim.source.path,
+            claim.source.line_start
+        )
+        .expect("writing to a String cannot fail");
+    }
+    if !context.stale_claims.is_empty() {
+        out.push_str("\n## Stale claims (do not trust)\n\n");
+        for stale in &context.stale_claims {
+            writeln!(
+                &mut out,
+                "- {}: \"{}\" superseded by {}",
+                stale.claim_id, stale.text, stale.superseded_by
+            )
+            .expect("writing to a String cannot fail");
+        }
+    }
+    if !context.conflicts.is_empty() {
+        out.push_str("\n## Conflicts (unresolved — both claimed, neither wins)\n\n");
+        for conflict in &context.conflicts {
+            writeln!(
+                &mut out,
+                "- \"{}\" ({}) vs \"{}\" ({})",
+                conflict.claim_a_text, conflict.claim_a, conflict.claim_b_text, conflict.claim_b
+            )
+            .expect("writing to a String cannot fail");
+        }
+    }
+    out
+}
+
+fn render_index_html(
+    context: &AgentContextOutput,
+    stale: &StalenessReport,
+    conflicts: &heuristic::ConflictReport,
+) -> Result<String, TexoError> {
+    let mut claim_cards = String::new();
+    for claim in &context.claims {
+        let supersedes = if claim.supersedes.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<p><strong>supersedes:</strong> {}</p>",
+                claim.supersedes.join(", ")
+            )
+        };
+        write!(
+            &mut claim_cards,
+            r#"<article class="claim-card">
+  <h2>Claim {id}</h2>
+  <p><strong>status:</strong> current</p>
+  <p><strong>subject:</strong> {subject}</p>
+  <p><strong>local sequence:</strong> {seq}</p>
+  <p><strong>frontier:</strong> replayed through seq {frontier}</p>
+  <p><strong>source:</strong> {path}:{line}</p>
+  <p><strong>receipt:</strong> {receipt}</p>
+  {supersedes}
+  <blockquote>{text}</blockquote>
+</article>"#,
+            id = claim.claim_id,
+            subject = claim.subject_hint.clone().unwrap_or_default(),
+            seq = claim.receipt.sequence,
+            frontier = context.replayed_through_sequence,
+            path = claim.source.path,
+            line = claim.source.line_start,
+            receipt = claim.receipt.event_id,
+            supersedes = supersedes,
+            text = html_escape(&claim.text),
+        )
+        .expect("writing to a String cannot fail");
+    }
+    let mut stale_cards = String::new();
+    for diag in &stale.diagnostics {
+        write!(
+            &mut stale_cards,
+            r#"<article class="claim-card stale">
+  <h2>Stale line {}:{}</h2>
+  <p>{}</p>
+</article>"#,
+            diag.file,
+            diag.line_start,
+            html_escape(&diag.message)
+        )
+        .expect("writing to a String cannot fail");
+    }
+    let conflicts_json = serde_json::to_string_pretty(conflicts)?;
+    Ok(format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>texo claim explorer</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }}
+    .claim-card {{ border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }}
+    .stale {{ border-color: #c90; background: #fff8e6; }}
+    footer {{ margin-top: 3rem; color: #666; font-size: 0.9rem; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>A block explorer for stale team beliefs.</h1>
+    <p>Every claim below was replayed from a BatPak journal.        The generated onboarding doc is a projection, not source truth.</p>
+  </header>
+  <section>
+    <h2>Current claims</h2>
+    {claim_cards}
+  </section>
+  <section>
+    <h2>Stale diagnostics</h2>
+    {stale_cards}
+  </section>
+  <section>
+    <h2>Conflicts ({conflict_count})</h2>
+    <pre>{conflicts_json}</pre>
+  </section>
+  <footer>
+    texo uses one local BatPak journal. Sequences are per-store.     No global order, network consensus, or distributed replication is claimed.
+  </footer>
+</body>
+</html>"#,
+        conflict_count = conflicts.conflicts.len(),
+        conflicts_json = html_escape(&conflicts_json)
+    ))
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn conflicts_output(view: &WorkspaceView) -> ConflictsOutput {
+    let mut open = Vec::new();
+    let mut resolved = Vec::new();
+    for conflict in &view.conflicts {
+        let row = ConflictRow {
+            conflict_id: conflict.conflict_id.clone(),
+            claim_a: conflict.claim_a.clone(),
+            claim_b: conflict.claim_b.clone(),
+            subject_hint: conflict_subject(view, conflict),
+            reason: conflict.reason.clone(),
+            status: conflict_status(conflict),
+        };
+        if conflict.phase == 1 {
+            open.push(row);
+        } else {
+            resolved.push(row);
+        }
+    }
+    open.sort_by(|left, right| left.conflict_id.cmp(&right.conflict_id));
+    resolved.sort_by(|left, right| left.conflict_id.cmp(&right.conflict_id));
+    ConflictsOutput { open, resolved }
+}
+
+fn conflict_status(conflict: &ConflictCard) -> crate::claims::status::ConflictStatus {
+    match conflict.phase {
+        2 => crate::claims::status::ConflictStatus::Resolved,
+        3 => crate::claims::status::ConflictStatus::Ignored,
+        _ => crate::claims::status::ConflictStatus::Open,
+    }
+}
+
+fn conflict_subject(view: &WorkspaceView, conflict: &ConflictCard) -> String {
+    view.claims
+        .iter()
+        .find(|claim| claim.card.claim_id == conflict.claim_a)
+        .and_then(|claim| claim.card.subject_hint.clone())
+        .unwrap_or_default()
+}
+
+fn claim_text(view: &WorkspaceView, claim_id: &str) -> String {
+    view.claims
+        .iter()
+        .find(|claim| claim.card.claim_id == claim_id)
+        .map(|claim| claim.card.text.clone())
+        .unwrap_or_default()
+}
+
+fn newer_claim<'a>(
+    view: &'a WorkspaceView,
+    left: &str,
+    right: &str,
+) -> Result<&'a ClaimCard, TexoError> {
+    let left = view
+        .claims
+        .iter()
+        .find(|claim| claim.card.claim_id == left)
+        .ok_or_else(|| TexoError::MissingEntity {
+            entity: entity_for_claim(left),
+        })?;
+    let right = view
+        .claims
+        .iter()
+        .find(|claim| claim.card.claim_id == right)
+        .ok_or_else(|| TexoError::MissingEntity {
+            entity: entity_for_claim(right),
+        })?;
+    if left.card.observed_at_ms >= right.card.observed_at_ms {
+        Ok(&left.card)
+    } else {
+        Ok(&right.card)
+    }
 }
 
 fn claim_receipt(claim_id: &str) -> Result<AgentReceiptRow, TexoError> {

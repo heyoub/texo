@@ -1,0 +1,28 @@
+---
+source: tests/golden_staleness.rs
+expression: report
+---
+{
+  "checked_path": "docs/friday.md",
+  "diagnostics": [
+    {
+      "claim_id": "claim_7a40ce474f6e",
+      "file": "docs/friday.md",
+      "line_end": 1,
+      "line_start": 1,
+      "message": "Claim appears stale: superseded by claim_a90d072e7bdd at local seq 12.",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "severity": "warning",
+      "source": {
+        "line_start": 1,
+        "path": "docs/tuesday.md"
+      },
+      "superseded_by": "claim_a90d072e7bdd"
+    }
+  ],
+  "replayed_through_sequence": "[frontier]",
+  "workspace_id": "demo"
+}

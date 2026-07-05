@@ -1,0 +1,40 @@
+---
+source: tests/golden_agent_context.rs
+expression: context
+---
+{
+  "claims": [
+    {
+      "claim_id": "claim_a90d072e7bdd",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "source": {
+        "line_start": 1,
+        "path": "docs/tuesday.md",
+        "source_id": "src_7005b5d3fe81"
+      },
+      "status": "current",
+      "subject_hint": "deploy-process",
+      "superseded_by": null,
+      "supersedes": [
+        "claim_7a40ce474f6e"
+      ],
+      "text": "Decision: deploys moved to Tuesday."
+    }
+  ],
+  "freshness": {
+    "description": "[freshness]",
+    "kind": "batpak-local-frontier"
+  },
+  "replayed_through_sequence": "[frontier]",
+  "stale_claims": [
+    {
+      "claim_id": "claim_7a40ce474f6e",
+      "superseded_by": "claim_a90d072e7bdd",
+      "text": "Deploys happen on Friday."
+    }
+  ],
+  "workspace_id": "demo"
+}

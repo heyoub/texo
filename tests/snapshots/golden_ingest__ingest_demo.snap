@@ -1,0 +1,46 @@
+---
+source: tests/golden_ingest.rs
+expression: claims
+---
+{
+  "claims": [
+    {
+      "claim_id": "claim_7a40ce474f6e",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "source": {
+        "line_start": 1,
+        "path": "docs/friday.md",
+        "source_id": "src_3495c4212aec"
+      },
+      "status": "superseded",
+      "subject_hint": "deploy-process",
+      "superseded_by": "claim_a90d072e7bdd",
+      "supersedes": [],
+      "text": "Deploys happen on Friday."
+    },
+    {
+      "claim_id": "claim_a90d072e7bdd",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "source": {
+        "line_start": 1,
+        "path": "docs/tuesday.md",
+        "source_id": "src_7005b5d3fe81"
+      },
+      "status": "current",
+      "subject_hint": "deploy-process",
+      "superseded_by": null,
+      "supersedes": [
+        "claim_7a40ce474f6e"
+      ],
+      "text": "Decision: deploys moved to Tuesday."
+    }
+  ],
+  "frontier": "[frontier]",
+  "workspace_id": "demo"
+}

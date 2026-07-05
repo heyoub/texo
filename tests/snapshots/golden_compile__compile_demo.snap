@@ -1,0 +1,19 @@
+---
+source: tests/golden_compile.rs
+expression: output
+---
+{
+  "files": [
+    "onboarding.generated.md",
+    "claims.json",
+    "stale-context.json",
+    "conflicts.json",
+    "agent-context.json",
+    "index.html"
+  ],
+  "receipt": {
+    "event_id_hex": "[event-id]",
+    "global_sequence": "[sequence]",
+    "kind_bits": 57349
+  }
+}

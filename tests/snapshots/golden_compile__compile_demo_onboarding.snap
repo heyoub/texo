@@ -1,0 +1,18 @@
+---
+source: tests/golden_compile.rs
+expression: onboarding
+---
+# Generated Onboarding
+
+_This document is a projection replayed from the texo claim-chain. It is not source truth._
+
+_Replayed through local store sequence 13._
+
+## Current claims
+
+- **claim_a90d072e7bdd** (deploy-process): Decision: deploys moved to Tuesday.  
+  _source: docs/tuesday.md:1_
+
+## Stale claims (do not trust)
+
+- claim_7a40ce474f6e: "Deploys happen on Friday." superseded by claim_a90d072e7bdd
