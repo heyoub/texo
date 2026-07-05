@@ -61,8 +61,12 @@ description must say so explicitly.
    so the Qwen configuration doesn't read as another vendor's. Docs updated
    either way. (SPEC.md "Surfaces" gains the agent when it lands.)
 
-Deliberately **not** in scope: the batpak 0.8.2 → 0.9.0 bump (breaking; do not
-couple a substrate migration to a 5-day deadline) and ADR-002 code-awareness.
+Deliberately **not** in scope: ADR-002 code-awareness and the WASM roadmap
+item (both post-submission). The batpak 0.8.2 → 0.9.0 bump — originally
+deferred for deadline risk — landed Jul 4 after a behavior-preserving
+migration with empirical store-compat proof (a 0.8.2-written store replays
+byte-identically on 0.9.0; full suite + frozen Helios regression green, zero
+golden churn). No 0.9.0 primitives (lanes, `import_events`) are adopted yet.
 
 ## Qwen Cloud setup (verified Jul 4, 2026)
 
