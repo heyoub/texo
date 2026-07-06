@@ -37,8 +37,11 @@ pub struct RouteState {
 /// Returns [`TexoError`] when JSON serialization fails.
 pub fn route(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, TexoError> {
     match (request.method, request.path.as_str()) {
+        (Method::Get, "/api/host") => api_host(state),
         (Method::Get, "/api/memory") => api_memory(state),
-        (Method::Post, "/api/memory" | "/api/stream") => Ok(method_not_allowed("GET")),
+        (Method::Post, "/api/host" | "/api/memory" | "/api/stream") => {
+            Ok(method_not_allowed("GET"))
+        }
         (Method::Post, "/api/chat") => api_chat(request, state),
         (Method::Get, "/api/chat" | "/api/session/end") => Ok(method_not_allowed("POST")),
         (Method::Post, "/api/session/end") => api_session_end(request, state),
@@ -63,6 +66,21 @@ fn method_not_allowed(allow: &'static str) -> HttpResponse {
         .headers
         .push(("Allow".to_string(), allow.to_string()));
     response
+}
+
+fn api_host(state: &RouteState) -> Result<HttpResponse, TexoError> {
+    let _host = open_host(state)?;
+    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    HttpResponse::json(
+        200,
+        &json!({
+            "fingerprint": interface.interface_fingerprint,
+            "schema": interface.schema,
+            "version": env!("CARGO_PKG_VERSION"),
+            "workspace_id": state.workspace_id,
+        }),
+    )
+    .map_err(TexoError::Json)
 }
 
 fn api_memory(state: &RouteState) -> Result<HttpResponse, TexoError> {

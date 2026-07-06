@@ -42,7 +42,7 @@ deterministic blake3 transition id and explicit causes.
 - CLI: `init`, `ingest`, `claims`, `supersede`, `check-staleness`,
   `agent-context`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
   `extract`, `session export`, `host fingerprint`, and `mcp`.
-- HTTP: `GET /`, `POST /api/chat`, `GET /api/memory`,
+- HTTP: `GET /`, `GET /api/host`, `POST /api/chat`, `GET /api/memory`,
   `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
   8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
 - SSE: `hello` signal on connect, `journal` signal per workspace event,

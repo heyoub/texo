@@ -37,7 +37,16 @@ pub fn serve(
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\n\r\n",
     ).map_err(surface_error)?;
-    write_signal(stream, None, &json!({"kind":"hello","frontier":frontier}))?;
+    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    write_signal(
+        stream,
+        None,
+        &json!({
+            "kind": "hello",
+            "frontier": frontier,
+            "fingerprint": interface.interface_fingerprint
+        }),
+    )?;
 
     // BatPak 0.9.0 APIs used here: Store::subscribe_lossy(&Region) creates a
     // Subscription, and Subscription::filtered_receiver() exposes the

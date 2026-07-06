@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use batpak::store::{Open, Store};
-use serde_json::json;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 use texo::host::{open_workspace_store, TexoHost};
 use texo::surfaces::http::routes::RouteState;
@@ -58,6 +58,13 @@ fn request(addr: SocketAddr, request: &str) -> TestResult<String> {
     Ok(response)
 }
 
+fn response_body(response: &str) -> TestResult<&str> {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .ok_or_else(|| "HTTP response did not include a body separator".into())
+}
+
 fn init_workspace(dir: &TempDir) -> TestResult {
     let mut host = TexoHost::open(dir.path(), "demo", 1)?;
     let _output = host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
@@ -73,6 +80,24 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
     let memory = request(addr, "GET /api/memory HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
     assert!(memory.contains("HTTP/1.1 200 OK"));
     assert!(memory.contains("\"current\":[]"));
+
+    let host = request(addr, "GET /api/host HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+    assert!(host.contains("HTTP/1.1 200 OK"));
+    let host_body: Value = serde_json::from_str(response_body(&host)?)?;
+    assert_eq!(host_body["schema"], "texo-canonical-v1");
+    assert_eq!(host_body["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(host_body["workspace_id"], "demo");
+    assert!(!host_body["fingerprint"]
+        .as_str()
+        .expect("host response carries fingerprint")
+        .is_empty());
+
+    let host_post = request(
+        addr,
+        "POST /api/host HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+    )?;
+    assert!(host_post.contains("HTTP/1.1 405 Method Not Allowed"));
+    assert!(host_post.contains("Allow: GET"));
 
     let invalid = request(
         addr,
@@ -96,7 +121,7 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
     assert!(missing.contains("unknown or empty session: unknown"));
 
     let stats = stop_server(&shutdown, handle)?;
-    assert!(stats.accepted >= 4);
+    assert!(stats.accepted >= 6);
     Ok(())
 }
 
@@ -129,6 +154,11 @@ fn sse_streams_journal_signal_and_keep_alive() -> TestResult {
 
     let hello = read_until(&mut reader, "\"kind\":\"hello\"")?;
     assert!(hello.contains("\"type\":\"signal\""));
+    let hello_frame = sse_data(&hello)?;
+    assert!(!hello_frame["data"]["fingerprint"]
+        .as_str()
+        .expect("hello frame carries fingerprint")
+        .is_empty());
 
     let mut append_host = TexoHost::open_with_store(dir.path(), "demo", 2, store)?;
     let _output =
@@ -162,4 +192,12 @@ fn read_until(reader: &mut BufReader<TcpStream>, needle: &str) -> TestResult<Str
         }
     }
     Err(format!("did not observe expected stream fragment: {needle}").into())
+}
+
+fn sse_data(frame: &str) -> TestResult<Value> {
+    let data = frame
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .ok_or_else(|| "SSE frame did not include a data line".to_string())?;
+    Ok(serde_json::from_str(data)?)
 }
