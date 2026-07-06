@@ -1,5 +1,6 @@
 //! Clap-driven CLI surface.
 
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -102,7 +103,17 @@ enum Command {
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
-    Serve,
+    Serve {
+        /// Listen address.
+        #[arg(long)]
+        addr: Option<String>,
+        /// Workspace root.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Workspace id.
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Extract claims from one path.
     Extract { path: PathBuf },
     /// Session utilities.
@@ -323,18 +334,83 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(unimplemented_command("relate"))
         }
         Command::Mcp => Ok(unimplemented_command("mcp")),
-        Command::Serve => Ok(unimplemented_command("serve")),
+        Command::Serve {
+            addr,
+            root,
+            workspace,
+        } => serve(addr, root, workspace, &cli.root, cli.workspace.as_deref()),
         Command::Extract { path } => {
             let _ = path;
             Ok(unimplemented_command("extract"))
         }
         Command::Session { cmd } => match cmd {
             SessionCmd::Export { session_id } => {
-                let _ = session_id;
-                Ok(unimplemented_command("session export"))
+                let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+                let output =
+                    host.invoke_json("texo.session.export", &json!({"session_id": session_id}))?;
+                render::session_markdown(
+                    output
+                        .get("markdown")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
+                Ok(ExitCode::SUCCESS)
             }
         },
     }
+}
+
+fn serve(
+    addr: Option<String>,
+    root: Option<PathBuf>,
+    workspace: Option<String>,
+    global_root: &Path,
+    global_workspace: Option<&str>,
+) -> Result<ExitCode, TexoError> {
+    let addr = addr
+        .or_else(|| std::env::var("TEXO_AGENT_ADDR").ok())
+        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
+    let root = root
+        .or_else(|| {
+            if global_root == Path::new(".") {
+                None
+            } else {
+                Some(global_root.to_path_buf())
+            }
+        })
+        .or_else(|| std::env::var("TEXO_AGENT_ROOT").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let workspace = workspace
+        .or_else(|| global_workspace.map(str::to_string))
+        .or_else(|| std::env::var("TEXO_AGENT_WORKSPACE").ok())
+        .unwrap_or_else(|| "memory".to_string());
+    let decision = crate::surfaces::bootstrap::resolve_bootstrap_from_env(&root)?;
+    if let Some(warning) = &decision.warning {
+        render::serve_warning(warning);
+    }
+    crate::surfaces::bootstrap::ensure_workspace(&root, &workspace, &decision)?;
+    let listener = TcpListener::bind(&addr).map_err(|error| TexoError::Surface {
+        which: crate::error::SurfaceKind::Http,
+        detail: error.to_string(),
+    })?;
+    let local = listener.local_addr().map_err(|error| TexoError::Surface {
+        which: crate::error::SurfaceKind::Http,
+        detail: error.to_string(),
+    })?;
+    render::serve_listening(local);
+    let store = crate::host::open_workspace_store(&root, &workspace)?;
+    let state = crate::surfaces::http::routes::RouteState {
+        root,
+        workspace_id: workspace,
+        store: Some(store),
+        chat_enabled: crate::host::grants_model_capability(
+            std::env::var("OPENROUTER_API_KEY").ok(),
+        ),
+    };
+    let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);
+    let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
+    let _stats = crate::surfaces::http::server::serve_listener(listener, config, &shutdown)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError> {

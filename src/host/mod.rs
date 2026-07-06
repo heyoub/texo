@@ -1,5 +1,7 @@
 //! Host composition for texo operations.
 
+pub mod fingerprint;
+
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -7,9 +9,7 @@ use std::sync::Arc;
 use batpak::coordinate::Coordinate;
 use batpak::store::{Open, Store, StoreConfig};
 use serde::{Deserialize, Serialize};
-use syncbat::{
-    Core, RegisterOperationRowV1, RuntimeError, StoreOperationStatusSink, StoreReceiptSink,
-};
+use syncbat::{Core, RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::{TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
@@ -72,7 +72,37 @@ impl TexoHost {
         let workspace_id = workspace_id.into();
         let config = load_or_default_config(&root, &workspace_id)?;
         let store = open_store_for_config(&root, &config)?;
-        let receipt_coordinate = op_receipt_coordinate(&workspace_id)?;
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+    }
+
+    /// Build a runnable host over an already-open workspace store.
+    ///
+    /// # Errors
+    /// Returns [`TexoError::Registry`] when `BatPak`'s payload registry is invalid;
+    /// [`TexoError::Host`] when syncbat registration or build validation fails.
+    pub fn open_with_store(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        observed_at_ms: u64,
+        store: Arc<Store<Open>>,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+            detail: error.to_string(),
+        })?;
+        let config = load_or_default_config(&root, &workspace_id)?;
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+    }
+
+    fn from_parts(
+        root: PathBuf,
+        workspace_id: &str,
+        observed_at_ms: u64,
+        config: WorkspaceConfig,
+        store: Arc<Store<Open>>,
+    ) -> Result<Self, TexoError> {
+        let receipt_coordinate = op_receipt_coordinate(workspace_id)?;
         let receipt_sink = StoreReceiptSink::new(Arc::clone(&store), receipt_coordinate);
         let status_sink = StoreOperationStatusSink::new(Arc::clone(&store));
 
@@ -87,7 +117,7 @@ impl TexoHost {
         let core = builder.build().map_err(build_error)?;
         let env = Rc::new(OpEnv {
             store,
-            workspace_id: workspace_id.clone(),
+            workspace_id: workspace_id.to_string(),
             root,
             config,
             cache: std::cell::RefCell::new(WorkspaceCache::default()),
@@ -130,6 +160,18 @@ impl TexoHost {
     #[must_use]
     pub fn store(&self) -> Arc<Store<Open>> {
         Arc::clone(&self.env.store)
+    }
+
+    /// Return the workspace id this host runs against.
+    #[must_use]
+    pub fn workspace_id(&self) -> &str {
+        &self.env.workspace_id
+    }
+
+    /// Return the root path this host runs against.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.env.root
     }
 
     /// Return the operation receipt coordinate used by this host.
@@ -190,27 +232,10 @@ fn op_receipt_coordinate(workspace_id: &str) -> Result<Coordinate, TexoError> {
 }
 
 fn compute_fingerprints() -> Result<HostFingerprints, TexoError> {
-    let mut rows = catalog()
-        .into_iter()
-        .map(|item| RegisterOperationRowV1::from_descriptor(item.descriptor()))
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| left.name.cmp(&right.name));
-    let module_digest = digest_hex("texo.module.v2", &rows)?;
-    let host_fingerprint = digest_hex("texo.host.v2", &(module_digest.as_str(), &rows))?;
-    let interface_fingerprint = digest_hex(
-        "texo.interface.v2",
-        &rows
-            .iter()
-            .map(|row| {
-                (
-                    row.name.as_str(),
-                    row.input_schema_ref.as_str(),
-                    row.output_schema_ref.as_str(),
-                    row.receipt_kind.as_str(),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )?;
+    let interface = fingerprint::canonical_interface(&catalog());
+    let module_digest = digest_hex("texo.module.v2", &interface)?;
+    let host_fingerprint = digest_hex("texo.host.v2", &interface)?;
+    let interface_fingerprint = interface.interface_fingerprint;
     Ok(HostFingerprints {
         module_digest,
         host_fingerprint,

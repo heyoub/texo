@@ -217,3 +217,21 @@ pub fn verify(value: &Value) {
             .unwrap_or(0)
     );
 }
+
+/// Print session export markdown.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn session_markdown(markdown: &str) {
+    println!("{markdown}");
+}
+
+/// Print serve startup line.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn serve_listening(addr: std::net::SocketAddr) {
+    println!("texo-agent listening on http://{addr}");
+}
+
+/// Print serve bootstrap warning.
+#[expect(clippy::print_stderr, reason = "CLI output contract")]
+pub fn serve_warning(message: &str) {
+    eprintln!("{message}");
+}

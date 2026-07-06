@@ -730,16 +730,13 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.host.fingerprint", || {
         let _input: HostFingerprintInput = parse_input("texo.host.fingerprint", input)?;
-        // TODO(hostbat-0.9.1): replace the interim bare-Core shape with hostbat
-        // module/host/interface fingerprints after the re-mount lands.
-        let operations = catalog()
-            .into_iter()
-            .map(|item| item.descriptor().name().to_string())
-            .collect::<Vec<_>>();
-        Ok(HostFingerprintOutput {
-            status: "pending-hostbat-0.9.1".to_string(),
-            operations,
-        })
+        // TODO(batpak-0.10): replace with hostbat HostModule manifest + fingerprints
+        //  once texo bumps past the 0.9.0 HostBuilder gap (freebatteryfactory/batpak#166,
+        //  fixed in #169/0.10.0). This hand-rolled digest is content-addressed over the
+        //  same declared surface and upgrades in place.
+        Ok(crate::host::fingerprint::canonical_interface(
+            &crate::ops::catalog(),
+        ))
     })
 }
 
@@ -1023,12 +1020,6 @@ struct ConflictResolveOutput {
 struct HostFingerprintInput {}
 
 #[derive(Debug, Serialize)]
-struct HostFingerprintOutput {
-    status: String,
-    operations: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
 struct AgentClaimRow {
     claim_id: String,
     status: crate::claims::status::ClaimStatus,
@@ -1053,9 +1044,9 @@ struct AgentReceiptRow {
     sequence: u64,
 }
 
-struct PlannedSource {
-    observed: SourceObservedV2,
-    claims: Vec<ClaimRecordedV2>,
+pub(crate) struct PlannedSource {
+    pub(crate) observed: SourceObservedV2,
+    pub(crate) claims: Vec<ClaimRecordedV2>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1073,7 +1064,7 @@ struct CmdClaimLine {
     prompt_version: Option<String>,
 }
 
-fn run_op<T: Serialize>(
+pub(crate) fn run_op<T: Serialize>(
     op: &'static str,
     f: impl FnOnce() -> Result<T, TexoError>,
 ) -> HandlerResult {
@@ -1087,14 +1078,17 @@ fn run_op<T: Serialize>(
     })
 }
 
-fn parse_input<T: serde::de::DeserializeOwned>(op: &str, input: &[u8]) -> Result<T, TexoError> {
+pub(crate) fn parse_input<T: serde::de::DeserializeOwned>(
+    op: &str,
+    input: &[u8],
+) -> Result<T, TexoError> {
     serde_json::from_slice(input).map_err(|error| TexoError::OpInput {
         op: op.to_string(),
         detail: error.to_string(),
     })
 }
 
-fn append_json<T: Serialize>(
+pub(crate) fn append_json<T: Serialize>(
     op: &str,
     cx: &mut syncbat::Ctx<'_>,
     kind: EventKind,
@@ -1106,11 +1100,11 @@ fn append_json<T: Serialize>(
         .map_err(|error| op_runtime(op, error))
 }
 
-fn take_receipts() -> Result<Vec<ReceiptNote>, TexoError> {
+pub(crate) fn take_receipts() -> Result<Vec<ReceiptNote>, TexoError> {
     env::with(|op_env| op_env.receipts.borrow_mut().drain(..).collect())
 }
 
-fn take_one_receipt(op: &str) -> Result<ReceiptNote, TexoError> {
+pub(crate) fn take_one_receipt(op: &str) -> Result<ReceiptNote, TexoError> {
     let mut receipts = take_receipts()?;
     receipts.pop().ok_or_else(|| TexoError::OpRuntime {
         op: op.to_string(),
@@ -1119,7 +1113,7 @@ fn take_one_receipt(op: &str) -> Result<ReceiptNote, TexoError> {
     })
 }
 
-fn op_runtime(op: &str, error: impl std::fmt::Display) -> TexoError {
+pub(crate) fn op_runtime(op: &str, error: impl std::fmt::Display) -> TexoError {
     TexoError::OpRuntime {
         op: op.to_string(),
         detail: error.to_string(),
@@ -1134,14 +1128,14 @@ fn config_error(error: crate::config::ConfigError) -> TexoError {
     }
 }
 
-fn assemble_current_view() -> Result<WorkspaceView, TexoError> {
+pub(crate) fn assemble_current_view() -> Result<WorkspaceView, TexoError> {
     env::with(|op_env| {
         let mut cache = op_env.cache.borrow_mut();
         assemble(&op_env.store, &op_env.workspace_id, &mut cache)
     })?
 }
 
-fn resolve_path(root: &Path, path: &Path) -> PathBuf {
+pub(crate) fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -1149,7 +1143,7 @@ fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn plan_sources(
+pub(crate) fn plan_sources(
     op: &str,
     root: &Path,
     input_path: &Path,
@@ -1307,7 +1301,7 @@ fn saturating_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-fn infer_supersessions(
+pub(crate) fn infer_supersessions(
     view: &WorkspaceView,
     new_claims: &[ClaimRecordedV2],
     observed_at_ms: u64,
