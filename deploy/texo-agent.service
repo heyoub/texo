@@ -8,6 +8,7 @@ Type=simple
 EnvironmentFile=/opt/texo/env
 Environment=TEXO_AGENT_ROOT=/opt/texo/workspace
 Environment=TEXO_AGENT_ADDR=0.0.0.0:8787
+Environment=TEXO_UI_DIR=/opt/texo/ui/dist
 ExecStart=/opt/texo/bin/texo serve
 Restart=on-failure
 RestartSec=2

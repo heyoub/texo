@@ -25,6 +25,9 @@ ssh "${SSH_USER}@${HOST}" '
   fi
 '
 scp "$REPO_ROOT/target/release/texo" "${SSH_USER}@${HOST}:/opt/texo/bin/texo"
+echo "==> ship built UI (LiteShip dist — served by texo, no node on the box)"
+ssh "${SSH_USER}@${HOST}" 'rm -rf /opt/texo/ui/dist && mkdir -p /opt/texo/ui'
+scp -r "$REPO_ROOT/ui/dist" "${SSH_USER}@${HOST}:/opt/texo/ui/dist"
 scp "$REPO_ROOT/deploy/texo-agent.service" "${SSH_USER}@${HOST}:/etc/systemd/system/"
 # Never overwrite a live env file (it holds the API key).
 scp "$REPO_ROOT/deploy/env.example" "${SSH_USER}@${HOST}:/opt/texo/env.example"
