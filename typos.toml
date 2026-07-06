@@ -19,4 +19,9 @@ extend-exclude = [
     "public/",
     "tests/snapshots/",
     "Cargo.lock",
+    # Built UI artifacts: minified bundles and the generated drift snapshot.
+    "ui/dist/",
+    "ui/public/drift.json",
+    "ui/pnpm-lock.yaml",
+    "ui/node_modules/",
 ]
