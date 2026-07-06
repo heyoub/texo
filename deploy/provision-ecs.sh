@@ -13,14 +13,28 @@ set -euo pipefail
 REGION="${REGION:-ap-southeast-1}"
 ZONE="${ZONE:-ap-southeast-1a}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-ecs.e-c1m2.large}"   # 2 vCPU / 4 GiB, burstable
-IMAGE_ID="${IMAGE_ID:-ubuntu_24_04_x64_20G_alibase_20250722.vhd}"
+IMAGE_ID="${IMAGE_ID:-ubuntu_24_04_x64_20G_alibase_20260615.vhd}"
 KEY_PAIR="${KEY_PAIR:?set KEY_PAIR to an existing ECS key pair name}"
 SG_NAME="${SG_NAME:-texo-agent-sg}"
 INSTANCE_NAME="${INSTANCE_NAME:-texo-agent}"
 AGENT_PORT="${AGENT_PORT:-8787}"
 
+# The region requires VPC networking (classic instances are gone:
+# OperationDenied.InvalidNetworkType). Create the VPC + vswitch first and
+# scope the security group to the VPC.
+echo "==> vpc + vswitch in ${REGION}/${ZONE}"
+VPC_ID=$(aliyun vpc CreateVpc --RegionId "$REGION" --CidrBlock 172.16.0.0/16 \
+  --VpcName texo-vpc \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["VpcId"])')
+sleep 5
+VSW_ID=$(aliyun vpc CreateVSwitch --RegionId "$REGION" --ZoneId "$ZONE" \
+  --VpcId "$VPC_ID" --CidrBlock 172.16.0.0/24 --VSwitchName texo-vsw \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["VSwitchId"])')
+echo "    ${VPC_ID} / ${VSW_ID}"
+
 echo "==> security group (${SG_NAME}) in ${REGION}"
 SG_ID=$(aliyun ecs CreateSecurityGroup --RegionId "$REGION" \
+  --VpcId "$VPC_ID" \
   --SecurityGroupName "$SG_NAME" \
   --Description "texo-agent hackathon backend" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["SecurityGroupId"])')
@@ -36,7 +50,7 @@ done
 echo "==> ECS instance (${INSTANCE_TYPE}, ${IMAGE_ID})"
 INSTANCE_ID=$(aliyun ecs RunInstances --RegionId "$REGION" --ZoneId "$ZONE" \
   --InstanceType "$INSTANCE_TYPE" --ImageId "$IMAGE_ID" \
-  --SecurityGroupId "$SG_ID" --KeyPairName "$KEY_PAIR" \
+  --SecurityGroupId "$SG_ID" --VSwitchId "$VSW_ID" --KeyPairName "$KEY_PAIR" \
   --InstanceName "$INSTANCE_NAME" \
   --InternetMaxBandwidthOut 5 \
   --SystemDisk.Category cloud_essd --SystemDisk.Size 40 \
