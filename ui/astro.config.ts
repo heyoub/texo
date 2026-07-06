@@ -9,6 +9,9 @@ export default defineConfig({
   // serves it from disk. There are no Astro API routes — /api/* is texo's
   // own sync HTTP server — so no adapter is needed.
   output: 'static',
+  // Flat files (drift.html, not drift/index.html): texo's static route does
+  // exact path joins with a single "/" → index.html special case.
+  build: { format: 'file' },
   integrations: [
     integration({
       vite: {

@@ -76,11 +76,22 @@ const { title = 'texo' } = Astro.props;
         font-size: 1.125rem;
         letter-spacing: -0.02em;
         color: var(--czap-primary, #4338ca);
+        text-decoration: none;
       }
 
       .texo-nav__tag {
         font-size: 0.75rem;
         color: var(--czap-muted, #78716c);
+      }
+
+      .texo-nav__link {
+        font-size: 0.8125rem;
+        color: var(--czap-muted, #78716c);
+        text-decoration: none;
+        transition: color 0.15s;
+      }
+      .texo-nav__link:hover {
+        color: var(--czap-primary, #4338ca);
       }
 
       .texo-nav__spacer {
@@ -131,8 +142,10 @@ const { title = 'texo' } = Astro.props;
   </head>
   <body>
     <nav class="texo-nav">
-      <span class="texo-nav__brand">texo</span>
+      <a class="texo-nav__brand" href="/">texo</a>
       <span class="texo-nav__tag">claim-chain memory · every answer carries its receipts</span>
+      <a class="texo-nav__link" href="/">Agent</a>
+      <a class="texo-nav__link" href="/drift.html">Drift</a>
       <div class="texo-nav__spacer"></div>
       <span class="texo-nav__status" id="stream-status" data-live="false">stream</span>
       <button class="texo-theme-toggle" id="theme-toggle">Theme</button>

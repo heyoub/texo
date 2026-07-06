@@ -1,0 +1,3495 @@
+[
+  {
+    "claim_id": "claim_017360fed517",
+    "receipt": {
+      "event_id": "019f38b6846a767a82929f7a8550ac3b",
+      "sequence": 16
+    },
+    "source": {
+      "line_start": 46,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "replacement-tuesday-vs-friday-bob-vs",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   replacement (Tuesday vs Friday, Bob vs Alice, BatPak vs Postgres) *and* the"
+  },
+  {
+    "claim_id": "claim_018868837e5d",
+    "receipt": {
+      "event_id": "019f38b6846874b2bd6ebf6ca3134bfa",
+      "sequence": 9
+    },
+    "source": {
+      "line_start": 11,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "becomes-claims-and-a-later-noise",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "becomes claims, and a later *noise* line supersedes the real decision. Dogfooding"
+  },
+  {
+    "claim_id": "claim_01d6a90edb5d",
+    "receipt": {
+      "event_id": "019f38b6848c71a5a1cf07326bd57b65",
+      "sequence": 137
+    },
+    "source": {
+      "line_start": 156,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "chat-transcripts-are-firstperson-prose-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Chat transcripts are **first-person prose**. The extractor tends to normalize"
+  },
+  {
+    "claim_id": "claim_0318a8653c7c",
+    "receipt": {
+      "event_id": "019f38b6848f746a9b66fa003df0e019",
+      "sequence": 148
+    },
+    "source": {
+      "line_start": 228,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "the-deployed-service-is-now-one",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The deployed service is now one binary: `/opt/texo/bin/texo serve`. The systemd"
+  },
+  {
+    "claim_id": "claim_03885bed6575",
+    "receipt": {
+      "event_id": "019f38b68498768bbff1c0ebe4cb7636",
+      "sequence": 182
+    },
+    "source": {
+      "line_start": 81,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "about-itself-this-wiki-is-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  about *itself* (\"this wiki is the source of truth for new engineers\") as"
+  },
+  {
+    "claim_id": "claim_039468af4c7a",
+    "receipt": {
+      "event_id": "019f38b6847e77dc935026764a5138c4",
+      "sequence": 85
+    },
+    "source": {
+      "line_start": 35,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "http-server-sse-mcp-stdio",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- HTTP server, SSE, MCP stdio, and OpenAI-compatible HTTP client are"
+  },
+  {
+    "claim_id": "claim_051a4acb93ba",
+    "receipt": {
+      "event_id": "019f38b6848a7445baa11f1576c2fb91",
+      "sequence": 131
+    },
+    "source": {
+      "line_start": 77,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "golden-churn-no-090-primitives-lanes",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "golden churn). No 0.9.0 primitives (lanes, `import_events`) are adopted yet."
+  },
+  {
+    "claim_id": "claim_0548d813446d",
+    "receipt": {
+      "event_id": "019f38b68491776791fad92eabe480f9",
+      "sequence": 155
+    },
+    "source": {
+      "line_start": 14,
+      "path": "docs/INVARIANTS.md",
+      "source_id": "src_751a561faccb"
+    },
+    "status": "current",
+    "subject_hint": "invsessionlanes-session-turns-are",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| INV-SESSION-LANES | Session turns are crash-durable in non-zero lanes and hidden from lane-0 memory until session-end ingest. | `tests/session_lanes.rs`, `tests/http_server.rs` |"
+  },
+  {
+    "claim_id": "claim_055f6d86cdb5",
+    "receipt": {
+      "event_id": "019f38b6848871eb958987f6f83855a9",
+      "sequence": 124
+    },
+    "source": {
+      "line_start": 61,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "changed-preferences-get-superseded-and",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   - changed preferences get *superseded*, and the one-file UI at `/` shows"
+  },
+  {
+    "claim_id": "claim_05a933af52d9",
+    "receipt": {
+      "event_id": "019f38b6846d7e52a3abfdcf01895a20",
+      "sequence": 25
+    },
+    "source": {
+      "line_start": 72,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "the-heuristic-path-remains-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The heuristic path remains the default; semantics is opt-in per workspace."
+  },
+  {
+    "claim_id": "claim_06a97e57afad",
+    "receipt": {
+      "event_id": "019f38b6847f7bc0af23e6ae4d160110",
+      "sequence": 89
+    },
+    "source": {
+      "line_start": 58,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "claimid-identity-is-preserved-across",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Claim-id identity is preserved across the schema-v2 rebuild; QA-3 verified"
+  },
+  {
+    "claim_id": "claim_07ed7744bfce",
+    "receipt": {
+      "event_id": "019f38b6848e719dafc6011c805871bf",
+      "sequence": 144
+    },
+    "source": {
+      "line_start": 201,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "http-surface-inprocess-the-llm-call",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  HTTP surface in-process); the LLM call is isolated behind a unit-tested"
+  },
+  {
+    "claim_id": "claim_0856cf4bfa81",
+    "receipt": {
+      "event_id": "019f38b684737c5b9aaa5a529c1d16a1",
+      "sequence": 45
+    },
+    "source": {
+      "line_start": 62,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "1-staledirection-dated-supersession-is-witnessed",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "1. **Stale-direction, dated.** Supersession is witnessed by the commit that"
+  },
+  {
+    "claim_id": "claim_09d89e074f51",
+    "receipt": {
+      "event_id": "019f38b6849673118dd59b8ae4556ac5",
+      "sequence": 174
+    },
+    "source": {
+      "line_start": 38,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "denyunknownfields-so-defaultondecode-is-what-keeps",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   `deny_unknown_fields`, so default-on-decode is what keeps **old journals"
+  },
+  {
+    "claim_id": "claim_0aa1b4ac4076",
+    "receipt": {
+      "event_id": "019f38b684727d8fa6b6261c648d08f1",
+      "sequence": 43
+    },
+    "source": {
+      "line_start": 58,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "adr001s-judge-needs-explicit-change-wording",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "ADR-001's judge needs explicit change wording (\"moved to\", \"now\", \"no longer\")"
+  },
+  {
+    "claim_id": "claim_0ac4b34e94a6",
+    "receipt": {
+      "event_id": "019f38b6846872d6a7472cacaf11b274",
+      "sequence": 8
+    },
+    "source": {
+      "line_start": 8,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "claim-ids-deterministic-replay-supersession-conflict",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "claim IDs, deterministic replay, supersession, conflict detection, receipts — is"
+  },
+  {
+    "claim_id": "claim_0adb492ec320",
+    "receipt": {
+      "event_id": "019f38b6849870bfbdb6f6d36d15ac57",
+      "sequence": 180
+    },
+    "source": {
+      "line_start": 77,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "was-reverted-to-v3-same-day",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  was reverted to v3 same day. Lesson: prompt changes are pipeline changes —"
+  },
+  {
+    "claim_id": "claim_0d01eaa11bf5",
+    "receipt": {
+      "event_id": "019f38b684877d3bb5cf73f1f4b10c99",
+      "sequence": 120
+    },
+    "source": {
+      "line_start": 41,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "line-in-inwindow-changelog-is-built",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "line in \"In-window changelog\" is built during the window; the Devpost"
+  },
+  {
+    "claim_id": "claim_0d15848144be",
+    "receipt": {
+      "event_id": "019f38b684767c8a8491aad8d7fab80b",
+      "sequence": 56
+    },
+    "source": {
+      "line_start": 97,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "replicating-cursors-trained-embedding-model",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Replicating Cursor's trained embedding model** — that model is trained on"
+  },
+  {
+    "claim_id": "claim_0f6b1ae8729b",
+    "receipt": {
+      "event_id": "019f38b684947509acace899570bbba7",
+      "sequence": 167
+    },
+    "source": {
+      "line_start": 17,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "is-kept-for-the-design-rationale",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "is kept for the design rationale."
+  },
+  {
+    "claim_id": "claim_14ca84b388ff",
+    "receipt": {
+      "event_id": "019f38b6849e7e548b51d5a9aa224551",
+      "sequence": 203
+    },
+    "source": {
+      "line_start": 5,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "i-build-two-tools-that-turned",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "I build two tools that turned out to be one tool. BatPak is a content-addressed, append-only event log — event sourcing with receipts. texo sits on top of it: a \"claim-chain\" that ingests prose, extracts atomic claims, and journals them as typed events, so that when a fact changes, the old claim is *superseded* — retired with a receipt saying what replaced it, when, and from which source line. The pitch I've been repeating for months is \"git tracks code diffs; texo tracks claim diffs.\""
+  },
+  {
+    "claim_id": "claim_15982d2498a2",
+    "receipt": {
+      "event_id": "019f38b684817853be5a7f9b1e350d71",
+      "sequence": 94
+    },
+    "source": {
+      "line_start": 55,
+      "path": "docs/AGENTS.md",
+      "source_id": "src_639cbc8b4543"
+    },
+    "status": "current",
+    "subject_hint": "integration-tests-use-real-batpak",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Integration tests use real BatPak stores."
+  },
+  {
+    "claim_id": "claim_15dff87400ac",
+    "receipt": {
+      "event_id": "019f38b6846b7c25a02f6ebcd4e97a92",
+      "sequence": 18
+    },
+    "source": {
+      "line_start": 48,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "entailment-recency-supersede-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   \"entailment + recency = supersede\" is simply wrong — a new value *negates* the"
+  },
+  {
+    "claim_id": "claim_16511191c3c2",
+    "receipt": {
+      "event_id": "019f38b6849c77feaeb3b40d9189c527",
+      "sequence": 199
+    },
+    "source": {
+      "line_start": 3,
+      "path": "docs/deploy__README.md",
+      "source_id": "src_f3ea82bf61d9"
+    },
+    "status": "current",
+    "subject_hint": "this-directory-is-the-submissions-proofofalibabacloud",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "This directory is the submission's **proof-of-Alibaba-Cloud code**: the"
+  },
+  {
+    "claim_id": "claim_167e18829619",
+    "receipt": {
+      "event_id": "019f38b6848876e487bfc5df1327d236",
+      "sequence": 121
+    },
+    "source": {
+      "line_start": 42,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "description-must-say-so-explicitly",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "description must say so explicitly."
+  },
+  {
+    "claim_id": "claim_178174433cef",
+    "receipt": {
+      "event_id": "019f38b6847b7d43911b97adfaaf9df1",
+      "sequence": 74
+    },
+    "source": {
+      "line_start": 153,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "that-slice-exercises-every-decision-here",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "That slice exercises every decision here and trips each risk once where it is"
+  },
+  {
+    "claim_id": "claim_1a6c7b993d0f",
+    "receipt": {
+      "event_id": "019f38b68469744cb7e52042774d6118",
+      "sequence": 11
+    },
+    "source": {
+      "line_start": 21,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "a-recordonce-boundary-the-model-runs",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "a record-once boundary** (the model runs once at ingest; the emitted events are"
+  },
+  {
+    "claim_id": "claim_1d65a4e3c1ad",
+    "receipt": {
+      "event_id": "019f38b6849c761bb502c23b263d659e",
+      "sequence": 196
+    },
+    "source": {
+      "line_start": 60,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "judge-for-supersessionconflict-verdicts-model-outputs",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "judge for supersession/conflict verdicts. Model outputs are cached by content"
+  },
+  {
+    "claim_id": "claim_1da17b1be719",
+    "receipt": {
+      "event_id": "019f38b6847d7d36ad5ceeda877748bf",
+      "sequence": 82
+    },
+    "source": {
+      "line_start": 28,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "texoeffectbackend-is-the-append-chokepoint",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- `TexoEffectBackend` is the append chokepoint: typed decode, coordinate/lane"
+  },
+  {
+    "claim_id": "claim_1e4a945870a3",
+    "receipt": {
+      "event_id": "019f38b6846a7601bfa4ce28da5d8faf",
+      "sequence": 14
+    },
+    "source": {
+      "line_start": 43,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "   to the **0.881** between the two real *deploy* claims. No single threshold"
+  },
+  {
+    "claim_id": "claim_1fe3eab8902a",
+    "receipt": {
+      "event_id": "019f38b6847d79a9b8c185009c751ad9",
+      "sequence": 81
+    },
+    "source": {
+      "line_start": 27,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "syncbat-core-operations-are-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- syncbat Core operations are the only handler surface."
+  },
+  {
+    "claim_id": "claim_24106af0c363",
+    "receipt": {
+      "event_id": "019f38b6846f75ca824d8741b4b2fa72",
+      "sequence": 31
+    },
+    "source": {
+      "line_start": 15,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "code-diffs-and-both-are-appendonly",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "code diffs, and both are **append-only, content-addressed, hash-chained logs**."
+  },
+  {
+    "claim_id": "claim_2466de042bfb",
+    "receipt": {
+      "event_id": "019f38b684977c6094961f41672fecd5",
+      "sequence": 178
+    },
+    "source": {
+      "line_start": 63,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "batpak-store-is-real-file-io",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "BatPak store is real file I/O — and for cloud deployment a native binary is"
+  },
+  {
+    "claim_id": "claim_24e40bbdbdca",
+    "receipt": {
+      "event_id": "019f38b684747bc2b21890f1d10d77dc",
+      "sequence": 49
+    },
+    "source": {
+      "line_start": 70,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "trajectory-vote-the-outlier-is-identifiable",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   trajectory) vote; the outlier is identifiable."
+  },
+  {
+    "claim_id": "claim_250d803be7dd",
+    "receipt": {
+      "event_id": "019f38b68491793d8d67c74059a4b426",
+      "sequence": 154
+    },
+    "source": {
+      "line_start": 13,
+      "path": "docs/INVARIANTS.md",
+      "source_id": "src_751a561faccb"
+    },
+    "status": "current",
+    "subject_hint": "invconflictsemantics-conflicts-are-contradictory",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| INV-CONFLICT-SEMANTICS | Conflicts are contradictory current claims; superseded claims do not beat the superseded status. | `tests/conflicts_courtroom.rs`, `tests/projection_laws.rs` |"
+  },
+  {
+    "claim_id": "claim_273295f7acf0",
+    "receipt": {
+      "event_id": "019f38b6848f77bab2dcf00596cf7b6e",
+      "sequence": 149
+    },
+    "source": {
+      "line_start": 229,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "unit-still-uses-the-texoagent-service",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "unit still uses the `texo-agent` service name for operational continuity, but"
+  },
+  {
+    "claim_id": "claim_291adef09efc",
+    "receipt": {
+      "event_id": "019f38b6846c7656b9d1cffa86f80ffa",
+      "sequence": 21
+    },
+    "source": {
+      "line_start": 55,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "bare-differing-value-is-a-conflict",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "bare differing value is a **conflict**, so texo *surfaces disagreements* rather"
+  },
+  {
+    "claim_id": "claim_2a353c6c73ed",
+    "receipt": {
+      "event_id": "019f38b684797498a277b2aeab361a57",
+      "sequence": 68
+    },
+    "source": {
+      "line_start": 128,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "rules-written-gaps-must-surface-as",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  rules written. Gaps must surface as wide-σ \"docs-only\" claims, never silent"
+  },
+  {
+    "claim_id": "claim_2b1351c9f570",
+    "receipt": {
+      "event_id": "019f38b684977debbce98fb3f7c05daf",
+      "sequence": 177
+    },
+    "source": {
+      "line_start": 56,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "risks-replay-backcompat-must-test-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "**Risks:** replay back-compat (must test), the two extraction paths agreeing on"
+  },
+  {
+    "claim_id": "claim_2ce03e7c5b3f",
+    "receipt": {
+      "event_id": "019f38b6849c747bbb1cc366dd813113",
+      "sequence": 197
+    },
+    "source": {
+      "line_start": 69,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "async-runtime-stack-the-rebuilt",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Async runtime stack; the rebuilt binary is sync-first by design."
+  },
+  {
+    "claim_id": "claim_2dbef5fdd060",
+    "receipt": {
+      "event_id": "019f38b684737e339e9f09cf561c302b",
+      "sequence": 47
+    },
+    "source": {
+      "line_start": 64,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "wins-heuristic-which-is-retired",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   wins\" heuristic, which is **retired**."
+  },
+  {
+    "claim_id": "claim_2f3c92c6f020",
+    "receipt": {
+      "event_id": "019f38b6848b75629e15cf356b801c3e",
+      "sequence": 133
+    },
+    "source": {
+      "line_start": 92,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "dashscopes-native-api-irrelevant-here",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  DashScope's native API — irrelevant here: texo's relate path uses only"
+  },
+  {
+    "claim_id": "claim_343d68a8406c",
+    "receipt": {
+      "event_id": "019f38b684817b8a83faa5f087e44fce",
+      "sequence": 97
+    },
+    "source": {
+      "line_start": 15,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "ownership",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo is a single-crate, single-binary, sync-first application. BatPak owns the"
+  },
+  {
+    "claim_id": "claim_353458e7e0e1",
+    "receipt": {
+      "event_id": "019f38b68491747eb110f1d762acab59",
+      "sequence": 153
+    },
+    "source": {
+      "line_start": 11,
+      "path": "docs/INVARIANTS.md",
+      "source_id": "src_751a561faccb"
+    },
+    "status": "current",
+    "subject_hint": "invtransitionevidence-claimconflict-phase-changes",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| INV-TRANSITION-EVIDENCE | Claim/conflict phase changes use legal typestate edges and deterministic transition records. | `tests/compile_fail.rs`, `tests/projection_laws.rs`, `src/events/machines.rs` |"
+  },
+  {
+    "claim_id": "claim_36f131536591",
+    "receipt": {
+      "event_id": "019f38b6847d7ce2814fe5d3cf9ec8f0",
+      "sequence": 80
+    },
+    "source": {
+      "line_start": 23,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "texo-is-now-one-crate-and",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo is now one crate and one binary:"
+  },
+  {
+    "claim_id": "claim_38ea0bdf827a",
+    "receipt": {
+      "event_id": "019f38b684977d4487b4bb8c47a69010",
+      "sequence": 176
+    },
+    "source": {
+      "line_start": 41,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "2-heuristic-path-sourcemarkdownrs-extract-markdownline",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "2. **Heuristic path (`source/markdown.rs`, `extract/`).** `MarkdownLine` is only"
+  },
+  {
+    "claim_id": "claim_390b1bfdca9b",
+    "receipt": {
+      "event_id": "019f38b684957553b0e4560764bd9af0",
+      "sequence": 168
+    },
+    "source": {
+      "line_start": 19,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "why-deferred-it-is-a-versioned",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "**Why deferred:** it is a *versioned event-schema change* with a back-compat"
+  },
+  {
+    "claim_id": "claim_3a6142c69a0b",
+    "receipt": {
+      "event_id": "019f38b684a3743cae2957073db1659a",
+      "sequence": 212
+    },
+    "source": {
+      "line_start": 39,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "Session one, I teach it facts. Session two, I change one: \"Deploys moved to Tuesday.\" Session three — a fresh session, empty transcript, memory coming entirely from the replayed journal — I ask what it remembers about deploys. The reply that came back is the whole project in three sentences:"
+  },
+  {
+    "claim_id": "claim_3b63403c2a02",
+    "receipt": {
+      "event_id": "019f38b6848e78068dfd96b0bddcd8c1",
+      "sequence": 146
+    },
+    "source": {
+      "line_start": 224,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "  one-binary deploy path, ADR-003, and removal of the old crates."
+  },
+  {
+    "claim_id": "claim_3b78858530f9",
+    "receipt": {
+      "event_id": "019f38b6848572cfa952d385877816ce",
+      "sequence": 110
+    },
+    "source": {
+      "line_start": 8,
+      "path": "docs/CONVENTIONS.md",
+      "source_id": "src_deeab94cd0c7"
+    },
+    "status": "current",
+    "subject_hint": "commands-use-cargo-run-bin",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Commands use `cargo run --bin texo -- ...`."
+  },
+  {
+    "claim_id": "claim_3ed2067bbb51",
+    "receipt": {
+      "event_id": "019f38b6848272fe811ee8ee95fcca97",
+      "sequence": 100
+    },
+    "source": {
+      "line_start": 38,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "the-catalog-is-contentaddressed-by-texo",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The catalog is content-addressed by `texo host fingerprint`. It currently"
+  },
+  {
+    "claim_id": "claim_40ab0cff9424",
+    "receipt": {
+      "event_id": "019f38b6847a735d83b9f476473812c1",
+      "sequence": 70
+    },
+    "source": {
+      "line_start": 134,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "uncertain-flagged-band-the-tool",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  \"uncertain — flagged\" band. The tool must still make calls."
+  },
+  {
+    "claim_id": "claim_41fa23119e91",
+    "receipt": {
+      "event_id": "019f38b684877e1b9e6c5db452a34e28",
+      "sequence": 119
+    },
+    "source": {
+      "line_start": 40,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "updated-during-the-window-and-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "updated* during the window and the update is explained. Everything below the"
+  },
+  {
+    "claim_id": "claim_452f28ead9a0",
+    "receipt": {
+      "event_id": "019f38b6848675ee8cbf604354416ab7",
+      "sequence": 113
+    },
+    "source": {
+      "line_start": 12,
+      "path": "docs/CONVENTIONS.md",
+      "source_id": "src_deeab94cd0c7"
+    },
+    "status": "current",
+    "subject_hint": "use-expectreason-only-when-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Use `expect(\"reason\")` only when the invariant is already proven locally."
+  },
+  {
+    "claim_id": "claim_45d43b3e4357",
+    "receipt": {
+      "event_id": "019f38b6849f76bca071a5e41b31740d",
+      "sequence": 206
+    },
+    "source": {
+      "line_start": 21,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "texos-extractor-prompt-has-a-versioned",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo's extractor prompt has a versioned constant, `PROPOSE_PROMPT_VERSION`, because the record-once cache is keyed by `model | prompt_version | span` — change the prompt, invalidate the cache. I had a hardening item queued: the extractor faithfully records claims a document makes about *itself* (\"this wiki is the source of truth for new engineers\") as durable facts, which is ironic for a tool whose thesis is \"prose is not state.\" So I added one exclusion bullet to the prompt, bumped v3 → v4, and ran the tests."
+  },
+  {
+    "claim_id": "claim_46297ac83a3b",
+    "receipt": {
+      "event_id": "019f38b6848d71f7bfaa55eaa7619bd1",
+      "sequence": 141
+    },
+    "source": {
+      "line_start": 176,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "to-45-see-roadmap-for",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  to 4/5 — see ROADMAP for the lesson (prompt changes are pipeline changes)."
+  },
+  {
+    "claim_id": "claim_46e7df5d1f0a",
+    "receipt": {
+      "event_id": "019f38b6849a7a07a506791b3c21dfee",
+      "sequence": 190
+    },
+    "source": {
+      "line_start": 32,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "1. `deploy_schedule.md` says deploys happen on Friday."
+  },
+  {
+    "claim_id": "claim_475c527ee5fd",
+    "receipt": {
+      "event_id": "019f38b684797805a35e173586728cd7",
+      "sequence": 67
+    },
+    "source": {
+      "line_start": 124,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "cost-is-not-cured-by",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Cost is not cured by confidence.** O(commits × extraction) needs"
+  },
+  {
+    "claim_id": "claim_48d48007115e",
+    "receipt": {
+      "event_id": "019f38b684727ca0a71b871b42a22aed",
+      "sequence": 44
+    },
+    "source": {
+      "line_start": 59,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "for-a-supersession-a-bare-differing",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "for a supersession; a bare differing value is a conflict. **The git commit is"
+  },
+  {
+    "claim_id": "claim_48da9bd30044",
+    "receipt": {
+      "event_id": "019f38b684a271f3a46d5ba13ccd79f8",
+      "sequence": 210
+    },
+    "source": {
+      "line_start": 33,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [
+      "claim_b08581abc59e"
+    ],
+    "text": "First: **the assistant was double-journaling everything.** A helpful chat model restates your facts back at you (\"Got it — deploys are on Tuesdays now\"), and my transcript renderer was ingesting both speakers. Every fact journaled twice, once per speaker, as distinct current claims. The fix was a one-line philosophy decision: transcripts render *user* utterances only. Memory is what the user said, not the model's paraphrase of it."
+  },
+  {
+    "claim_id": "claim_4928d8e99936",
+    "receipt": {
+      "event_id": "019f38b6846c73bdb5370d83e61c573b",
+      "sequence": 22
+    },
+    "source": {
+      "line_start": 62,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "verdicts-become-journaled-events-and-replaycompile",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "verdicts become journaled events, and replay/compile are deterministic over them."
+  },
+  {
+    "claim_id": "claim_4a0879375a6e",
+    "receipt": {
+      "event_id": "019f38b6846978be9127fd37c5fd42a9",
+      "sequence": 13
+    },
+    "source": {
+      "line_start": 42,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "release-process",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   Friday\" vs \"Releases go out on Friday\" embed at **0.875** — essentially equal"
+  },
+  {
+    "claim_id": "claim_4daf77db6911",
+    "receipt": {
+      "event_id": "019f38b6846b7bf991bdbae99d134127",
+      "sequence": 20
+    },
+    "source": {
+      "line_start": 54,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "explicit-change-wording-moved-to-now",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "explicit change wording (\"moved to\", \"now\", \"no longer\") for a supersession; a"
+  },
+  {
+    "claim_id": "claim_4f2cecdb9387",
+    "receipt": {
+      "event_id": "019f38b6846f7323b8388e74198394b1",
+      "sequence": 33
+    },
+    "source": {
+      "line_start": 17,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "commitlog-not-a-new-kind",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "commit-log)` — not a new kind of system. This is an *enhancement of the relate"
+  },
+  {
+    "claim_id": "claim_50135ec67211",
+    "receipt": {
+      "event_id": "019f38b684837320b152e5b9f2eafda1",
+      "sequence": 102
+    },
+    "source": {
+      "line_start": 55,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "mcp-is-linedelimited-jsonrpc-20",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- MCP is line-delimited JSON-RPC 2.0 over locked stdin/stdout and exposes four"
+  },
+  {
+    "claim_id": "claim_5219532d3b59",
+    "receipt": {
+      "event_id": "019f38b684947dc2841ba51051089f65",
+      "sequence": 165
+    },
+    "source": {
+      "line_start": 99,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "is-optional-recordonce-perception-at-append",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "is optional record-once perception at append boundaries. The journal remains"
+  },
+  {
+    "claim_id": "claim_5259748f15c3",
+    "receipt": {
+      "event_id": "019f38b6846a7b639e12378bf123c10d",
+      "sequence": 15
+    },
+    "source": {
+      "line_start": 44,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "   separates deploy-Friday from release-Friday."
+  },
+  {
+    "claim_id": "claim_52e1a295cde4",
+    "receipt": {
+      "event_id": "019f38b6846f765abf617d2f70744bd1",
+      "sequence": 32
+    },
+    "source": {
+      "line_start": 16,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "codeawareness-is-the-join-of-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Code-awareness is the **join** of the two — `(texo claim-journal ⋈ git"
+  },
+  {
+    "claim_id": "claim_54b4364da16d",
+    "receipt": {
+      "event_id": "019f38b684877611a9377b23522f4eed",
+      "sequence": 117
+    },
+    "source": {
+      "line_start": 30,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "uses-qwen-models",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- [ ] Uses Qwen models on Qwen Cloud (DashScope OpenAI-compatible mode — see gaps below)"
+  },
+  {
+    "claim_id": "claim_5549dc8afc99",
+    "receipt": {
+      "event_id": "019f38b684757aea965de96ac9e8b73e",
+      "sequence": 55
+    },
+    "source": {
+      "line_start": 88,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "trust-is-therefore-the-endtoend-posterior",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "\"Trust\" is therefore the end-to-end posterior over the two logs — the computed,"
+  },
+  {
+    "claim_id": "claim_56f5d27b0470",
+    "receipt": {
+      "event_id": "019f38b684777ef8a62763aa02094290",
+      "sequence": 59
+    },
+    "source": {
+      "line_start": 104,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "gaussian-for-binaryproportion-quantities",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Gaussian μ/σ for binary/proportion quantities** — use Beta; μ/σ is a display"
+  },
+  {
+    "claim_id": "claim_5890b6ad98ef",
+    "receipt": {
+      "event_id": "019f38b684987082ada76715455aa709",
+      "sequence": 183
+    },
+    "source": {
+      "line_start": 82,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "current-claims-ironic-for-a",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  current claims — ironic for a \"prose is not state\" tool."
+  },
+  {
+    "claim_id": "claim_5afb0d343630",
+    "receipt": {
+      "event_id": "019f38b684767aa9a53c602cb69a03e5",
+      "sequence": 57
+    },
+    "source": {
+      "line_start": 100,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "a-purelylive-representation-with-no",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **A purely-live representation with no history** — that is TrustGraph; it throws"
+  },
+  {
+    "claim_id": "claim_5b3c0ebb0332",
+    "receipt": {
+      "event_id": "019f38b6846c766e8517db6fef1ce440",
+      "sequence": 24
+    },
+    "source": {
+      "line_start": 71,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "current-fridaywednesdayalicepostgres-retired-mondayfriday-a-live",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  current, Friday/Wednesday/Alice/Postgres retired, Monday⟂Friday a live conflict."
+  },
+  {
+    "claim_id": "claim_5c7a307332f7",
+    "receipt": {
+      "event_id": "019f38b6848a7d1dac07fc1217128e8e",
+      "sequence": 130
+    },
+    "source": {
+      "line_start": 68,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "but-the-vars-are-openrouter-consider",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   but the vars are `OPENROUTER_*`. Consider neutral aliases (`TEXO_LLM_*`)"
+  },
+  {
+    "claim_id": "claim_5ed68704aa63",
+    "receipt": {
+      "event_id": "019f38b6849373a59392026ac055be2e",
+      "sequence": 162
+    },
+    "source": {
+      "line_start": 75,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "transcript-ingest-the-journal-is-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "transcript ingest. The journal is the session."
+  },
+  {
+    "claim_id": "claim_614c6ed40380",
+    "receipt": {
+      "event_id": "019f38b684847c1099d9a341f911a783",
+      "sequence": 107
+    },
+    "source": {
+      "line_start": 71,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "projectifchanged-replay-does-not-depend-on",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "`project_if_changed`. Replay does not depend on hash-map iteration order."
+  },
+  {
+    "claim_id": "claim_62d2a6bbbf7a",
+    "receipt": {
+      "event_id": "019f38b68489752c8e80febad9966f31",
+      "sequence": 126
+    },
+    "source": {
+      "line_start": 63,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "conflicts-chat-model-via-openrouterchatmodel-remaining",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "     conflicts). Chat model via `OPENROUTER_CHAT_MODEL`; remaining work is"
+  },
+  {
+    "claim_id": "claim_63b7b82c6bde",
+    "receipt": {
+      "event_id": "019f38b684a47b96898174db90e01f7e",
+      "sequence": 217
+    },
+    "source": {
+      "line_start": 7,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "current",
+    "subject_hint": "texoagent-is-a-chat-agent-whose",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo-agent is a chat agent whose persistent memory is an append-only claim-chain, not a vector store — memory that knows when to stop believing things. Facts you state across sessions become journaled claims; when a fact changes, the old claim is retired with a receipt recording *what* superseded it, *when*, and from *which source line*. The agent doesn't just remember — it can tell you the history of what it used to believe and why it stopped."
+  },
+  {
+    "claim_id": "claim_63db1f60cd52",
+    "receipt": {
+      "event_id": "019f38b6849977889aaac12e6cef70a0",
+      "sequence": 185
+    },
+    "source": {
+      "line_start": 95,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "realstore-tests-onto-familyprovided-memory-stores",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  real-store tests onto family-provided memory stores where possible, and use"
+  },
+  {
+    "claim_id": "claim_646a40e43935",
+    "receipt": {
+      "event_id": "019f38b6847470baa0d0cacb0aa2d7ad",
+      "sequence": 51
+    },
+    "source": {
+      "line_start": 78,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "confidence-is-perception-computed-once-at",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Confidence is **perception**: computed once at the record-once boundary, quantized"
+  },
+  {
+    "claim_id": "claim_65c081ac38d0",
+    "receipt": {
+      "event_id": "019f38b6848c7d30a39d35c220c3301a",
+      "sequence": 136
+    },
+    "source": {
+      "line_start": 110,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "judgevisible-uses-alibaba-cloud-code-file",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  judge-visible \"uses Alibaba Cloud\" code file; record the proof video on the"
+  },
+  {
+    "claim_id": "claim_66dd220bdbd1",
+    "receipt": {
+      "event_id": "019f38b68485721f92a733a4b890c35b",
+      "sequence": 111
+    },
+    "source": {
+      "line_start": 9,
+      "path": "docs/CONVENTIONS.md",
+      "source_id": "src_deeab94cd0c7"
+    },
+    "status": "current",
+    "subject_hint": "the-lint-bar-is-batpakgrade",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The lint bar is BatPak-grade: `cargo clippy --all-targets --all-features --"
+  },
+  {
+    "claim_id": "claim_679d773b3732",
+    "receipt": {
+      "event_id": "019f38b684727918abaec09cb9ab15f7",
+      "sequence": 41
+    },
+    "source": {
+      "line_start": 48,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "the-git-commit-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **The git commit = the record-once boundary.** Code facts are journaled per"
+  },
+  {
+    "claim_id": "claim_67c5617672e2",
+    "receipt": {
+      "event_id": "019f38b6846d75e58f272edc9a9ce6e0",
+      "sequence": 26
+    },
+    "source": {
+      "line_start": 73,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "costs-an-openrouter-dependency-keygated",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Costs: an OpenRouter dependency (key-gated, cached), and an LLM judge that is"
+  },
+  {
+    "claim_id": "claim_67dd61d58263",
+    "receipt": {
+      "event_id": "019f38b6847e7e8fa943e63ae9e74789",
+      "sequence": 86
+    },
+    "source": {
+      "line_start": 37,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "the-batpak-lint-bar-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The BatPak lint bar is the repo quality bar."
+  },
+  {
+    "claim_id": "claim_6928d1dd997a",
+    "receipt": {
+      "event_id": "019f38b6847b7ddeb27acc350c606d3f",
+      "sequence": 75
+    },
+    "source": {
+      "line_start": 160,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "the-relate-pass-is-reused",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The relate pass is reused unchanged; the new work is extraction (C0–C1),"
+  },
+  {
+    "claim_id": "claim_696b6fece763",
+    "receipt": {
+      "event_id": "019f38b684997a98905025c33eb24a0a",
+      "sequence": 184
+    },
+    "source": {
+      "line_start": 86,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "texoconfigtoml-is-missing",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  `.texo/config.toml` is missing."
+  },
+  {
+    "claim_id": "claim_69830d9c2305",
+    "receipt": {
+      "event_id": "019f38b684967a48b22966a561f7b1cd",
+      "sequence": 172
+    },
+    "source": {
+      "line_start": 36,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "claimrecorded-the-new-fields-must-be",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   `ClaimRecorded`. The new fields MUST be `#[serde(default)]` — events are"
+  },
+  {
+    "claim_id": "claim_69ef4e347813",
+    "receipt": {
+      "event_id": "019f38b684a67391ac41188c04374e89",
+      "sequence": 220
+    },
+    "source": {
+      "line_start": 17,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "current",
+    "subject_hint": "at-the-start-of-every-turn",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "At the start of every turn, the journal is replayed into a projection: current claims are injected into the system prompt as trusted memory, superseded claims are injected as \"outdated — do NOT trust\" with what replaced them, and open conflicts are listed so the model presents both sides instead of picking one. Every claim carries full provenance: source `path:line`, span-level byte offsets into the transcript, and the extractor model + prompt version that produced it. Ask the agent what it remembers and it cites its receipts."
+  },
+  {
+    "claim_id": "claim_6a5ea2540faf",
+    "receipt": {
+      "event_id": "019f38b684a17568802727d3105e822e",
+      "sequence": 209
+    },
+    "source": {
+      "line_start": 29,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "the-agent-itself-texoagent-an-axum",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The agent itself (`texo-agent`, an axum HTTP server with a one-file UI) took shape fast, because it's a thin consumer of the substrate: every chat turn replays the journal and injects *current* claims into the system prompt as trusted memory — each one carrying `path:line` plus span-level byte offsets — while superseded claims are injected under a header that says exactly what I want the model to internalize: `## Outdated memory (do NOT trust — superseded)`. Ending a session renders the transcript to `sessions/<id>.md`, ingests it through the LLM extractor, and runs the relate pass so the next session wakes up with the updated chain."
+  },
+  {
+    "claim_id": "claim_6b3aa4dabceb",
+    "receipt": {
+      "event_id": "019f38b6847f7f649f931b12b7834356",
+      "sequence": 88
+    },
+    "source": {
+      "line_start": 56,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "- One release artifact deploys everything: CLI, extractor, server, MCP, and"
+  },
+  {
+    "claim_id": "claim_6cc2cd88eb46",
+    "receipt": {
+      "event_id": "019f38b6849a7665b8517e44be22669f",
+      "sequence": 189
+    },
+    "source": {
+      "line_start": 14,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "all-domain-events-are-batpak-payloads",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "All domain events are BatPak payloads in category `0xE`."
+  },
+  {
+    "claim_id": "claim_6e58b72cf57b",
+    "receipt": {
+      "event_id": "019f38b684827313905e52944da48197",
+      "sequence": 101
+    },
+    "source": {
+      "line_start": 51,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "http-is-handrolled-sync-http11",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- HTTP is hand-rolled sync HTTP/1.1: 8 KiB request head cap, 1 MiB POST body"
+  },
+  {
+    "claim_id": "claim_6f954ca90dd4",
+    "receipt": {
+      "event_id": "019f38b6849f7d92900bc7b1c717094c",
+      "sequence": 205
+    },
+    "source": {
+      "line_start": 15,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "the-first-surprise-was-batpak-itself",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The first surprise was BatPak itself. I'd deliberately deferred texo's 0.8.2 → 0.9.0 bump as deadline risk — migrating your event store's storage engine mid-hackathon is how demos die. Then 0.9.0 shipped mid-window and the migration turned out to be mechanical: a receipt-verification API rename, a field rename, one `#[must_use]`. What made it safe to land anyway was empirical, not vibes: I took a store written by the 0.8.2 build, opened it under 0.9.0, and verified it replayed byte-identically — same claims JSON, same agent context, receipts green — then appended new events into the old store and re-verified. Zero golden-test churn. When your journal is the product, \"behavior-preserving\" is a measurement, not a claim."
+  },
+  {
+    "claim_id": "claim_761cd84b4fbb",
+    "receipt": {
+      "event_id": "019f38b6846f7f9f97743f1522273bce",
+      "sequence": 34
+    },
+    "source": {
+      "line_start": 20,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "decision",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "## Decision"
+  },
+  {
+    "claim_id": "claim_771dc320ad1b",
+    "receipt": {
+      "event_id": "019f38b6849b7be9b8fd8aab9876e480",
+      "sequence": 192
+    },
+    "source": {
+      "line_start": 35,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "4-supersession-records-transition-evidence-from",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "4. Supersession records transition evidence from the Friday claim to Tuesday."
+  },
+  {
+    "claim_id": "claim_771ee0c541b6",
+    "receipt": {
+      "event_id": "019f38b684837123a4bdf5f5b78c133b",
+      "sequence": 103
+    },
+    "source": {
+      "line_start": 57,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "the-model-client-is-handrolled",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The model client is hand-rolled sync HTTP/1.1 with rustls/ring and"
+  },
+  {
+    "claim_id": "claim_77b6e5aa77b2",
+    "receipt": {
+      "event_id": "019f38b6849674b58a25eaee715897b9",
+      "sequence": 173
+    },
+    "source": {
+      "line_start": 37,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "already-journaled-without-them-and-there",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   already journaled without them and there is no event-version gate or"
+  },
+  {
+    "claim_id": "claim_7da537a44718",
+    "receipt": {
+      "event_id": "019f38b684707129a9d16ae7ca55851d",
+      "sequence": 37
+    },
+    "source": {
+      "line_start": 32,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "c4-triangulate-git-history",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| C4 Triangulate | git history is the third witness: the commit that changed the fact dates the supersession and orders otherwise-conflicting claims | `texo-core` |"
+  },
+  {
+    "claim_id": "claim_7e4a58d492ca",
+    "receipt": {
+      "event_id": "019f38b684927d34b6c20055a4146b22",
+      "sequence": 157
+    },
+    "source": {
+      "line_start": 5,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "texo-is-claimchain-memory-for-teams",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo is claim-chain memory for teams and agents. It ingests markdown, records"
+  },
+  {
+    "claim_id": "claim_7e92838b9785",
+    "receipt": {
+      "event_id": "019f38b684a0789d8685389846fa4c40",
+      "sequence": 207
+    },
+    "source": {
+      "line_start": 23,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "the-live-integrated-oracle-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The live integrated oracle — the messy seven-file \"Helios\" corpus that has to score 5/5 end-to-end against real models — dropped to 4/5. The Postgres→BatPak supersession, which had been rock solid, degraded into an unresolved conflict. One bullet point, aimed at self-assertions, had shifted extraction *wording* broadly enough that a claim's embedding moved, the cosine clustering (freshly rebuilt that same day to bound the relation judge to within-cluster pairs) split a true pair across clusters, and the judge never saw them together. Wording → embedding → cluster split → lost supersession."
+  },
+  {
+    "claim_id": "claim_809dcf7c0e08",
+    "receipt": {
+      "event_id": "019f38b6849876bb9cd285296fdda0fa",
+      "sequence": 181
+    },
+    "source": {
+      "line_start": 78,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "they-must-be-iterated-against-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  they must be iterated against the live oracle before landing, and ideally"
+  },
+  {
+    "claim_id": "claim_809f878c49fc",
+    "receipt": {
+      "event_id": "019f38b684787665a9a3768985919581",
+      "sequence": 63
+    },
+    "source": {
+      "line_start": 116,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "calibration-is-the-whole-game",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Calibration is the whole game.** Uncalibrated σ = confident lies. The Helios"
+  },
+  {
+    "claim_id": "claim_82a5829ef8fc",
+    "receipt": {
+      "event_id": "019f38b68477790b930fe165e148de44",
+      "sequence": 60
+    },
+    "source": {
+      "line_start": 108,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "relocated-fact-use-a-soft-match",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  relocated fact; use a soft match score instead."
+  },
+  {
+    "claim_id": "claim_82e547276858",
+    "receipt": {
+      "event_id": "019f38b68473776ab1d3c12b3325208e",
+      "sequence": 48
+    },
+    "source": {
+      "line_start": 66,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "the-judge-would-flag-as-an",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   the judge would flag as an unresolved conflict are *ordered* by the"
+  },
+  {
+    "claim_id": "claim_89c46c3c49ec",
+    "receipt": {
+      "event_id": "019f38b6848d7645ac6ebf9ed9cf669d",
+      "sequence": 142
+    },
+    "source": {
+      "line_start": 192,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "texo-serve-in-wo4-with-a",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  `texo serve` in WO-4) with a one-file vanilla-JS UI. Chat is grounded in the replayed current claims"
+  },
+  {
+    "claim_id": "claim_8b527d0a26f3",
+    "receipt": {
+      "event_id": "019f38b6849b7e0794b32a777ec7d578",
+      "sequence": 193
+    },
+    "source": {
+      "line_start": 36,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "5-replay-marks-friday-superseded-and",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "5. Replay marks Friday superseded and Tuesday current."
+  },
+  {
+    "claim_id": "claim_8cc0275ef28e",
+    "receipt": {
+      "event_id": "019f38b6847871a6ab0e583b9e1fb9ae",
+      "sequence": 62
+    },
+    "source": {
+      "line_start": 112,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "even-though-the-lane-substrate-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  even though the lane substrate is available."
+  },
+  {
+    "claim_id": "claim_8da74d1189c2",
+    "receipt": {
+      "event_id": "019f38b684a3787c986aca1641a70e7a",
+      "sequence": 213
+    },
+    "source": {
+      "line_start": 41,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "> You deploy on Tuesdays (s2.md:3)."
+  },
+  {
+    "claim_id": "claim_8dee67044d42",
+    "receipt": {
+      "event_id": "019f38b684a77640b9bb1636487bf2b5",
+      "sequence": 222
+    },
+    "source": {
+      "line_start": 27,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "All three LLM roles — claim extraction, the relation judge, and chat — run on `qwen3.7-max`; the cosine prefilter uses `text-embedding-v4`. Both are served through Qwen Cloud's DashScope OpenAI-compatible mode (`dashscope-intl`, Singapore). The agent backend is deployed on an Alibaba Cloud ECS instance in Singapore (`ap-southeast-1`), same region as the model endpoint; the deploy configuration is committed in the repo."
+  },
+  {
+    "claim_id": "claim_8ea35f57a874",
+    "receipt": {
+      "event_id": "019f38b684a3705ea0674d4ce9ea6e57",
+      "sequence": 214
+    },
+    "source": {
+      "line_start": 45,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "that-reply-is-verbatim-from-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "That reply is verbatim from the live run (Jul 5), unscripted."
+  },
+  {
+    "claim_id": "claim_8f5deb58e0fc",
+    "receipt": {
+      "event_id": "019f38b68489710fbbd7f20f56b37540",
+      "sequence": 127
+    },
+    "source": {
+      "line_start": 65,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "4. **Alibaba Cloud deployment.** Agent backend on ECS; deploy config/script in"
+  },
+  {
+    "claim_id": "claim_90626697aace",
+    "receipt": {
+      "event_id": "019f38b684747f7ea96bd9fba231ef2f",
+      "sequence": 52
+    },
+    "source": {
+      "line_start": 81,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "proportions-same-fact-is-stale",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Proportions (\"same fact?\", \"is stale?\") are modelled as a **Beta whose natural"
+  },
+  {
+    "claim_id": "claim_9075ca217915",
+    "receipt": {
+      "event_id": "019f38b684a2769dabbdf1db752251bf",
+      "sequence": 211
+    },
+    "source": {
+      "line_start": 35,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "Second: **first-person phrasing collided with the faithfulness gate.** People talk in first person — \"we deploy on Fridays.\" The extractor tends to normalize subjects, proposing \"The team deploys on Fridays,\" and texo's faithfulness gate — a deterministic token-recall check, computed in integer parts-per-million because journaled state contains no floats — correctly rejected the paraphrase: \"The team\" isn't grounded in the source text. I watched the claim get proposed and then gated, live. The gate was right, which is the interesting part; the honest fix is extractor-prompt iteration against a transcript-style oracle case — the exact same discipline as the reverted self-assertion rule — so it's documented and deferred rather than hacked in at midnight. The demo phrases facts with explicit subjects."
+  },
+  {
+    "claim_id": "claim_923076f94419",
+    "receipt": {
+      "event_id": "019f38b68482766092718c28c309b723",
+      "sequence": 98
+    },
+    "source": {
+      "line_start": 16,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "ownership",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "append-only journal and receipts. syncbat owns operation declaration and effect"
+  },
+  {
+    "claim_id": "claim_92489c7b6008",
+    "receipt": {
+      "event_id": "019f38b684887152bdd95fc3e93380fd",
+      "sequence": 122
+    },
+    "source": {
+      "line_start": 51,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "live-tests-the-helios-corpus",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   live tests + the Helios corpus (must stay 5/5)."
+  },
+  {
+    "claim_id": "claim_925d35647159",
+    "receipt": {
+      "event_id": "019f38b6849a794fa8f31073a77be7c3",
+      "sequence": 188
+    },
+    "source": {
+      "line_start": 8,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "other-texo-is-a-local-claimchain",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "other. texo is a local claim-chain on BatPak: ingest docs, append typed events"
+  },
+  {
+    "claim_id": "claim_951d47f9074d",
+    "receipt": {
+      "event_id": "019f38b6848a73bc87d6de97962a07d4",
+      "sequence": 129
+    },
+    "source": {
+      "line_start": 67,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "5-envvar-naming-optional-optics-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "5. **Env-var naming (optional, optics).** The seam is generic OpenAI-compatible"
+  },
+  {
+    "claim_id": "claim_95ce81a964d7",
+    "receipt": {
+      "event_id": "019f38b684a77c42a9725e14786d8d1a",
+      "sequence": 223
+    },
+    "source": {
+      "line_start": 28,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "<!-- TODO: confirm ECS deployment details + repo path of deploy script before submitting -->"
+  },
+  {
+    "claim_id": "claim_960d31a90721",
+    "receipt": {
+      "event_id": "019f38b6847b7478be5fe34f02b433e2",
+      "sequence": 72
+    },
+    "source": {
+      "line_start": 149,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "Prove **one fact type end-to-end** before generalizing: the deploy cron →"
+  },
+  {
+    "claim_id": "claim_97dc1c32137e",
+    "receipt": {
+      "event_id": "019f38b684907cb0a4ce50b83265d994",
+      "sequence": 150
+    },
+    "source": {
+      "line_start": 230,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "the workspace and env file move to `/opt/texo/`. The deploy script stops the"
+  },
+  {
+    "claim_id": "claim_9888efa54c28",
+    "receipt": {
+      "event_id": "019f38b6849775d498edc489f53c6494",
+      "sequence": 179
+    },
+    "source": {
+      "line_start": 64,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "already-maximally-portable-but-the-replayprojection",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "already maximally portable. But the *replay/projection core* is HTTP-free,"
+  },
+  {
+    "claim_id": "claim_9b0f94e6c39e",
+    "receipt": {
+      "event_id": "019f38b684767ed38ed0446d5ae83443",
+      "sequence": 58
+    },
+    "source": {
+      "line_start": 102,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "treating-git-as-an-oracle",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Treating git as an oracle / adjudicating truth** — stays a non-goal. Git is"
+  },
+  {
+    "claim_id": "claim_9c4553a6473a",
+    "receipt": {
+      "event_id": "019f38b6849e713fb0f5f4310f8d5570",
+      "sequence": 204
+    },
+    "source": {
+      "line_start": 7,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "when-the-qwen-cloud-hackathon-published",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "When the Qwen Cloud hackathon published its tracks, Track 1 — MemoryAgent — read like a spec I'd already implemented by accident. It asks for memory that accumulates across sessions, *forgets outdated information in a timely way*, and recalls what matters into a limited context. Every memory agent I've seen accumulates; almost none retire. RAG-over-a-vector-DB memory keeps your contradictory preferences forever and hopes retrieval ranks the right one. Supersession semantics is the missing verb. The catch: texo was a library with a CLI and an MCP server. Track 1 wants an *agent*. I had five days, July 4 to July 8, to build one."
+  },
+  {
+    "claim_id": "claim_9cd63381253e",
+    "receipt": {
+      "event_id": "019f38b684927528ad903a959cebca31",
+      "sequence": 158
+    },
+    "source": {
+      "line_start": 29,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "workspacesid-use-workspace-id-on-any",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "`[workspaces.<id>]`. Use `--workspace <id>` on any CLI command."
+  },
+  {
+    "claim_id": "claim_9dfbb8f3c9ff",
+    "receipt": {
+      "event_id": "019f38b6848d7ae6b3d81a6a7947acf9",
+      "sequence": 139
+    },
+    "source": {
+      "line_start": 161,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "journal-reliably-the-demo-script-should",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "journal reliably; the demo script should phrase facts with explicit subjects."
+  },
+  {
+    "claim_id": "claim_9fcdfa06ef96",
+    "receipt": {
+      "event_id": "019f38b684807ea9b3451d0febb983b5",
+      "sequence": 93
+    },
+    "source": {
+      "line_start": 8,
+      "path": "docs/AGENTS.md",
+      "source_id": "src_639cbc8b4543"
+    },
+    "status": "current",
+    "subject_hint": "this-project-uses-codebasememorymcp-to-maintain",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "This project uses codebase-memory-mcp to maintain a knowledge graph of the codebase."
+  },
+  {
+    "claim_id": "claim_9ff413301201",
+    "receipt": {
+      "event_id": "019f38b6848878b8afb037444e7647ca",
+      "sequence": 123
+    },
+    "source": {
+      "line_start": 53,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "jul-6-as-one-binary-texo",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   Jul 6 as one binary.** `texo serve` is a sync HTTP chat agent and thin"
+  },
+  {
+    "claim_id": "claim_a087478ff7cc",
+    "receipt": {
+      "event_id": "019f38b684a3759f876142823c6a9944",
+      "sequence": 215
+    },
+    "source": {
+      "line_start": 47,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "it-cites-its-source-it-narrates",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "It cites its source. It narrates its own history, unprompted. It doesn't just fail to mention the Friday fact — it *knows* the Friday fact, knows it's dead, and knows what killed it. That's the difference between retrieval ranking and a journal: the forgetting is a typed, receipted event you can replay, audit, and explain, not an embedding that lost a similarity contest."
+  },
+  {
+    "claim_id": "claim_a142ebf85342",
+    "receipt": {
+      "event_id": "019f38b6848b7e578c3d820f58d19ea6",
+      "sequence": 134
+    },
+    "source": {
+      "line_start": 104,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "relater-is-the-hardest-judgment-in",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "relater is the hardest judgment in the pipeline, so downgrade it last.)"
+  },
+  {
+    "claim_id": "claim_a2a516037716",
+    "receipt": {
+      "event_id": "019f38b6847c753d93b9cef73f05bb5f",
+      "sequence": 76
+    },
+    "source": {
+      "line_start": 162,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "determinism-is-preserved-by-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Determinism is preserved by the same record-once + integer-ppm discipline as"
+  },
+  {
+    "claim_id": "claim_a2c88998255f",
+    "receipt": {
+      "event_id": "019f38b6846e769aabb21a6717d3bdd5",
+      "sequence": 30
+    },
+    "source": {
+      "line_start": 12,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "relates-claims-to-other-claims-never",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "relates claims to *other claims*, never to the code the claims are about."
+  },
+  {
+    "claim_id": "claim_a52b507ba303",
+    "receipt": {
+      "event_id": "019f38b6849d75aaa0a362eaff91ff9c",
+      "sequence": 200
+    },
+    "source": {
+      "line_start": 4,
+      "path": "docs/deploy__README.md",
+      "source_id": "src_f3ea82bf61d9"
+    },
+    "status": "current",
+    "subject_hint": "backend-is-provisioned-with-the-alibaba",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "backend is provisioned with the [Alibaba Cloud CLI](https://github.com/aliyun/aliyun-cli)"
+  },
+  {
+    "claim_id": "claim_a586a9f77e1b",
+    "receipt": {
+      "event_id": "019f38b68493779cadec74b18a379a87",
+      "sequence": 163
+    },
+    "source": {
+      "line_start": 89,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "network-the-alwayson-frozen-guard-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "network. The always-on frozen guard is:"
+  },
+  {
+    "claim_id": "claim_a911741c61bc",
+    "receipt": {
+      "event_id": "019f38b684a6730b8d02d816fd702c0e",
+      "sequence": 221
+    },
+    "source": {
+      "line_start": 23,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "current",
+    "subject_hint": "the-journal-is-appendonly-and-hashcommitted",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The journal is append-only and hash-committed, and replay is deterministic: the model runs exactly once, at ingest (a record-once perception boundary), its outputs cached content-addressed by `model | prompt_version | span` — re-ingesting a corpus went from 16 s to 4 ms, byte-identical. A deterministic faithfulness gate (integer parts-per-million token recall — journaled state contains no floats, so projections stay `Eq` and replay bit-for-bit) rejects extracted claims not grounded in the source text. The relation judge is cluster-bounded: candidate pairs are limited to connected components of the cosine-similarity graph, so judge calls scale with cluster size rather than O(n²) over the whole memory. And supersession requires explicit change wording (\"moved to\", \"no longer\"); a bare differing value is recorded as a conflict, because a memory system that silently trusts the newer sentence is just a slower way to be wrong."
+  },
+  {
+    "claim_id": "claim_aa7310433a16",
+    "receipt": {
+      "event_id": "019f38b6846b72c194a1692d1f6ab69b",
+      "sequence": 19
+    },
+    "source": {
+      "line_start": 51,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "so-neither-embeddings-nor-nli-alone",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "So neither embeddings nor NLI alone can do the relating. We replaced them with a"
+  },
+  {
+    "claim_id": "claim_aa88561d4601",
+    "receipt": {
+      "event_id": "019f38b68495740fb50c52b19b926826",
+      "sequence": 171
+    },
+    "source": {
+      "line_start": 28,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "are-illdefined-the-defensible-semantics-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "are ill-defined. The defensible semantics is to attribute the **source span's**"
+  },
+  {
+    "claim_id": "claim_ab6af6e9e83c",
+    "receipt": {
+      "event_id": "019f38b6847d725e97c5f97fd9ba479c",
+      "sequence": 79
+    },
+    "source": {
+      "line_start": 21,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "decision",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "## Decision"
+  },
+  {
+    "claim_id": "claim_ac03651fd0f2",
+    "receipt": {
+      "event_id": "019f38b6848276568e2fdd818f889b47",
+      "sequence": 99
+    },
+    "source": {
+      "line_start": 17,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "ownership",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "checks. texo owns domain schema, projections, and user surfaces."
+  },
+  {
+    "claim_id": "claim_b0119264854c",
+    "receipt": {
+      "event_id": "019f38b6847a7d8482f7d0d5d223c93a",
+      "sequence": 69
+    },
+    "source": {
+      "line_start": 133,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "do-not-dissolve-into-mush",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Do not dissolve into mush.** Calibrated decision thresholds + an explicit"
+  },
+  {
+    "claim_id": "claim_b08581abc59e",
+    "receipt": {
+      "event_id": "019f38b6849a7b88b31cb03124fd539c",
+      "sequence": 191
+    },
+    "source": {
+      "line_start": 33,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_48da9bd30044",
+    "supersedes": [
+      "claim_1e4a945870a3",
+      "claim_3a6142c69a0b",
+      "claim_3b63403c2a02",
+      "claim_46e7df5d1f0a",
+      "claim_48da9bd30044",
+      "claim_5259748f15c3",
+      "claim_6b3aa4dabceb",
+      "claim_8da74d1189c2",
+      "claim_8dee67044d42",
+      "claim_8f5deb58e0fc",
+      "claim_9075ca217915",
+      "claim_95ce81a964d7",
+      "claim_960d31a90721",
+      "claim_97dc1c32137e",
+      "claim_b1862ded3e3f",
+      "claim_bbc8b29b6bed",
+      "claim_c51a61f6cd9d",
+      "claim_cae56acf23ea",
+      "claim_dfdcb813b3b7",
+      "claim_f2d5578c7f00",
+      "claim_f451f8b5752a",
+      "claim_f9aea38e738e"
+    ],
+    "text": "2. `decision_deploy_day.md` says deploys moved to Tuesday."
+  },
+  {
+    "claim_id": "claim_b16fc0db5b9e",
+    "receipt": {
+      "event_id": "019f38b6847877d0899119a90c3f85b2",
+      "sequence": 65
+    },
+    "source": {
+      "line_start": 119,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "correlation-trap-a-doc-and",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Correlation trap.** A doc and its own commit-time are correlated; a code fact"
+  },
+  {
+    "claim_id": "claim_b1862ded3e3f",
+    "receipt": {
+      "event_id": "019f38b6846979208b806bc3d0e4a84f",
+      "sequence": 12
+    },
+    "source": {
+      "line_start": 41,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "1. **Cosine cannot separate subjects that share a token.** \"Deploys happen on"
+  },
+  {
+    "claim_id": "claim_b2909dc289d8",
+    "receipt": {
+      "event_id": "019f38b6846a7f58aa74d07ce6d2ca0d",
+      "sequence": 17
+    },
+    "source": {
+      "line_start": 47,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "genuine-mondayvsfriday-disagreement-all-come-back",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   genuine Monday-vs-Friday disagreement all come back **mutual contradiction**."
+  },
+  {
+    "claim_id": "claim_b3794057a000",
+    "receipt": {
+      "event_id": "019f38b6847577e3a58f0b831b31ccf4",
+      "sequence": 54
+    },
+    "source": {
+      "line_start": 86,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "is-isqrt-of-integer",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- σ is `isqrt` of integer variance, computed **only at the read boundary**."
+  },
+  {
+    "claim_id": "claim_b543ff3ba270",
+    "receipt": {
+      "event_id": "019f38b6848674ae8f57f2b31f773278",
+      "sequence": 116
+    },
+    "source": {
+      "line_start": 13,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "semantics-when-a-remembered-fact-changes",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "semantics**: when a remembered fact changes, the old claim is retired with a"
+  },
+  {
+    "claim_id": "claim_b5f298e97bf9",
+    "receipt": {
+      "event_id": "019f38b684a576958a84547a1759b62a",
+      "sequence": 219
+    },
+    "source": {
+      "line_start": 15,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "current",
+    "subject_hint": "each-chat-session-is-a-transcript",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Each chat session is a transcript. On session end, the transcript is rendered to markdown, and an LLM extraction pass turns the user's utterances into atomic claims, appended to a hash-committed journal (built on BatPak, an event-sourcing log). A relate pass then embeds the current claims, clusters them, and puts candidate pairs in front of an LLM relation judge that decides: supersede, conflict, duplicate, or unrelated. A supersession retires the old claim with a receipt; a genuine disagreement is surfaced as an open conflict rather than silently resolved in favor of the newer statement."
+  },
+  {
+    "claim_id": "claim_b61fdc683ebf",
+    "receipt": {
+      "event_id": "019f38b6848e7155b8cd3cdc13388256",
+      "sequence": 143
+    },
+    "source": {
+      "line_start": 194,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "superseded-claims-are-injected-as-outdated",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  superseded claims are injected as \"outdated — do not trust\"); session end"
+  },
+  {
+    "claim_id": "claim_b6544de5f77d",
+    "receipt": {
+      "event_id": "019f38b6848574579852a358beb09c6e",
+      "sequence": 112
+    },
+    "source": {
+      "line_start": 11,
+      "path": "docs/CONVENTIONS.md",
+      "source_id": "src_deeab94cd0c7"
+    },
+    "status": "current",
+    "subject_hint": "unsanctioned-prints-lossy-casts-and-disallowed",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  unsanctioned prints, lossy casts, and disallowed runtime/process helpers."
+  },
+  {
+    "claim_id": "claim_b6d532ad865a",
+    "receipt": {
+      "event_id": "019f38b684737bfca398cb86f4c81c3b",
+      "sequence": 46
+    },
+    "source": {
+      "line_start": 63,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "changed-the-fact-with-a-real",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   changed the fact, with a real timestamp and sha — not the weak \"newer doc"
+  },
+  {
+    "claim_id": "claim_b74cc7492242",
+    "receipt": {
+      "event_id": "019f38b6847a76f192507b7cc114f800",
+      "sequence": 71
+    },
+    "source": {
+      "line_start": 135,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "ownership",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **batpak is mechanism-only.** texo owns all the intelligence (entailment,"
+  },
+  {
+    "claim_id": "claim_ba034497024d",
+    "receipt": {
+      "event_id": "019f38b684817bfe81d8f5a8d5761424",
+      "sequence": 95
+    },
+    "source": {
+      "line_start": 56,
+      "path": "docs/AGENTS.md",
+      "source_id": "src_639cbc8b4543"
+    },
+    "status": "current",
+    "subject_hint": "the-words-banned-by-just",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- The words banned by `just test-hygiene` must not appear in `src/` or `tests/`."
+  },
+  {
+    "claim_id": "claim_ba47302f9f32",
+    "receipt": {
+      "event_id": "019f38b68471775fb688e7a015e8a9bb",
+      "sequence": 40
+    },
+    "source": {
+      "line_start": 47,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "this-doc-line-is-now-contradicted",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  \"this doc line is now contradicted by code\" — never stale, *for the alert*."
+  },
+  {
+    "claim_id": "claim_ba635c6cf1f9",
+    "receipt": {
+      "event_id": "019f38b6847e7f97af1d8c2bfa5ca9a1",
+      "sequence": 84
+    },
+    "source": {
+      "line_start": 33,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "session-lanes-make-the-journal",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Session lanes make the journal the session: turns are durable hidden lane"
+  },
+  {
+    "claim_id": "claim_bbc8b29b6bed",
+    "receipt": {
+      "event_id": "019f38b6846e7b498620ec2d360bae1b",
+      "sequence": 29
+    },
+    "source": {
+      "line_start": 11,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "the deploy cron in the repo says Tuesday; texo cannot see it, because it only"
+  },
+  {
+    "claim_id": "claim_bc13a3a2a606",
+    "receipt": {
+      "event_id": "019f38b684847dfaa0a5e532c3f5cd46",
+      "sequence": 108
+    },
+    "source": {
+      "line_start": 72,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "receipts-are-verified-inline-at-append",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Receipts are verified inline at append, and `texo verify` sweeps journal decode,"
+  },
+  {
+    "claim_id": "claim_bc8c33f18bf2",
+    "receipt": {
+      "event_id": "019f38b684a87035a201b164135b8c6f",
+      "sequence": 224
+    },
+    "source": {
+      "line_start": 32,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "current",
+    "subject_hint": "the-texo-library-claimchain-journal-replay",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The texo library (claim-chain journal, replay, CLI, MCP server) predates the submission window; the rules allow this when the project is significantly updated in-window, so here is exactly what was built during the window: **the agent itself** (`crates/texo-agent` — the chat loop, session-end memorization pipeline, memory-grounded prompting, live UI, and its real-store test suite); the **BatPak 0.9.0 migration**, behavior-preserving with an empirical store-compatibility proof (a 0.8.2-written store replays byte-identically under 0.9.0); **char-offset + model provenance** on every recorded claim (span byte ranges, extractor model, prompt version — back-compatible with old journals); **cluster-first relate**, the O(n²)→O(n·cluster) fix live-validated at 5/5 on the regression corpus; env-configurable embedding/rerank models; and the licensing/documentation compliance sweep. The full dated changelog is in `HACKATHON.md`."
+  },
+  {
+    "claim_id": "claim_bf99f81ae928",
+    "receipt": {
+      "event_id": "019f38b68479796bae209ec8c8836373",
+      "sequence": 66
+    },
+    "source": {
+      "line_start": 120,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "and-its-history-are-correlated-treating",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  and its history are correlated. Treating correlated witnesses as independent"
+  },
+  {
+    "claim_id": "claim_c185175d1bcd",
+    "receipt": {
+      "event_id": "019f38b6847f75f48ff321d739fd5711",
+      "sequence": 87
+    },
+    "source": {
+      "line_start": 48,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "ingests-it-optionally-runs-semantic-relate",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "ingests it, optionally runs semantic relate when a key is present, and prints"
+  },
+  {
+    "claim_id": "claim_c2ade7f368f1",
+    "receipt": {
+      "event_id": "019f38b684947cd0a27b96383ad1c648",
+      "sequence": 164
+    },
+    "source": {
+      "line_start": 97,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "texo-is-not-a-database-server",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "texo is not a database server, consensus system, Slack crawler, Google Docs"
+  },
+  {
+    "claim_id": "claim_c51a61f6cd9d",
+    "receipt": {
+      "event_id": "019f38b684a5767d96f912ad6202cf1c",
+      "sequence": 218
+    },
+    "source": {
+      "line_start": 11,
+      "path": "docs/hackathon__devpost-description.md",
+      "source_id": "src_4f6e237c0272"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "Most agent memory is RAG over a vector database: every fact ever stated gets embedded, and retrieval hopes the right one ranks first. When a preference changes — \"deploys moved to Tuesday\" — the Friday fact doesn't go away. It sits in the index forever, semantically near-identical to its replacement, waiting to be retrieved into a context window. Accumulate-only memory has no concept of *outdated*; it only has *less similar*. Contradictions aren't resolved, they're ranked."
+  },
+  {
+    "claim_id": "claim_c5538174ad31",
+    "receipt": {
+      "event_id": "019f38b684997ccf9b3d31f1b04b2f26",
+      "sequence": 187
+    },
+    "source": {
+      "line_start": 7,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "teams-treat-markdown-as-state-it",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Teams treat markdown as state. It is not. Prose rots; claims supersede each"
+  },
+  {
+    "claim_id": "claim_c6cfbf4c8ca7",
+    "receipt": {
+      "event_id": "019f38b6848471c987f699a517a4f84a",
+      "sequence": 105
+    },
+    "source": {
+      "line_start": 66,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "capability-is-present",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "capability is present."
+  },
+  {
+    "claim_id": "claim_c870a3cb0896",
+    "receipt": {
+      "event_id": "019f38b684837e8cb318d0717ee32102",
+      "sequence": 104
+    },
+    "source": {
+      "line_start": 62,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "session-turns-are-appended-to-a",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Session turns are appended to a deterministic non-zero lane from"
+  },
+  {
+    "claim_id": "claim_cae56acf23ea",
+    "receipt": {
+      "event_id": "019f38b6849d74319f2a4b116a570acc",
+      "sequence": 201
+    },
+    "source": {
+      "line_start": 17,
+      "path": "docs/deploy__README.md",
+      "source_id": "src_f3ea82bf61d9"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "- `deploy.sh` — release build, scp the single `texo` binary, install + start systemd unit"
+  },
+  {
+    "claim_id": "claim_cb7c788207df",
+    "receipt": {
+      "event_id": "019f38b684717e7db3a4e9c26e77bde5",
+      "sequence": 38
+    },
+    "source": {
+      "line_start": 35,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "the-proserendering-template-is-the-loadbearing",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The **prose-rendering template** is the load-bearing trick: it turns the"
+  },
+  {
+    "claim_id": "claim_cd253d34f18d",
+    "receipt": {
+      "event_id": "019f38b68487749d87147cea147d55ae",
+      "sequence": 118
+    },
+    "source": {
+      "line_start": 39,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "opened-may-26-2026-the-rules",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "(opened May 26, 2026). The rules allow this if the project is *significantly"
+  },
+  {
+    "claim_id": "claim_d0331f4a3bfc",
+    "receipt": {
+      "event_id": "019f38b684807b32bb2df7ad5643910a",
+      "sequence": 91
+    },
+    "source": {
+      "line_start": 63,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "future-work-is-clearer-batpak",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Future work is clearer: batpak 0.10 hostbat remount, MemFs/SimFs test stores,"
+  },
+  {
+    "claim_id": "claim_d09ca83305ae",
+    "receipt": {
+      "event_id": "019f38b6849b7ed0abd2fa60a8dda38d",
+      "sequence": 194
+    },
+    "source": {
+      "line_start": 46,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "post-apisessionend-and-get-apistream-request",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at"
+  },
+  {
+    "claim_id": "claim_d0d13f1baab0",
+    "receipt": {
+      "event_id": "019f38b6849270ba820ed03f7dd47186",
+      "sequence": 159
+    },
+    "source": {
+      "line_start": 36,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "texo-conflicts-and-texo-verify-are",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  `texo conflicts`, and `texo verify` are replayed read surfaces."
+  },
+  {
+    "claim_id": "claim_d1d0d4504c7f",
+    "receipt": {
+      "event_id": "019f38b684957808be47b265d8b538f6",
+      "sequence": 169
+    },
+    "source": {
+      "line_start": 21,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "work-that-the-shippable-demo-does",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "work that the shippable demo does not require. The determinism story is already"
+  },
+  {
+    "claim_id": "claim_d6322c43de13",
+    "receipt": {
+      "event_id": "019f38b684727766aa7c0aebb1e4eed6",
+      "sequence": 42
+    },
+    "source": {
+      "line_start": 53,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "lsp-answers-is-this-stale-right",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "LSP answers *\"is this stale right now?\"*; the journal answers *\"when did it go"
+  },
+  {
+    "claim_id": "claim_d9d330c62fd6",
+    "receipt": {
+      "event_id": "019f38b684717f708ffd869f057e790a",
+      "sequence": 39
+    },
+    "source": {
+      "line_start": 38,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "normalizes-the-relate-layer-is-unchanged",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "normalizes*; the relate layer is unchanged."
+  },
+  {
+    "claim_id": "claim_daa5780c0308",
+    "receipt": {
+      "event_id": "019f38b6847c7e83bbfec39ed1b7ca5b",
+      "sequence": 77
+    },
+    "source": {
+      "line_start": 164,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "heuristic-and-proseonly-paths-remain",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Heuristic and prose-only paths remain the default; code-awareness is opt-in,"
+  },
+  {
+    "claim_id": "claim_ddaa5fe12277",
+    "receipt": {
+      "event_id": "019f38b684807f498b185742f54cef78",
+      "sequence": 90
+    },
+    "source": {
+      "line_start": 60,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "stores-are-schemabreaking-by-design",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Stores are schema-breaking by design. v2 is a clean break with deterministic"
+  },
+  {
+    "claim_id": "claim_dfdcb813b3b7",
+    "receipt": {
+      "event_id": "019f38b6848b751a9ff8fdcbdb0649e9",
+      "sequence": 135
+    },
+    "source": {
+      "line_start": 109,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "  a systemd service. The deploy script committed to this repo doubles as the"
+  },
+  {
+    "claim_id": "claim_e0f95de06d7f",
+    "receipt": {
+      "event_id": "019f38b684757ea3a83d52110cce2993",
+      "sequence": 53
+    },
+    "source": {
+      "line_start": 82,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "parameters-are-two-integer-counts",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  parameters are two integer counts** (α, β) of corroborating evidence —"
+  },
+  {
+    "claim_id": "claim_e2defefb4176",
+    "receipt": {
+      "event_id": "019f38b684937df9879ddbac89fb96e2",
+      "sequence": 161
+    },
+    "source": {
+      "line_start": 73,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "session-turns-are-batpak-lane-events",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Session turns are BatPak lane events. They are durable immediately, hidden from"
+  },
+  {
+    "claim_id": "claim_e58f5c45a4e8",
+    "receipt": {
+      "event_id": "019f38b6848d7eafa18de7c0a4708b67",
+      "sequence": 140
+    },
+    "source": {
+      "line_start": 162,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "proper-fix-is-extractorprompt-iteration-against",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Proper fix is extractor-prompt iteration against a transcript-style oracle"
+  },
+  {
+    "claim_id": "claim_e6ae63f84fd8",
+    "receipt": {
+      "event_id": "019f38b6848f778f9105af1296a2b693",
+      "sequence": 147
+    },
+    "source": {
+      "line_start": 226,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "deployment-update-jul-6-rebuild",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "## Deployment update (Jul 6 rebuild closeout)"
+  },
+  {
+    "claim_id": "claim_e6e33a9dfedc",
+    "receipt": {
+      "event_id": "019f38b6848974b1b3467b3232a45f32",
+      "sequence": 125
+    },
+    "source": {
+      "line_start": 62,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "the-chain-live-current-struckthrough-stale",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "     the chain live (current, struck-through stale + what replaced it,"
+  },
+  {
+    "claim_id": "claim_e7afb98800f9",
+    "receipt": {
+      "event_id": "019f38b6847e72b1b495c9bf057215c7",
+      "sequence": 83
+    },
+    "source": {
+      "line_start": 30,
+      "path": "docs/ADR-003-single-crate-rebuild.md",
+      "source_id": "src_8e9c42e03f83"
+    },
+    "status": "current",
+    "subject_hint": "event-schema-v2-is-a",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- Event schema v2 is a clean break: eight payload kinds in category `0xE`, no"
+  },
+  {
+    "claim_id": "claim_e7e15fcb33d7",
+    "receipt": {
+      "event_id": "019f38b6848b7b1b852a84421ff9e38f",
+      "sequence": 132
+    },
+    "source": {
+      "line_start": 87,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "chatcompletions-and-embeddings-keys-are-not",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  `/chat/completions` and `/embeddings`. Keys are **not** interchangeable"
+  },
+  {
+    "claim_id": "claim_e836b30a69aa",
+    "receipt": {
+      "event_id": "019f38b684777523bc9a27e7051f79fd",
+      "sequence": 61
+    },
+    "source": {
+      "line_start": 111,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "building-the-full-livelane-system",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Building the full live-lane system before the one-fact wedge is proven** —"
+  },
+  {
+    "claim_id": "claim_e86b10d0c646",
+    "receipt": {
+      "event_id": "019f38b684a07a37b3f1b0e03cf8a0ec",
+      "sequence": 208
+    },
+    "source": {
+      "line_start": 25,
+      "path": "docs/hackathon__blog-post.md",
+      "source_id": "src_dcd2fcb423f0"
+    },
+    "status": "current",
+    "subject_hint": "i-reverted-the-same-day-and",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "I reverted the same day and wrote the lesson into the roadmap: **prompt changes are pipeline changes.** They get iterated against the live oracle before landing, ideally with a new oracle case for the behavior you're targeting — not eyeballed as \"just a prompt tweak.\" A frozen regression suite wouldn't have caught this; only running the real models did. Keeping a live oracle in the loop cost me API pennies and saved me from shipping a memory agent that had quietly forgotten how to forget."
+  },
+  {
+    "claim_id": "claim_e9c31f320357",
+    "receipt": {
+      "event_id": "019f38b684867a88ba82ab65e0aecf91",
+      "sequence": 114
+    },
+    "source": {
+      "line_start": 16,
+      "path": "docs/CONVENTIONS.md",
+      "source_id": "src_deeab94cd0c7"
+    },
+    "status": "current",
+    "subject_hint": "clistdiohttp-surface-prints-are-explicit",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- CLI/stdio/HTTP surface prints are explicit output contracts and carry local"
+  },
+  {
+    "claim_id": "claim_e9fa24405ebd",
+    "receipt": {
+      "event_id": "019f38b6849075b4b0b796f1632f7732",
+      "sequence": 152
+    },
+    "source": {
+      "line_start": 9,
+      "path": "docs/INVARIANTS.md",
+      "source_id": "src_751a561faccb"
+    },
+    "status": "current",
+    "subject_hint": "invreceiptverifiedl2-syncbat-operation-receipt",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| INV-RECEIPT-VERIFIED-L2 | syncbat operation receipt envelopes are journaled at the op receipt coordinate. | `tests/ops_kit.rs` |"
+  },
+  {
+    "claim_id": "claim_ea7a5014e54a",
+    "receipt": {
+      "event_id": "019f38b6848477acbc344503a7bfe981",
+      "sequence": 106
+    },
+    "source": {
+      "line_start": 70,
+      "path": "docs/ARCHITECTURE.md",
+      "source_id": "src_57622670db93"
+    },
+    "status": "current",
+    "subject_hint": "workspace-assembly-sorts-entities-and-uses",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Workspace assembly sorts entities and uses BatPak entity generations with"
+  },
+  {
+    "claim_id": "claim_ec762167a8e8",
+    "receipt": {
+      "event_id": "019f38b6847472a9af3b4d4902f7fe98",
+      "sequence": 50
+    },
+    "source": {
+      "line_start": 72,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "ownership",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "Ownership claims triangulate against `git blame` / `CODEOWNERS` (\"Bob owns auth\""
+  },
+  {
+    "claim_id": "claim_ec7e2c2e485a",
+    "receipt": {
+      "event_id": "019f38b6847b7ce594f93dfbda116dbc",
+      "sequence": 73
+    },
+    "source": {
+      "line_start": 152,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "doc-says-friday-stale-since-commit",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "*\"doc says Friday; stale since commit `abc123` (Tuesday), confidence 0.94.\"*"
+  },
+  {
+    "claim_id": "claim_ed98827805ed",
+    "receipt": {
+      "event_id": "019f38b684787c8d8dcaabbf22ee5c60",
+      "sequence": 64
+    },
+    "source": {
+      "line_start": 117,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "oracle-becomes-the-calibration-set-09",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  oracle becomes the calibration set; \"0.9 confident\" must be right ~90% of the"
+  },
+  {
+    "claim_id": "claim_f177108d7e3d",
+    "receipt": {
+      "event_id": "019f38b684687beab520614420a0586e",
+      "sequence": 10
+    },
+    "source": {
+      "line_start": 18,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "decision",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "## Decision"
+  },
+  {
+    "claim_id": "claim_f191281d1a0c",
+    "receipt": {
+      "event_id": "019f38b68495786c90002953488fbef4",
+      "sequence": 170
+    },
+    "source": {
+      "line_start": 26,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "design-note-an-llm-claim-is",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "**Design note:** an LLM claim is a *paraphrase*, so the claim text is not"
+  },
+  {
+    "claim_id": "claim_f22c1ece167c",
+    "receipt": {
+      "event_id": "019f38b68496751ea7bf36cac2c39e25",
+      "sequence": 175
+    },
+    "source": {
+      "line_start": 40,
+      "path": "docs/ROADMAP.md",
+      "source_id": "src_eff05169727b"
+    },
+    "status": "current",
+    "subject_hint": "claimid-is-hashsourceid-line-normalized-so",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   `claim_id` is `hash(source_id, line, normalized)`, so IDs do **not** churn."
+  },
+  {
+    "claim_id": "claim_f2d5578c7f00",
+    "receipt": {
+      "event_id": "019f38b6846e73b6b995c47d43ea4496",
+      "sequence": 28
+    },
+    "source": {
+      "line_start": 10,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "*missed* was **docs-vs-code, not claim-vs-claim**. A doc says \"deploys Friday\";"
+  },
+  {
+    "claim_id": "claim_f451f8b5752a",
+    "receipt": {
+      "event_id": "019f38b6848c74e3bc595b8bfeb1244e",
+      "sequence": 138
+    },
+    "source": {
+      "line_start": 157,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "subjects (\"we deploy on Fridays\" → \"The team deploys on Fridays\"), and the"
+  },
+  {
+    "claim_id": "claim_f5427638c772",
+    "receipt": {
+      "event_id": "019f38b6848a786fbf75f5b89370c3f7",
+      "sequence": 128
+    },
+    "source": {
+      "line_start": 66,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "repo-doubles-as-the-judgevisible-uses",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "   repo doubles as the judge-visible \"uses Alibaba Cloud\" code file."
+  },
+  {
+    "claim_id": "claim_f68df7641e28",
+    "receipt": {
+      "event_id": "019f38b6849b776084ba1cf61589731c",
+      "sequence": 195
+    },
+    "source": {
+      "line_start": 57,
+      "path": "docs/SPEC.md",
+      "source_id": "src_31c353f3fce6"
+    },
+    "status": "current",
+    "subject_hint": "the-default-extractor-is-heuristic-when",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "The default extractor is heuristic. When configured, `texo extract` runs an"
+  },
+  {
+    "claim_id": "claim_f9a321fa9786",
+    "receipt": {
+      "event_id": "019f38b6848e7d81a91135feb0ab6683",
+      "sequence": 145
+    },
+    "source": {
+      "line_start": 214,
+      "path": "docs/HACKATHON.md",
+      "source_id": "src_f95a1d5efbfe"
+    },
+    "status": "current",
+    "subject_hint": "jul-6-wo2b-replaced-the",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- **Jul 6:** WO-2b replaced the old HTTP/model stack with a hand-rolled sync"
+  },
+  {
+    "claim_id": "claim_f9aea38e738e",
+    "receipt": {
+      "event_id": "019f38b68470725e8a2cfcc3b8de8457",
+      "sequence": 35
+    },
+    "source": {
+      "line_start": 28,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "superseded",
+    "subject_hint": "deploy-process",
+    "superseded_by": "claim_b08581abc59e",
+    "supersedes": [],
+    "text": "| C0 Extract | ast-grep rule matches a code site **and renders it to canonical prose** (\"the deploy cron runs on Tuesdays\") | `texo-core` (rule + template; ast-grep / tree-sitter) |"
+  },
+  {
+    "claim_id": "claim_f9b7e837ac76",
+    "receipt": {
+      "event_id": "019f38b684707e3589bbabf25cd16778",
+      "sequence": 36
+    },
+    "source": {
+      "line_start": 30,
+      "path": "docs/ADR-002-code-aware-triangulation.md",
+      "source_id": "src_cef15a4f3c8a"
+    },
+    "status": "current",
+    "subject_hint": "c2-prefilter-locate-candidate",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "| C2 Prefilter | locate candidate code-claims for a given doc-claim. Default: off-the-shelf code embeddings (\"Cursor's mechanism\", *coarse bound only*, per ADR-001). Upgrade: a trained local explorer — **FastContext** (arXiv 2606.14066, open 4B weights, returns `file:line` citations natively) — which is precise where cosine is coarse. FastContext is a live, sampling LLM agent → **nondeterministic**, so it sits behind the record-once boundary (run once at ingest, journal the citation), never on the replay path. | `texo-semantics` / served behind the existing OpenAI-compatible seam |"
+  },
+  {
+    "claim_id": "claim_fc62509c2d9f",
+    "receipt": {
+      "event_id": "019f38b6846c73998a9ed115564c3117",
+      "sequence": 23
+    },
+    "source": {
+      "line_start": 70,
+      "path": "docs/ADR-001-semantic-pipeline.md",
+      "source_id": "src_ba7c56cbf8b7"
+    },
+    "status": "current",
+    "subject_hint": "cratestexoextracttestsheliose2ers-keygated-tuesdaybobbatpak",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "  (`crates/texo-extract/tests/helios_e2e.rs`, key-gated): Tuesday/Bob/BatPak"
+  },
+  {
+    "claim_id": "claim_fdf553b11e28",
+    "receipt": {
+      "event_id": "019f38b684937b21ac7731ddd1eb8393",
+      "sequence": 160
+    },
+    "source": {
+      "line_start": 37,
+      "path": "docs/README.md",
+      "source_id": "src_6a6996f136a0"
+    },
+    "status": "current",
+    "subject_hint": "texo-relate-runs-the-semantic",
+    "superseded_by": null,
+    "supersedes": [],
+    "text": "- `texo relate` runs the semantic relation pass when `OPENROUTER_API_KEY` is"
+  }
+]

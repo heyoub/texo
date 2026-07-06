@@ -124,3 +124,25 @@ drift:
       && "$TEXO" claims \
       && echo "================ drift: conflicts ================" \
       && { "$TEXO" conflicts || true; } ) || echo "drift: run failed (informational only)"
+
+# Snapshot the drift run as JSON for the UI drift view (ui/public/drift.json,
+# picked up by `pnpm build` into ui/dist). Same corpus and flow as `drift`.
+drift-ui:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --bin texo
+    TEXO="$(pwd)/target/debug/texo"
+    OUT="$(pwd)/ui/public/drift.json"
+    mkdir -p "$(pwd)/ui/public"
+    DIR="$(mktemp -d)"; trap 'rm -rf "$DIR"' EXIT
+    mkdir -p "$DIR/docs"
+    for f in *.md deploy/README.md hackathon/*.md; do
+      case "$f" in *generated*) continue;; esac
+      cp "$f" "$DIR/docs/${f//\//__}"
+    done
+    ( cd "$DIR" \
+      && "$TEXO" init --workspace drift \
+      && "$TEXO" ingest docs \
+      && { [ -n "${OPENROUTER_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
+      && "$TEXO" claims --json > "$OUT" )
+    echo "wrote $OUT ($(grep -c 'claim_id' "$OUT") claims)"
