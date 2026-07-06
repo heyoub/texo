@@ -14,8 +14,8 @@ pub const ENV_EXTRACT_CACHE: &str = "TEXO_EXTRACT_CACHE";
 pub const ENV_OPENROUTER_API_KEY: &str = "OPENROUTER_API_KEY";
 /// Default extraction cache directory relative to the workspace root.
 pub const DEFAULT_EXTRACT_CACHE: &str = ".texo/extract-cache";
-/// `texo extract` is referenced here but not wired until WO-5.
-pub const EXTRACT_SUBCOMMAND_READY: bool = false;
+/// Whether first-run bootstrap may point `extractor_cmd` at `texo extract`.
+pub const EXTRACT_SUBCOMMAND_READY: bool = true;
 
 /// Inputs to extractor resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,10 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn unset_with_key_uses_heuristic_until_extract_subcommand_is_ready() {
+    fn unset_with_key_uses_extract_subcommand_when_ready() {
         let decision = resolve_bootstrap(Path::new("/root"), &inputs(None, Some("key")));
-        assert_eq!(decision.extractor_cmd, None);
-        assert!(!decision.semantics_enabled);
+        assert_eq!(
+            decision.extractor_cmd.as_deref(),
+            Some("TEXO_EXTRACT_CACHE=\"${TEXO_EXTRACT_CACHE:-/root/.texo/extract-cache}\" /opt/texo extract")
+        );
+        assert!(decision.semantics_enabled);
         assert_eq!(decision.warning, None);
     }
 

@@ -21,7 +21,7 @@ use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
 use crate::error::TexoError;
 use crate::events::coordinate::{entity_for_claim, entity_for_conflict, scope_for_workspace};
-use crate::events::ids::{claim_id_from_parts, SourceId};
+use crate::events::ids::{claim_id_from_parts, ClaimId, SourceId};
 use crate::events::machines::{
     transition_record, TransitionCauseV1, CLAIM_EDGES, CLAIM_MACHINE, CONFLICT_EDGES,
     CONFLICT_MACHINE,
@@ -35,9 +35,18 @@ use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
 use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
+use crate::semantics::pipeline::{
+    receipt_view, ClaimStatus as SemanticClaimStatus, ClaimView as SemanticClaimView,
+    RelateThresholds, RelatedClaims,
+};
 
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
 const CLAIM_EXPLAIN_PROJECTION: &str = "texo.claim.explain.v2";
+const RELATE_PREFILTER: f32 = 0.60;
+#[cfg(feature = "openrouter")]
+const ENV_RELATE_CACHE: &str = "TEXO_RELATE_CACHE";
+#[cfg(feature = "openrouter")]
+const DEFAULT_RELATE_CACHE: &str = ".texo/relate-cache";
 
 #[syncbat::operation(
     descriptor = WORKSPACE_INIT,
@@ -183,14 +192,20 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 .iter()
                 .flat_map(|source| source.claims.iter().cloned())
                 .collect::<Vec<_>>();
-            for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
-                append_json(
-                    "texo.ingest.run",
-                    cx,
-                    <ClaimSupersededV2 as EventPayload>::KIND,
-                    &superseded,
-                )?;
-                supersede_count = supersede_count.saturating_add(1);
+            if !config
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.enabled)
+            {
+                for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
+                    append_json(
+                        "texo.ingest.run",
+                        cx,
+                        <ClaimSupersededV2 as EventPayload>::KIND,
+                        &superseded,
+                    )?;
+                    supersede_count = supersede_count.saturating_add(1);
+                }
             }
         }
 
@@ -717,6 +732,30 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 }
 
 #[syncbat::operation(
+    descriptor = RELATE_RUN,
+    register = register_relate_run,
+    register_item = relate_run_item,
+    name = "texo.relate.run",
+    effect = Persist,
+    input_schema = "texo.relate.run.input.v2",
+    output_schema = "texo.relate.run.output.v2",
+    receipt_kind = "receipt.texo.relate.run.v2",
+    appends_events = ["evt.e003", "evt.e004"],
+    queries_projections = ["texo.workspace.view.v2"],
+    requires_capabilities = ["texo.cap.model"]
+)]
+#[tracing::instrument(skip_all)]
+fn relate_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.relate.run", || {
+        let input: RelateRunInput = parse_input("texo.relate.run", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.relate.run", error))?;
+        run_relate_pass("texo.relate.run", cx, input.observed_at_ms)
+    })
+}
+
+#[syncbat::operation(
     descriptor = HOST_FINGERPRINT,
     register = register_host_fingerprint,
     register_item = host_fingerprint_item,
@@ -767,6 +806,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         conflicts_list_item(),
         conflicts_commit_item(),
         conflict_resolve_item(),
+        relate_run_item(),
         host_fingerprint_item(),
     ]
 }
@@ -789,6 +829,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_conflicts_list(builder)?;
     register_conflicts_commit(builder)?;
     register_conflict_resolve(builder)?;
+    register_relate_run(builder)?;
     register_host_fingerprint(builder)?;
     Ok(())
 }
@@ -1017,6 +1058,36 @@ struct ConflictResolveOutput {
 }
 
 #[derive(Debug, Deserialize)]
+struct RelateRunInput {
+    observed_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RelateRunOutput {
+    pub(crate) claims_related: usize,
+    pub(crate) supersessions: Vec<RelateSupersessionRow>,
+    pub(crate) conflicts: Vec<RelateConflictRow>,
+    pub(crate) receipts: Vec<ReceiptNote>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RelateSupersessionRow {
+    old_claim_id: String,
+    new_claim_id: String,
+    reason: String,
+    cache_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RelateConflictRow {
+    conflict_id: String,
+    claim_a: String,
+    claim_b: String,
+    reason: String,
+    cache_key: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct HostFingerprintInput {}
 
 #[derive(Debug, Serialize)]
@@ -1193,6 +1264,341 @@ pub(crate) fn plan_sources(
     Ok(planned)
 }
 
+/// Run the semantic relate pass and journal resulting v2 transition payloads.
+///
+/// # Errors
+///
+/// Returns [`TexoError::Semantics`] when the configured semantic backends fail,
+/// [`TexoError::Store`] when projection/event reads fail, and
+/// [`TexoError::OpRuntime`] when append effects fail or no receipt is produced.
+#[expect(
+    clippy::too_many_lines,
+    reason = "WO-5 keeps relate orchestration in one op chokepoint"
+)]
+pub(crate) fn run_relate_pass(
+    op: &'static str,
+    cx: &mut syncbat::Ctx<'_>,
+    observed_at_ms: u64,
+) -> Result<RelateRunOutput, TexoError> {
+    let view = assemble_current_view()?;
+    let claims = semantic_claims_from_view(&view)?;
+    if claims.len() < 2 {
+        return Ok(RelateRunOutput {
+            claims_related: claims.len(),
+            supersessions: Vec::new(),
+            conflicts: Vec::new(),
+            receipts: Vec::new(),
+        });
+    }
+    let (root, cluster) = env::with(|op_env| {
+        let cluster = op_env.config.semantics.as_ref().map_or_else(
+            || crate::config::SemanticsConfig::default().cosine_threshold,
+            |semantics| semantics.cosine_threshold,
+        );
+        (op_env.root.clone(), cluster)
+    })?;
+    let related = relate_with_backends(
+        &root,
+        &claims,
+        RelateThresholds {
+            cluster,
+            prefilter: RELATE_PREFILTER,
+        },
+    )?;
+    let existing_conflicts = view
+        .conflicts
+        .iter()
+        .map(|conflict| conflict.conflict_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut supersessions = Vec::new();
+    for (old, new, reason) in &related.related.supersessions {
+        let old_id = old.to_string();
+        let new_id = new.to_string();
+        let old_entity = entity_for_claim(&old_id);
+        let cache_key = related
+            .cache_keys
+            .get(&(old_id.clone(), new_id.clone()))
+            .cloned()
+            .unwrap_or_default();
+        append_json(
+            op,
+            cx,
+            <ClaimSupersededV2 as EventPayload>::KIND,
+            &ClaimSupersededV2 {
+                old_claim_id: old_id.clone(),
+                new_claim_id: new_id.clone(),
+                workspace_id: view.workspace_id.clone(),
+                reason: reason.clone(),
+                decided_by: "texo-relate".to_string(),
+                observed_at_ms,
+                transition: transition_record(
+                    CLAIM_MACHINE,
+                    &old_entity,
+                    1,
+                    2,
+                    vec![TransitionCauseV1 {
+                        lane: 0,
+                        key: format!("relate:{cache_key}"),
+                    }],
+                    observed_at_ms,
+                ),
+            },
+        )?;
+        supersessions.push(RelateSupersessionRow {
+            old_claim_id: old_id,
+            new_claim_id: new_id,
+            reason: reason.clone(),
+            cache_key,
+        });
+    }
+
+    let mut conflicts = Vec::new();
+    for conflict in &related.related.conflicts {
+        let conflict_id = conflict.conflict_id.to_string();
+        if existing_conflicts.contains(&conflict_id) {
+            continue;
+        }
+        let claim_a = conflict.claim_a.to_string();
+        let claim_b = conflict.claim_b.to_string();
+        let cache_key = related
+            .cache_keys
+            .get(&(claim_a.clone(), claim_b.clone()))
+            .cloned()
+            .unwrap_or_default();
+        append_json(
+            op,
+            cx,
+            <ConflictOpenedV2 as EventPayload>::KIND,
+            &ConflictOpenedV2 {
+                conflict_id: conflict_id.clone(),
+                workspace_id: view.workspace_id.clone(),
+                claim_a: claim_a.clone(),
+                claim_b: claim_b.clone(),
+                reason: conflict.reason.clone(),
+                detector: "texo-relate".to_string(),
+                observed_at_ms,
+                transition: transition_record(
+                    CONFLICT_MACHINE,
+                    &entity_for_conflict(&conflict_id),
+                    0,
+                    1,
+                    vec![TransitionCauseV1 {
+                        lane: 0,
+                        key: format!("relate:{cache_key}"),
+                    }],
+                    observed_at_ms,
+                ),
+            },
+        )?;
+        conflicts.push(RelateConflictRow {
+            conflict_id,
+            claim_a,
+            claim_b,
+            reason: conflict.reason.clone(),
+            cache_key,
+        });
+    }
+
+    Ok(RelateRunOutput {
+        claims_related: claims.len(),
+        supersessions,
+        conflicts,
+        receipts: take_receipts()?,
+    })
+}
+
+struct SemanticRelateOutput {
+    related: RelatedClaims,
+    cache_keys: BTreeMap<(String, String), String>,
+}
+
+#[cfg(feature = "openrouter")]
+fn relate_with_backends(
+    root: &Path,
+    claims: &[(ClaimId, SemanticClaimView)],
+    thresholds: RelateThresholds,
+) -> Result<SemanticRelateOutput, TexoError> {
+    use crate::extract::cache::CachingRelater;
+    use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
+    use crate::semantics::pipeline::relate_claims;
+
+    let embedder = OpenRouterEmbedder::new(None).map_err(semantic_error)?;
+    let cache_dir = std::env::var_os(ENV_RELATE_CACHE)
+        .map_or_else(|| root.join(DEFAULT_RELATE_CACHE), PathBuf::from);
+    let caching_relater = CachingRelater::new(
+        OpenRouterRelater::new(None).map_err(semantic_error)?,
+        cache_dir,
+    );
+    let relation_output =
+        relate_claims(claims, &embedder, &caching_relater, thresholds).map_err(semantic_error)?;
+    let cache_keys = relate_cache_keys(&caching_relater, claims, &relation_output);
+    Ok(SemanticRelateOutput {
+        related: relation_output,
+        cache_keys,
+    })
+}
+
+#[cfg(not(feature = "openrouter"))]
+fn relate_with_backends(
+    _root: &Path,
+    _claims: &[(ClaimId, SemanticClaimView)],
+    _thresholds: RelateThresholds,
+) -> Result<SemanticRelateOutput, TexoError> {
+    Err(TexoError::Semantics {
+        backend: "openrouter".to_string(),
+        detail: "openrouter feature is disabled".to_string(),
+    })
+}
+
+#[cfg(feature = "openrouter")]
+fn semantic_error(error: impl std::fmt::Display) -> TexoError {
+    TexoError::Semantics {
+        backend: "openrouter".to_string(),
+        detail: error.to_string(),
+    }
+}
+
+fn semantic_claims_from_view(
+    view: &WorkspaceView,
+) -> Result<Vec<(ClaimId, SemanticClaimView)>, TexoError> {
+    let receipts = claim_record_receipts()?;
+    let mut claims = Vec::new();
+    for claim in &view.claims {
+        if claim.status != crate::claims::status::ClaimStatus::Current {
+            continue;
+        }
+        let claim_id = ClaimId::try_from(claim.card.claim_id.as_str())?;
+        let source_id = SourceId::try_from(claim.card.source_id.as_str())?;
+        let receipt =
+            receipts
+                .get(&claim.card.claim_id)
+                .ok_or_else(|| TexoError::MissingEntity {
+                    entity: entity_for_claim(&claim.card.claim_id),
+                })?;
+        let supersedes = claim
+            .supersedes
+            .iter()
+            .map(|id| ClaimId::try_from(id.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let superseded_by = claim
+            .card
+            .superseded_by
+            .as_deref()
+            .map(ClaimId::try_from)
+            .transpose()?;
+        claims.push((
+            claim_id.clone(),
+            SemanticClaimView {
+                claim_id,
+                workspace_id: claim.card.workspace_id.clone(),
+                source_id,
+                source_path: claim.card.source_path.clone(),
+                line_start: claim.card.line_start,
+                line_end: claim.card.line_end,
+                text: claim.card.text.clone(),
+                normalized_text: claim.card.normalized_text.clone(),
+                subject_hint: claim.card.subject_hint.clone().unwrap_or_default(),
+                predicate_hint: claim.card.predicate_hint.clone().unwrap_or_default(),
+                object_hint: claim.card.object_hint.clone().unwrap_or_default(),
+                confidence_ppm: claim.card.confidence_ppm,
+                extractor_kind: claim.card.extractor_kind.clone(),
+                status: SemanticClaimStatus::Current,
+                receipt: receipt_view(
+                    0,
+                    receipt.sequence,
+                    "ClaimRecorded",
+                    &scope_for_workspace(&view.workspace_id),
+                    &entity_for_claim(&claim.card.claim_id),
+                ),
+                supersedes,
+                superseded_by,
+            },
+        ));
+    }
+    claims.sort_by(|left, right| {
+        left.1
+            .receipt
+            .sequence
+            .get()
+            .cmp(&right.1.receipt.sequence.get())
+            .then_with(|| left.0.as_str().cmp(right.0.as_str()))
+    });
+    Ok(claims)
+}
+
+fn claim_record_receipts() -> Result<BTreeMap<String, AgentReceiptRow>, TexoError> {
+    env::with(|op_env| {
+        let scope = scope_for_workspace(&op_env.workspace_id);
+        let mut receipts = BTreeMap::new();
+        for entry in op_env.store.by_scope(&scope) {
+            if entry.event_kind() != <ClaimRecordedV2 as EventPayload>::KIND {
+                continue;
+            }
+            let raw = op_env.store.read_raw(entry.event_id())?;
+            let payload: ClaimRecordedV2 = batpak::encoding::from_bytes(&raw.event.payload)
+                .map_err(|error| TexoError::Decode {
+                    entity: entity_for_claim("unknown"),
+                    detail: error.to_string(),
+                })?;
+            receipts.entry(payload.claim_id).or_insert(AgentReceiptRow {
+                event_id: event_id_hex(entry.event_id()),
+                sequence: entry.global_sequence(),
+            });
+        }
+        Ok::<_, TexoError>(receipts)
+    })?
+}
+
+#[cfg(feature = "openrouter")]
+fn relate_cache_keys<R: crate::semantics::ClaimRelater>(
+    caching_relater: &crate::extract::cache::CachingRelater<R>,
+    claims: &[(ClaimId, SemanticClaimView)],
+    relation_output: &RelatedClaims,
+) -> BTreeMap<(String, String), String> {
+    let by_id = claims
+        .iter()
+        .map(|(id, view)| (id.to_string(), view))
+        .collect::<BTreeMap<_, _>>();
+    let mut keys = BTreeMap::new();
+    for (old, new, _) in &relation_output.supersessions {
+        if let (Some(old_view), Some(new_view)) = (by_id.get(old.as_str()), by_id.get(new.as_str()))
+        {
+            keys.insert(
+                (old.to_string(), new.to_string()),
+                caching_relater.cache_key(&old_view.text, &new_view.text),
+            );
+        }
+    }
+    for conflict in &relation_output.conflicts {
+        if let (Some(a), Some(b)) = (
+            by_id.get(conflict.claim_a.as_str()),
+            by_id.get(conflict.claim_b.as_str()),
+        ) {
+            let (older, newer) = ordered_for_relate_cache(a, b);
+            let key = caching_relater.cache_key(&older.text, &newer.text);
+            keys.insert(
+                (conflict.claim_a.to_string(), conflict.claim_b.to_string()),
+                key,
+            );
+        }
+    }
+    keys
+}
+
+#[cfg(feature = "openrouter")]
+fn ordered_for_relate_cache<'a>(
+    left: &'a SemanticClaimView,
+    right: &'a SemanticClaimView,
+) -> (&'a SemanticClaimView, &'a SemanticClaimView) {
+    if (left.receipt.sequence.get(), left.claim_id.as_str())
+        <= (right.receipt.sequence.get(), right.claim_id.as_str())
+    {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
 fn extract_heuristic_claims(
     doc: &MarkdownDocument,
     workspace_id: &str,
@@ -1243,7 +1649,7 @@ fn extract_cmd_claims(
 ) -> Result<Vec<ClaimRecordedV2>, TexoError> {
     let output = std::process::Command::new("sh")
         .arg("-c")
-        .arg(cmd)
+        .arg(format!("{cmd} \"$1\""))
         .arg("texo-extract")
         .arg(path)
         .current_dir(root)

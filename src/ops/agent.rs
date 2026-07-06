@@ -32,7 +32,7 @@ use crate::events::payloads::{
 use crate::ops::env::{self, ReceiptNote};
 use crate::ops::handlers::{
     append_json, assemble_current_view, infer_supersessions, op_runtime, parse_input, plan_sources,
-    run_op, take_receipts,
+    run_op, run_relate_pass, take_receipts,
 };
 
 /// Directory under the workspace root where session transcripts land.
@@ -288,7 +288,7 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.agent.session.end.input.v2",
     output_schema = "texo.agent.session.end.output.v2",
     receipt_kind = "receipt.texo.agent.session.end.v2",
-    appends_events = ["evt.e001", "evt.e002", "evt.e003"],
+    appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004"],
     reads_events = ["evt.e008"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
@@ -364,6 +364,18 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             )?;
         }
         drop(take_receipts()?);
+        let relate =
+            if crate::host::grants_model_capability(std::env::var("OPENROUTER_API_KEY").ok()) {
+                let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms)?;
+                RelateOutcome::Ran {
+                    supersessions: out.supersessions.len(),
+                    conflicts: out.conflicts.len(),
+                }
+            } else {
+                RelateOutcome::Skipped {
+                    reason: "OPENROUTER_API_KEY is not set".to_string(),
+                }
+            };
         Ok(SessionEndReport {
             session_id: input.session_id,
             doc_path: doc_path
@@ -374,9 +386,7 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             sources_observed: u32::try_from(planned.len()).unwrap_or(u32::MAX),
             claims_recorded: u32::try_from(new_claims.len()).unwrap_or(u32::MAX),
             ingest_supersessions: u32::try_from(supersessions.len()).unwrap_or(u32::MAX),
-            relate: RelateOutcome::Skipped {
-                reason: "relate lands in WO-5".to_string(),
-            },
+            relate,
         })
     })
 }
@@ -548,6 +558,13 @@ pub struct SessionEndReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RelateOutcome {
+    /// The pass ran and journaled any derived facts.
+    Ran {
+        /// Supersession count.
+        supersessions: usize,
+        /// Conflict count.
+        conflicts: usize,
+    },
     /// The pass was skipped.
     Skipped {
         /// Skip reason.

@@ -330,8 +330,17 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Relate { json } => {
-            let _ = json;
-            Ok(unimplemented_command("relate"))
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let output = host.invoke_json(
+                "texo.relate.run",
+                &json!({"observed_at_ms": observed_at_ms()}),
+            )?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::relate(&output);
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Command::Mcp => Ok(unimplemented_command("mcp")),
         Command::Serve {
@@ -339,10 +348,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             root,
             workspace,
         } => serve(addr, root, workspace, &cli.root, cli.workspace.as_deref()),
-        Command::Extract { path } => {
-            let _ = path;
-            Ok(unimplemented_command("extract"))
-        }
+        Command::Extract { path } => Ok(extract(&path)),
         Command::Session { cmd } => match cmd {
             SessionCmd::Export { session_id } => {
                 let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
@@ -411,6 +417,47 @@ fn serve(
     let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
     let _stats = crate::surfaces::http::server::serve_listener(listener, config, &shutdown)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn extract(path: &Path) -> ExitCode {
+    match extract_impl(path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            render::extract_error(error.as_ref());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(feature = "openrouter")]
+fn extract_impl(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+
+    use crate::extract::cache::CachingProposer;
+    use crate::extract::faithfulness::DEFAULT_GROUNDING_THRESHOLD_PPM;
+    use crate::extract::llm::{run_extraction, write_ndjson};
+    use crate::semantics::openrouter::OpenRouterProposer;
+
+    const ENV_CACHE_DIR: &str = "TEXO_EXTRACT_CACHE";
+    const DEFAULT_CACHE_DIR: &str = ".texo/extract-cache";
+
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("reading {}: {error}", path.display()))?;
+    let cache_dir =
+        PathBuf::from(std::env::var_os(ENV_CACHE_DIR).unwrap_or_else(|| DEFAULT_CACHE_DIR.into()));
+    let proposer = CachingProposer::new(OpenRouterProposer::new(None)?, cache_dir);
+    let claims = run_extraction(&source, &proposer, DEFAULT_GROUNDING_THRESHOLD_PPM)?;
+
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    write_ndjson(&claims, &mut lock)?;
+    lock.flush()?;
+    Ok(())
+}
+
+#[cfg(not(feature = "openrouter"))]
+fn extract_impl(_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    Err("openrouter feature is disabled".into())
 }
 
 fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError> {

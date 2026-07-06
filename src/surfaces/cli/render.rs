@@ -235,3 +235,35 @@ pub fn serve_listening(addr: std::net::SocketAddr) {
 pub fn serve_warning(message: &str) {
     eprintln!("{message}");
 }
+
+/// Print an extractor error with the extractor subcommand prefix.
+#[expect(clippy::print_stderr, reason = "CLI output contract")]
+pub fn extract_error(error: &dyn std::error::Error) {
+    eprint!("texo extract: {error}");
+    let mut source = error.source();
+    while let Some(cause) = source {
+        eprint!(": {cause}");
+        source = cause.source();
+    }
+    eprintln!();
+}
+
+/// Print relate summary.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn relate(value: &Value) {
+    println!(
+        "related {} claims: {} supersessions, {} conflicts",
+        value
+            .get("claims_related")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        value
+            .get("supersessions")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value
+            .get("conflicts")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    );
+}
