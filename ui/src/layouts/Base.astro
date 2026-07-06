@@ -26,19 +26,11 @@ const { title = 'texo' } = Astro.props;
       @token stale {}
       @token conflict {}
 
-      /* ── Theme layer ── */
-      @theme dark {
-        --czap-primary: #818cf8;
-        --czap-secondary: #2dd4bf;
-        --czap-surface: #0f1115;
-        --czap-panel: #171a21;
-        --czap-text: #e7e5e4;
-        --czap-muted: #a8a29e;
-        --czap-border: #2b2f38;
-        --czap-current: #4ade80;
-        --czap-stale: #fbbf24;
-        --czap-conflict: #f87171;
-      }
+      /* ── Theme layer ──
+         Variant selectors (html[data-theme=light/dark]) are emitted from the
+         resolved ThemeDef in src/themes/dark.themes.ts; the block stays empty
+         (a non-empty body compiles to a dead unconditional override). */
+      @theme dark {}
 
       /* ── Reset + base ── */
       *, *::before, *::after {
@@ -52,8 +44,8 @@ const { title = 'texo' } = Astro.props;
       }
 
       body {
-        background: var(--czap-surface, #faf9f6);
-        color: var(--czap-text, #1c1917);
+        background: var(--czap-surface);
+        color: var(--czap-text);
         min-height: 100dvh;
       }
 
@@ -63,8 +55,8 @@ const { title = 'texo' } = Astro.props;
         align-items: center;
         gap: 0.875rem;
         padding: 0.75rem 1.25rem;
-        border-bottom: 1px solid var(--czap-border, #e7e5e4);
-        background: var(--czap-panel, #ffffff);
+        border-bottom: 1px solid var(--czap-border);
+        background: var(--czap-panel);
         position: sticky;
         top: 0;
         z-index: 100;
@@ -75,23 +67,23 @@ const { title = 'texo' } = Astro.props;
         font-weight: 800;
         font-size: 1.125rem;
         letter-spacing: -0.02em;
-        color: var(--czap-primary, #4338ca);
+        color: var(--czap-primary);
         text-decoration: none;
       }
 
       .texo-nav__tag {
         font-size: 0.75rem;
-        color: var(--czap-muted, #78716c);
+        color: var(--czap-muted);
       }
 
       .texo-nav__link {
         font-size: 0.8125rem;
-        color: var(--czap-muted, #78716c);
+        color: var(--czap-muted);
         text-decoration: none;
         transition: color 0.15s;
       }
       .texo-nav__link:hover {
-        color: var(--czap-primary, #4338ca);
+        color: var(--czap-primary);
       }
 
       .texo-nav__spacer {
@@ -104,24 +96,27 @@ const { title = 'texo' } = Astro.props;
         align-items: center;
         gap: 0.375rem;
         font-size: 0.75rem;
-        color: var(--czap-muted, #78716c);
+        color: var(--czap-muted);
       }
       .texo-nav__status::before {
         content: '';
         width: 0.5rem;
         height: 0.5rem;
         border-radius: 50%;
-        background: var(--czap-muted, #78716c);
+        background: var(--czap-muted);
       }
       .texo-nav__status[data-live='true']::before {
-        background: var(--czap-current, #16a34a);
+        background: var(--czap-current);
+      }
+      .texo-nav__status[data-live='error']::before {
+        background: var(--czap-conflict);
       }
 
       .texo-theme-toggle {
         appearance: none;
-        border: 1px solid var(--czap-border, #e7e5e4);
-        background: var(--czap-panel, #ffffff);
-        color: var(--czap-text, #1c1917);
+        border: 1px solid var(--czap-border);
+        background: var(--czap-panel);
+        color: var(--czap-text);
         padding: 0.3rem 0.7rem;
         border-radius: 0.375rem;
         font-size: 0.8125rem;
@@ -129,7 +124,7 @@ const { title = 'texo' } = Astro.props;
         transition: background 0.15s, color 0.15s;
       }
       .texo-theme-toggle:hover {
-        background: var(--czap-primary, #4338ca);
+        background: var(--czap-primary);
         color: #ffffff;
       }
 

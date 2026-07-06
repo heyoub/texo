@@ -53,13 +53,13 @@ import Base from '../layouts/Base.astro';
   .drift-head p {
     margin-top: 0.5rem;
     font-size: 0.9375rem;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
   }
   .drift-head code {
     font-family: ui-monospace, monospace;
     font-size: 0.85em;
-    background: var(--czap-panel, #ffffff);
-    border: 1px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-panel);
+    border: 1px solid var(--czap-border);
     padding: 0.05rem 0.35rem;
     border-radius: 0.25rem;
   }
@@ -75,16 +75,16 @@ import Base from '../layouts/Base.astro';
     font-weight: 600;
     padding: 0.2rem 0.6rem;
     border-radius: 0.75rem;
-    border: 1px solid var(--czap-border, #e7e5e4);
-    background: var(--czap-panel, #ffffff);
+    border: 1px solid var(--czap-border);
+    background: var(--czap-panel);
   }
-  .drift-counts :global(.count--current) { color: var(--czap-current, #16a34a); }
-  .drift-counts :global(.count--stale) { color: var(--czap-stale, #d97706); }
-  .drift-counts :global(.count--conflict) { color: var(--czap-conflict, #dc2626); }
+  .drift-counts :global(.count--current) { color: var(--czap-current); }
+  .drift-counts :global(.count--stale) { color: var(--czap-stale); }
+  .drift-counts :global(.count--conflict) { color: var(--czap-conflict); }
 
   .panel {
-    background: var(--czap-panel, #ffffff);
-    border: 1px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-panel);
+    border: 1px solid var(--czap-border);
     border-radius: 0.75rem;
     padding: 1rem;
     margin-bottom: 1rem;
@@ -99,12 +99,12 @@ import Base from '../layouts/Base.astro';
     font-size: 0.9375rem;
     font-weight: 700;
   }
-  .head--current { color: var(--czap-current, #16a34a); }
-  .head--stale { color: var(--czap-stale, #d97706); }
-  .head--conflict { color: var(--czap-conflict, #dc2626); }
+  .head--current { color: var(--czap-current); }
+  .head--stale { color: var(--czap-stale); }
+  .head--conflict { color: var(--czap-conflict); }
   .panel__meta {
     font-size: 0.71875rem;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     margin-left: auto;
   }
 
@@ -119,16 +119,16 @@ import Base from '../layouts/Base.astro';
   .drift-list :global(li) {
     padding: 0.5rem 0.65rem;
     border-radius: 0.5rem;
-    background: var(--czap-surface, #faf9f6);
-    border-left: 3px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-surface);
+    border-left: 3px solid var(--czap-border);
     overflow-wrap: anywhere;
   }
-  #drift-current :global(li) { border-left-color: var(--czap-current, #16a34a); }
-  #drift-stale :global(li) { border-left-color: var(--czap-stale, #d97706); }
-  #drift-conflict :global(li) { border-left-color: var(--czap-conflict, #dc2626); }
+  #drift-current :global(li) { border-left-color: var(--czap-current); }
+  #drift-stale :global(li) { border-left-color: var(--czap-stale); }
+  #drift-conflict :global(li) { border-left-color: var(--czap-conflict); }
 
   .drift-list :global(.drift-empty) {
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     font-style: italic;
     background: transparent;
     border-left-color: transparent;
@@ -138,18 +138,18 @@ import Base from '../layouts/Base.astro';
     margin-top: 0.2rem;
     font-size: 0.6875rem;
     font-family: ui-monospace, monospace;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
   }
   .drift-list :global(.claim__arrow) {
     display: block;
     margin-top: 0.2rem;
     font-size: 0.71875rem;
-    color: var(--czap-stale, #d97706);
+    color: var(--czap-stale);
   }
   .drift-list :global(.claim__tag) {
     font-size: 0.65rem;
     font-family: ui-monospace, monospace;
-    color: var(--czap-primary, #4338ca);
+    color: var(--czap-primary);
     margin-right: 0.4rem;
   }
 </style>

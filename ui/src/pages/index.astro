@@ -105,8 +105,8 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   }
 
   .panel {
-    background: var(--czap-panel, #ffffff);
-    border: 1px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-panel);
+    border: 1px solid var(--czap-border);
     border-radius: 0.75rem;
     padding: 1rem;
   }
@@ -124,7 +124,7 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   }
   .panel__meta {
     font-size: 0.71875rem;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     margin-left: auto;
   }
 
@@ -155,7 +155,7 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   }
 
   .chat__hint {
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     font-size: 0.875rem;
     font-style: italic;
     align-self: center;
@@ -173,23 +173,23 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   .chat__field {
     flex: 1;
     padding: 0.55rem 0.8rem;
-    border: 1px solid var(--czap-border, #e7e5e4);
+    border: 1px solid var(--czap-border);
     border-radius: 0.5rem;
     font-size: 0.9375rem;
-    background: var(--czap-surface, #faf9f6);
-    color: var(--czap-text, #1c1917);
+    background: var(--czap-surface);
+    color: var(--czap-text);
     outline: none;
     min-width: 0;
   }
   .chat__field:focus {
-    border-color: var(--czap-primary, #4338ca);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--czap-primary, #4338ca) 25%, transparent);
+    border-color: var(--czap-primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--czap-primary) 25%, transparent);
   }
 
   .btn {
     appearance: none;
     border: none;
-    background: var(--czap-primary, #4338ca);
+    background: var(--czap-primary);
     color: #ffffff;
     padding: 0.5rem 1.1rem;
     border-radius: 0.5rem;
@@ -203,15 +203,15 @@ import { layout } from '../boundaries/layout.boundaries.ts';
 
   .btn--ghost {
     background: transparent;
-    color: var(--czap-muted, #78716c);
-    border: 1px solid var(--czap-border, #e7e5e4);
+    color: var(--czap-muted);
+    border: 1px solid var(--czap-border);
     font-weight: 500;
     padding: 0.25rem 0.7rem;
     font-size: 0.75rem;
   }
   .btn--ghost:hover {
-    color: var(--czap-conflict, #dc2626);
-    border-color: var(--czap-conflict, #dc2626);
+    color: var(--czap-conflict);
+    border-color: var(--czap-conflict);
     filter: none;
   }
 
@@ -225,13 +225,13 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   }
   .chat__messages :global(.msg--user) {
     align-self: flex-end;
-    background: color-mix(in srgb, var(--czap-primary, #4338ca) 14%, var(--czap-panel, #ffffff));
-    border: 1px solid color-mix(in srgb, var(--czap-primary, #4338ca) 30%, transparent);
+    background: color-mix(in srgb, var(--czap-primary) 14%, var(--czap-panel));
+    border: 1px solid color-mix(in srgb, var(--czap-primary) 30%, transparent);
   }
   .chat__messages :global(.msg--agent) {
     align-self: flex-start;
-    background: var(--czap-surface, #faf9f6);
-    border: 1px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-surface);
+    border: 1px solid var(--czap-border);
     white-space: pre-wrap;
   }
   .chat__messages :global(.msg--system) {
@@ -239,9 +239,9 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     max-width: 100%;
     text-align: center;
     font-size: 0.8125rem;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     background: transparent;
-    border: 1px dashed var(--czap-border, #e7e5e4);
+    border: 1px dashed var(--czap-border);
   }
   .chat__messages :global(.msg__chips) {
     display: flex;
@@ -254,8 +254,8 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     font-family: ui-monospace, monospace;
     padding: 0.1rem 0.45rem;
     border-radius: 0.75rem;
-    border: 1px solid color-mix(in srgb, var(--czap-secondary, #0d9488) 45%, transparent);
-    color: var(--czap-secondary, #0d9488);
+    border: 1px solid color-mix(in srgb, var(--czap-secondary) 45%, transparent);
+    color: var(--czap-secondary);
     cursor: help;
     white-space: nowrap;
   }
@@ -268,9 +268,9 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     letter-spacing: 0.05em;
     margin: 0.75rem 0 0.35rem;
   }
-  .memory__label--current { color: var(--czap-current, #16a34a); }
-  .memory__label--stale { color: var(--czap-stale, #d97706); }
-  .memory__label--conflict { color: var(--czap-conflict, #dc2626); }
+  .memory__label--current { color: var(--czap-current); }
+  .memory__label--stale { color: var(--czap-stale); }
+  .memory__label--conflict { color: var(--czap-conflict); }
 
   .memory__list {
     list-style: none;
@@ -283,16 +283,16 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   .memory__list :global(li) {
     padding: 0.45rem 0.6rem;
     border-radius: 0.5rem;
-    background: var(--czap-surface, #faf9f6);
-    border-left: 3px solid var(--czap-border, #e7e5e4);
+    background: var(--czap-surface);
+    border-left: 3px solid var(--czap-border);
     overflow-wrap: anywhere;
   }
-  #mem-current :global(li) { border-left-color: var(--czap-current, #16a34a); }
-  #mem-stale :global(li) { border-left-color: var(--czap-stale, #d97706); }
-  #mem-conflicts :global(li) { border-left-color: var(--czap-conflict, #dc2626); }
+  #mem-current :global(li) { border-left-color: var(--czap-current); }
+  #mem-stale :global(li) { border-left-color: var(--czap-stale); }
+  #mem-conflicts :global(li) { border-left-color: var(--czap-conflict); }
 
   .memory__list :global(.memory__empty) {
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     font-style: italic;
     background: transparent;
     border-left-color: transparent;
@@ -302,13 +302,13 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     margin-top: 0.15rem;
     font-size: 0.6875rem;
     font-family: ui-monospace, monospace;
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
   }
   .memory__list :global(.claim__arrow) {
     display: block;
     margin-top: 0.15rem;
     font-size: 0.71875rem;
-    color: var(--czap-stale, #d97706);
+    color: var(--czap-stale);
   }
 
   /* ── Receipts ── */
@@ -320,7 +320,7 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     align-items: baseline;
   }
   .receipts__grid dt {
-    color: var(--czap-muted, #78716c);
+    color: var(--czap-muted);
     font-size: 0.71875rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -330,8 +330,8 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     font-family: ui-monospace, monospace;
     font-size: 0.75rem;
   }
-  .receipts__grid :global([data-ok='true']) { color: var(--czap-current, #16a34a); }
-  .receipts__grid :global([data-ok='false']) { color: var(--czap-conflict, #dc2626); }
+  .receipts__grid :global([data-ok='true']) { color: var(--czap-current); }
+  .receipts__grid :global([data-ok='false']) { color: var(--czap-conflict); }
 
   /* ── Timeline ── */
   .timeline__list {
@@ -350,13 +350,13 @@ import { layout } from '../boundaries/layout.boundaries.ts';
     gap: 0.75rem;
     padding: 0.3rem 0.5rem;
     border-radius: 0.375rem;
-    background: var(--czap-surface, #faf9f6);
+    background: var(--czap-surface);
   }
   .timeline__list :global(.tl__seq) {
-    color: var(--czap-primary, #4338ca);
+    color: var(--czap-primary);
     min-width: 4.5rem;
   }
-  .timeline__list :global(.tl__kind) { color: var(--czap-text, #1c1917); }
+  .timeline__list :global(.tl__kind) { color: var(--czap-text); }
 </style>
 
 <script>
@@ -593,8 +593,11 @@ import { layout } from '../boundaries/layout.boundaries.ts';
   document.addEventListener('czap:stream-connected', () => {
     $('stream-status').dataset.live = 'true';
   });
-  document.addEventListener('czap:stream-reconnecting', () => {
+  document.addEventListener('czap:stream-disconnected', () => {
     $('stream-status').dataset.live = 'false';
+  });
+  document.addEventListener('czap:stream-error', () => {
+    $('stream-status').dataset.live = 'error';
   });
 
   $('chat-form').addEventListener('submit', (event) => {

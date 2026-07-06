@@ -3,7 +3,7 @@
   "_version": 2,
   "boundaries": {
     "layout": {
-      "id": "fnv1a:9fa73731",
+      "id": "fnv1a:ece35505",
       "outputs": [
         {
           "css": ":root {\n  container-type: inline-size;\n  container-name: viewport-width;\n}\n\n@container viewport-width (width < 768px) {\n.app {\n  grid-template-columns: 1fr;\n}\n.chat__messages {\n  max-height: 45dvh;\n}\n}\n\n@container viewport-width (width >= 768px) {\n.app {\n  grid-template-columns: minmax(0, 1fr) 22rem;\n  grid-template-areas: 'chat rail'\n          'timeline timeline';\n}\n.chat {\n  grid-area: chat;\n}\n.rail {\n  grid-area: rail;\n}\n.timeline {\n  grid-area: timeline;\n}\n.chat__messages {\n  max-height: 58dvh;\n}\n}",
