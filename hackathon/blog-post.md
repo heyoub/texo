@@ -26,7 +26,7 @@ I reverted the same day and wrote the lesson into the roadmap: **prompt changes 
 
 ## Day two: the agent, and what live driving taught it
 
-The agent itself (`texo-agent`, an axum HTTP server with a one-file UI) took shape fast, because it's a thin consumer of the substrate: every chat turn replays the journal and injects *current* claims into the system prompt as trusted memory — each one carrying `path:line` plus span-level byte offsets — while superseded claims are injected under a header that says exactly what I want the model to internalize: `## Outdated memory (do NOT trust — superseded)`. Ending a session renders the transcript to `sessions/<id>.md`, ingests it through the LLM extractor, and runs the relate pass so the next session wakes up with the updated chain.
+The agent itself (at that point `texo-agent`, an axum HTTP server with a one-file UI — hold that thought) took shape fast, because it's a thin consumer of the substrate: every chat turn replays the journal and injects *current* claims into the system prompt as trusted memory — each one carrying `path:line` plus span-level byte offsets — while superseded claims are injected under a header that says exactly what I want the model to internalize: `## Outdated memory (do NOT trust — superseded)`. Ending a session renders the transcript to `sessions/<id>.md`, ingests it through the LLM extractor, and runs the relate pass so the next session wakes up with the updated chain.
 
 Then I drove it live — three sessions: teach, change, recall — and reality filed two bugs.
 
@@ -46,10 +46,24 @@ That reply is verbatim from the live run (Jul 5), unscripted.
 
 It cites its source. It narrates its own history, unprompted. It doesn't just fail to mention the Friday fact — it *knows* the Friday fact, knows it's dead, and knows what killed it. That's the difference between retrieval ranking and a journal: the forgetting is a typed, receipted event you can replay, audit, and explain, not an embedding that lost a similarity contest.
 
+## Days three and four: the great flattening
+
+Then I looked at the repository and got angry at it. Six crates. Three async transports. tokio, axum, reqwest, and an MCP SDK — sitting on top of a substrate whose whole point is that it ships its own sync operation kit, host composition, receipt verification, and event lanes. I was dogfooding BatPak's journal and hand-rolling everything else it already provided. Mid-hackathon, deadline in three days, I made the call: rebuild from the ground up, all or nothing.
+
+What made that sane instead of suicidal is that texo's identity lives in the math, not the code: a claim ID is a pure function of source, line, and normalized text. So the rebuild had a falsifiable acceptance test — flatten six crates into one, replace every async transport with hand-rolled sync code (HTTP server, SSE, the HTTPS client that talks to DashScope, MCP over stdio), move every surface onto receipt-verified operations, and then check that every claim ID in the golden corpus comes out *identical*. It did. 492 locked dependencies became 222, and the rebuilt system provably remembers everything the old one did.
+
+Sessions got the best upgrade: they moved *into* the journal. Each turn appends to a hidden per-session lane the moment it lands — no in-memory transcript, no separate session store. The journal is the session. The test that made me grin: append two turns, drop the process cold, reopen — both turns are there. Try that with a chat history dict.
+
+Dogfooding cut both ways, too. Mid-rebuild I hit a real gap in my own library — hostbat's 0.9.0 builder couldn't thread status sinks or capability grants — so I filed the issue, and it was fixed upstream the same day. The fix landed in an unpublished 0.10.0, and rather than bet the deadline on a fresh breaking window, the hackathon ships on 0.9.0 *by choice*: a hand-rolled interface fingerprint stands in for the one missing feature, TODO-marked and roadmapped. Finding, filing, and fixing a substrate gap because a downstream project leaned on it hard — that's what the lean was for.
+
+The one-file UI became LiteShip (my Astro-based framework — third dogfood of the week): a chat pane whose replies carry per-claim citation chips, a memory sidebar and journal timeline riding a live SSE stream of the journal's own events, and a receipts panel that cross-checks the binary's interface fingerprint between the stream handshake and the host endpoint. When a supersession lands you watch it happen — the timeline ticks, the old claim slides into the superseded list with an arrow to what killed it.
+
+And the finale, `just drift`: the freshly built binary ingests the repository's *own* markdown — README, specs, the old architecture ADRs, deliberately left standing — and reports which of its claims still hold. The old architecture's claims come back **superseded**, with receipts, by the rebuild ADR that replaced them. texo calling out its own drift is the purity test I didn't know I was building toward: the tool's thesis — prose rots, claims supersede — demonstrated on the tool.
+
 Everything runs on Qwen Cloud through DashScope's OpenAI-compatible mode: `qwen3.7-max` for extraction, the relation judge, and chat; `text-embedding-v4` for the cosine prefilter; the backend on an Alibaba Cloud ECS instance in Singapore, next to the model endpoint.
 
 <!-- TODO: video link -->
 
-Five days, one revert, two live-drive bugs, and an agent that can tell you when it stopped believing something. I'll take that trade.
+Five days, one revert, two live-drive bugs, one ground-up rebuild with a falsifiable identity proof, one upstream gap found and fixed, and an agent that can tell you when it stopped believing something. I'll take that trade.
 
 *— Ayoub*
