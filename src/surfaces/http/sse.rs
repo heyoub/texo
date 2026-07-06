@@ -10,6 +10,7 @@ use serde_json::json;
 use crate::error::{SurfaceKind, TexoError};
 use crate::events::coordinate::scope_for_workspace;
 
+use super::request::{header, HttpRequest};
 use super::routes::{open_host, RouteState};
 
 /// Serve one SSE connection.
@@ -22,6 +23,7 @@ pub fn serve(
     stream: &mut impl Write,
     state: &RouteState,
     keep_alive: Duration,
+    resume_from: Option<u64>,
 ) -> Result<(), TexoError> {
     let host = open_host(state)?;
     let store = host.store();
@@ -33,7 +35,8 @@ pub fn serve(
         .map(|entry| entry.global_sequence())
         .max()
         .unwrap_or(0);
-    let mut last_sequence = frontier;
+    let resume_from = resume_from.filter(|cursor| *cursor <= frontier);
+    let mut last_sequence = resume_from.unwrap_or(frontier);
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\n\r\n",
     ).map_err(surface_error)?;
@@ -47,6 +50,9 @@ pub fn serve(
             "fingerprint": interface.interface_fingerprint
         }),
     )?;
+    if resume_from.is_some() {
+        let _emitted = write_visible_since(stream, &store, &scope, &mut last_sequence)?;
+    }
 
     // BatPak 0.9.0 APIs used here: Store::subscribe_lossy(&Region) creates a
     // Subscription, and Subscription::filtered_receiver() exposes the
@@ -78,6 +84,43 @@ pub fn serve(
             Err(flume::RecvTimeoutError::Disconnected) => return Ok(()),
         }
     }
+}
+
+/// Return the optional SSE resume cursor from the request.
+///
+/// # Errors
+///
+/// This parser is fail-open for the stream handshake: empty or malformed
+/// cursor values return `None` and preserve no-resume behavior.
+#[must_use]
+pub fn resume_cursor(request: &HttpRequest) -> Option<u64> {
+    if let Some(value) = header(&request.headers, "Last-Event-ID") {
+        return parse_cursor(value);
+    }
+    request.query.as_deref().and_then(query_cursor)
+}
+
+fn query_cursor(query: &str) -> Option<u64> {
+    for pair in query.split('&') {
+        let Some((name, value)) = pair.split_once('=') else {
+            if pair == "lastEventId" {
+                return None;
+            }
+            continue;
+        };
+        if name == "lastEventId" {
+            return parse_cursor(value);
+        }
+    }
+    None
+}
+
+fn parse_cursor(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn write_visible_since(

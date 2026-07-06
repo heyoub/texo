@@ -46,7 +46,8 @@ deterministic blake3 transition id and explicit causes.
   `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
   8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
 - SSE: `hello` signal on connect, `journal` signal per workspace event,
-  keep-alive comments on quiet ticks, and `lastEventId` accepted but ignored.
+  keep-alive comments on quiet ticks, and resume via `Last-Event-ID` header
+  or `lastEventId` query param replays workspace events after the cursor.
 - MCP: line-delimited JSON-RPC 2.0 stdio with `initialize`, `tools/list`, and
   `tools/call` for four read-only tools: `check_staleness`,
   `get_current_claims`, `get_agent_context`, and `explain_claim`.

@@ -222,7 +222,8 @@ fn serve_connection(
         let Some(_permit) = sse_pool.acquire(shutdown, idle_sleep) else {
             return;
         };
-        match super::sse::serve(&mut stream, route_state, keep_alive) {
+        let resume_from = super::sse::resume_cursor(&request);
+        match super::sse::serve(&mut stream, route_state, keep_alive, resume_from) {
             Ok(()) => counters.served.fetch_add(1, Ordering::AcqRel),
             Err(_) => counters.failed_requests.fetch_add(1, Ordering::AcqRel),
         };
