@@ -1,14 +1,16 @@
 # Invariants
 
-| ID | Invariant | Test |
+Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
+
+| ID | Invariant | Test Anchor |
 |---|---|---|
-| INV-REPLAY-CURRENT-UNIQUE | Superseded claims never appear as current | `tests/replay_truth.rs` |
-| INV-REPLAY-SUPERSESSION | Supersession events flip status deterministically | `tests/replay_truth.rs` |
-| INV-REPLAY-DETERMINISTIC | Close/reopen replay yields identical state | `tests/idempotent_replay.rs` |
-| INV-REPLAY-ERRORS | Replay propagates illegal-transition, missing-claim, invalid-status, and unsupported-kind failures (never silently skipped) | `src/replay/reducer.rs` (InvalidId), `src/replay/apply.rs` tests (MissingClaim / self-supersession Transition / InvalidStatus), `tests/decode_unsupported_kind.rs` (DecodeError::UnsupportedKind) |
-| INV-RECEIPT-VERIFIED | Committed appends verify against the BatPak store | `tests/ingest_receipts.rs`, `journal/receipt.rs` |
-| INV-COMPILE-JOURNALED | Compile appends `OnboardingCompiled` to the journal | `tests/compile_journaled.rs` |
-| INV-CONFLICT-SEMANTICS | Conflicts are contradictory current claims, not supersession edges | `tests/conflicts_courtroom.rs`, `src/conflicts/detect.rs` |
-| INV-STALE-EXACT-LINE | Stale prose flagged at exact source line | `tests/staleness_courtroom.rs` |
-| INV-AGENT-CONTEXT-FRONTIER | Agent JSON includes frontier + provenance | `tests/agent_context.rs`, `tests/golden_agent_context.rs` |
-| THESIS-STALE-ONBOARDING | Demo stale onboarding exposes supersession | `tests/thesis_meta.rs` |
+| INV-REPLAY-DETERMINISTIC | Replaying a reopened store produces byte-identical workspace views and stable goldens. | `tests/projection_laws.rs`, `tests/idempotent_replay.rs`, `tests/replay_truth.rs` |
+| INV-RECEIPT-VERIFIED-L1 | Every domain append receipt verifies against the BatPak store before surfacing. | `tests/spike_family.rs`, `tests/ingest_receipts.rs`, `tests/ops_kit.rs` |
+| INV-RECEIPT-VERIFIED-L2 | syncbat operation receipt envelopes are journaled at the op receipt coordinate. | `tests/ops_kit.rs` |
+| INV-JOURNAL-VALID | `texo.verify.run` decodes every workspace event, verifies the chain, and reports unsupported or foreign kinds as findings. | `tests/decode_unsupported_kind.rs`, `tests/error_paths_journal.rs` |
+| INV-TRANSITION-EVIDENCE | Claim/conflict phase changes use legal typestate edges and deterministic transition records. | `tests/compile_fail.rs`, `tests/projection_laws.rs`, `src/events/machines.rs` |
+| INV-OPS-FAIL-CLOSED | Undeclared effects, unknown payload kinds, missing receipt sinks, and missing capabilities deny before state changes. | `tests/ops_kit.rs` |
+| INV-CONFLICT-SEMANTICS | Conflicts are contradictory current claims; superseded claims do not beat the superseded status. | `tests/conflicts_courtroom.rs`, `tests/projection_laws.rs` |
+| INV-SESSION-LANES | Session turns are crash-durable in non-zero lanes and hidden from lane-0 memory until session-end ingest. | `tests/session_lanes.rs`, `tests/http_server.rs` |
+| INV-STALE-EXACT-LINE | Staleness diagnostics point at exact source lines. | `tests/staleness_courtroom.rs`, `tests/golden_staleness.rs` |
+| INV-AGENT-CONTEXT-FRONTIER | Agent/MCP context includes replay frontier, provenance, current claims, stale claims, and conflicts. | `tests/agent_context.rs`, `tests/mcp_stdio.rs`, `tests/golden_agent_context.rs` |

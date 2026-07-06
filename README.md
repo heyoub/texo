@@ -1,102 +1,105 @@
 # texo
 
-Context rot is what happens when teams treat prose as state.
+Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 
-texo is a tiny BatPak-backed claim-chain for internal knowledge. It ingests markdown docs, extracts deliberately simple claims, appends them to a local BatPak journal, and exposes replayed current context to agents through JSON and MCP.
+texo is claim-chain memory for teams and agents. It ingests markdown, records
+typed claims in a BatPak journal, supersedes stale claims with receipts, and
+replays deterministic current context through CLI, HTTP, SSE, MCP, and static
+compile surfaces.
 
-Git tracks code diffs.
-texo tracks claim diffs.
-
-The journal is for truth.
-The CLI is for agents.
-The editor is for humans.
-The static page is the trophy case.
+Git tracks code diffs. texo tracks claim diffs.
 
 ## Quickstart
 
 ```sh
-cargo run -p texo-cli -- init --workspace demo
-cargo run -p texo-cli -- ingest sample_sources
-cargo run -p texo-cli -- agent-context --out public/agent-context.json
-cargo run -p texo-cli -- check-staleness sample_sources/stale_onboarding.md --json
-cargo run -p texo-cli -- compile --out public
+cargo run --bin texo -- init --workspace demo
+cargo run --bin texo -- ingest sample_sources
+cargo run --bin texo -- agent-context --out public/agent-context.json
+cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json
+cargo run --bin texo -- compile --out public
 ```
 
-Then run the MCP server:
-
-```sh
-cargo run -p texo-cli -- mcp
-```
-
-For a clean demo (wipes local `.texo` and regenerated `public/`):
+For a clean local run:
 
 ```sh
 just demo-fresh
 ```
 
-Multi-workspace scopes live in `.texo/config.toml` under `[workspaces.<id>]`. Use `--workspace staging` on any CLI command.
+Multi-workspace scopes live in `.texo/config.toml` under
+`[workspaces.<id>]`. Use `--workspace <id>` on any CLI command.
 
-## Demo: the messy Helios corpus (1/5 → 5/5)
+## Commands
 
-The honest test isn't a happy-path doc — it's seven contradictory, half-rotted markdown files where the *truth has moved* and a later **noise** line buries the real decision. `examples/helios/docs/` is exactly that: the deploy day changes Friday → Wednesday → Tuesday across three docs, release approval moves Alice → Bob in a raw meeting dump, storage flips Postgres → BatPak, and a rogue partner runbook contradicts the release schedule.
+- `texo init --workspace demo` creates `.texo/config.toml` and the store.
+- `texo ingest <path>` records source and claim events.
+- `texo claims`, `texo agent-context`, `texo check-staleness <path>`,
+  `texo conflicts`, and `texo verify` are replayed read surfaces.
+- `texo relate` runs the semantic relation pass when `OPENROUTER_API_KEY` is
+  present.
+- `texo compile --out public` writes the static onboarding trophy.
+- `texo serve` runs the sync HTTP memory-agent server.
+- `texo extract <doc.md>` runs the LLM extractor and writes NDJSON.
+- `texo session export <id>` writes a lane-journaled transcript to stdout.
+- `texo mcp` runs the read-only line-delimited MCP stdio server.
 
-Dropped on that corpus, the dumb v0 heuristic **inverts the truth** (it scored 1/5 — a noise line supersedes the real decision). The semantic pipeline turns it into the correct current context:
+## Single-Crate Map
+
+- `src/events/` - v2 payloads, transition machines, coordinates, IDs.
+- `src/claims/` - per-entity projections and deterministic workspace views.
+- `src/extract/` - markdown heuristics, LLM extraction, record-once caches.
+- `src/semantics/` - OpenAI-compatible semantic backends and chat builders.
+- `src/ops/` - syncbat operation handlers and the Texo effect backend.
+- `src/host/` - store opening, op composition, canonical fingerprints.
+- `src/surfaces/cli/` - CLI parsing and renderers.
+- `src/surfaces/http/` - hand-rolled sync HTTP/1.1 server/client and SSE.
+- `src/surfaces/mcp_stdio.rs` - sync MCP JSON-RPC 2.0 stdio surface.
+
+## Memory Agent
+
+Run:
 
 ```sh
-OPENROUTER_API_KEY=sk-or-... just demo-helios
+cargo run --bin texo -- serve --root . --workspace memory
 ```
 
-That runs the real pipeline end to end — AST segmentation → LLM extraction (`texo-extract`) → faithfulness gate → embed + LLM relation-judge (`texo relate`) → journal → compile — and prints the current claims + conflicts. The generated onboarding ([`examples/helios/onboarding.generated.md`](examples/helios/onboarding.generated.md)) is the trophy:
+The server exposes:
 
+- `GET /` for the UI (`ui/dist` when present, embedded fallback otherwise).
+- `POST /api/chat` for model-backed chat grounded in current claims.
+- `GET /api/memory` for the replayed memory snapshot.
+- `POST /api/session/end` to ingest a session transcript.
+- `GET /api/stream` for LiteShip-compatible SSE journal signals.
+
+Session turns are BatPak lane events. They are durable immediately, hidden from
+lane-0 claim projections, and become normal claims only after session-end
+transcript ingest. The journal is the session.
+
+## Helios Demo
+
+The messy Helios corpus in `examples/helios/docs/` contains contradictory
+deployment, ownership, and storage claims. The semantic pipeline extracts,
+relates, supersedes, and compiles it into
+[`examples/helios/onboarding.generated.md`](examples/helios/onboarding.generated.md).
+
+```sh
+OPENROUTER_API_KEY=sk-... just demo-helios
 ```
-## Current claims
-  - Deploys moved to Tuesday.                 (04_release_runbook.md:8)
-  - Bob owns release approval now.            (05_meeting_dump.md:11)
-  - Postgres stays as the relational metadata store for tenant config.
-  - The event table was replaced with BatPak's content-addressed log.
 
-## Stale claims (do not trust)
-  - "Deploys happen on Friday."     superseded …      (→ the Tuesday chain)
-  - "Deploys moved to Wednesday."   superseded by …   (Tuesday)
-  - "Alice owns release approval."  superseded by …   (Bob)
-  - "The platform uses Postgres for storage."  superseded …  (BatPak/ADR-019)
+Record-once caches live under `.texo/cache/`, so cached runs replay without
+network. The always-on frozen guard is:
 
-## Conflicts (unresolved — both claimed, neither wins)
-  - "Releases happen on Monday." vs "Releases go out on Friday."
+```sh
+cargo test --test helios_frozen
 ```
 
-Every claim carries a receipt and a source line; "stale" and "conflict" are computed from the journal, not guessed. The model runs **once** at ingest (record-once boundary) and its outputs are cached content-addressed, so replay/compile are deterministic and re-runs are instant. Design rationale + the measured findings that shaped it are in [ADR-001](ADR-001-semantic-pipeline.md).
+## What This Is Not
 
-> Needs an `OPENROUTER_API_KEY`. The first run calls the models (a few minutes) and fills the cache; later runs replay from cache. Models are configurable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`) — Claude for prod, free models for testing.
->
-> The backend is any **OpenAI-compatible endpoint**, not OpenRouter specifically: `OPENROUTER_BASE_URL` overrides the host (e.g. Qwen via DashScope compatible mode), and every role's model is overridable (`OPENROUTER_EXTRACTOR_MODEL`, `OPENROUTER_RELATER_MODEL`, `OPENROUTER_EMBED_MODEL`, `OPENROUTER_NLI_MODEL`, `OPENROUTER_RERANK_MODEL`). Qwen Cloud setup lives in [HACKATHON.md](HACKATHON.md).
->
-> **Trust note:** `extractor_cmd` is **trusted local code** that `texo ingest` executes. Review `.texo/config.toml` before ingesting an untrusted repo.
->
-> v0 records `extractor_kind` + source line on each claim. Per-model provenance and source-span byte offsets are the next event-schema revision, tracked in [ROADMAP.md](ROADMAP.md).
-
-## What this is not
-
-texo is not a database server, consensus system, Slack crawler, or Google Docs clone. It is **not a general-purpose LLM-extraction framework or a vector database**: the optional semantic pipeline is a *record-once perception layer* that writes claims into the chain — the **journal stays source truth**, and the heuristic extractor is the default. The model is perception at a record boundary, not the source of truth.
-
-It is a small domain app on top of BatPak.
-
-## The extractor is intentionally dumb (by default)
-
-v0 uses simple line heuristics. That is deliberate.
-
-The claim-chain is the point: append, receipt, replay, supersede, prove. A real LLM extractor plugs into the same seam — see the optional semantic pipeline below.
-
-Deferred and future work is tracked in [ROADMAP.md](ROADMAP.md).
-
-## State-machine framing
-
-Docs are not state.
-
-A claim-chain is closer to a single-writer app-chain for team beliefs: append-only transitions, deterministic replay, hash-committed provenance, and projections for humans and agents.
-
-No consensus is claimed. One workspace scope has one local writer. The output frontier means “replayed through local store sequence N,” not “globally agreed by a network.”
+texo is not a database server, consensus system, Slack crawler, Google Docs
+clone, vector database, or general-purpose LLM extraction framework. The model
+is optional record-once perception at append boundaries. The journal remains
+source truth.
 
 ## License
 
-Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or
+the [MIT license](LICENSE-MIT), at your option.

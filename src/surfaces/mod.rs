@@ -6,6 +6,8 @@ pub mod cli;
 pub mod bootstrap;
 /// Minimal HTTP client surface.
 pub mod http;
+/// Sync MCP stdio surface.
+pub mod mcp_stdio;
 /// OpenAI-compatible JSON edge.
 #[cfg(feature = "openrouter")]
 pub mod openai;

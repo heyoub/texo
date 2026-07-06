@@ -1,8 +1,0 @@
-error[E0599]: no method named `into_state` found for struct `ReplayReducer<Unreplayed>` in the current scope
- --> tests/compile_fail/unreplayed_into_state.rs:6:48
-  |
-6 |     let _ = ReplayReducer::<Unreplayed>::new().into_state();
-  |                                                ^^^^^^^^^^ method not found in `ReplayReducer<Unreplayed>`
-  |
-  = note: the method was found for
-          - `ReplayReducer<Replayed>`

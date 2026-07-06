@@ -31,8 +31,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt, clippy
-      # Cache compiled dependencies (reqwest/tokio/hyper/rustls/ring + the rest)
-      # so only the first run pays the full cold build; later runs are fast.
+      # Cache compiled dependencies so only the first run pays the full cold
+      # build; later runs are fast.
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@just
       - uses: taiki-e/install-action@typos-cli
@@ -40,7 +40,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - run: just verify
       - run: just demo
-      - run: just ext-package
-      # rebuild: re-enable strictness in WO-6
-      - run: cargo run --bin texo -- verify --json
+      - run: just drift
         continue-on-error: true
+      - run: just ext-package
+      - run: cargo run --bin texo -- verify --json

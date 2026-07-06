@@ -40,7 +40,7 @@ demo:
     cargo run --bin texo -- init --workspace demo
     cargo run --bin texo -- ingest sample_sources
     cargo run --bin texo -- agent-context --out public/agent-context.json
-    cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json
+    cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json || true
     cargo run --bin texo -- compile --out public
 
 demo-fresh:
@@ -100,3 +100,27 @@ ext-package:
 
 mcp:
     cargo run --bin texo -- mcp
+
+# Ingest the repo's own prose and show which architecture claims are
+# current vs superseded. Informational: always exits 0. Set
+# OPENROUTER_API_KEY for the semantic relate pass; the heuristic
+# supersession runs without it.
+drift:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --bin texo
+    TEXO="$(pwd)/target/debug/texo"
+    DIR="$(mktemp -d)"; trap 'rm -rf "$DIR"' EXIT
+    mkdir -p "$DIR/docs"
+    for f in *.md deploy/README.md hackathon/*.md; do
+      case "$f" in *generated*) continue;; esac
+      cp "$f" "$DIR/docs/${f//\//__}"
+    done
+    ( cd "$DIR" \
+      && "$TEXO" init --workspace drift \
+      && "$TEXO" ingest docs \
+      && { [ -n "${OPENROUTER_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
+      && echo "================ drift: claims ================" \
+      && "$TEXO" claims \
+      && echo "================ drift: conflicts ================" \
+      && { "$TEXO" conflicts || true; } ) || echo "drift: run failed (informational only)"

@@ -1,5 +1,7 @@
 # texo roadmap / deferred work
 
+Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
+
 Tracked, deliberately-deferred items. Each entry records *why* it was deferred
 and *what it entails*, so picking it up later needs no re-discovery.
 
@@ -43,7 +45,7 @@ each claim it produced: "this claim came from bytes X–Y of this doc."
    disagree.)
 3. **cmd seam (`extract/cmd.rs`).** Add optional `char_start`/`char_end` to
    `CmdClaimLine`; thread into `ClaimRecorded` (default when absent).
-4. **`texo-extract` (`OutputClaim`, `run_extraction`).** Add the offset fields
+4. **`texo extract` (`OutputClaim`, `run_extraction`).** Add the offset fields
    (already available on the span) and emit them in the NDJSON.
 5. **Re-bless goldens** — at least `golden_ingest__ingest_demo.snap` and
    `golden_agent_context__agent_context_demo.snap`; review each diff and justify
@@ -54,10 +56,10 @@ each claim it produced: "this claim came from bytes X–Y of this doc."
 **Risks:** replay back-compat (must test), the two extraction paths agreeing on
 field semantics, golden review, and `usize -> u32` conversion/overflow on offsets.
 
-## texo-core replay → WASM (browser replay, portable extension checker)
+## texo replay -> WASM (browser replay, portable extension checker)
 
 **Status:** deferred (post-hackathon). The full pipeline cannot target WASM —
-`reqwest::blocking` needs sockets, `extractor_cmd` spawns a subprocess, the
+the OpenAI-compatible client needs sockets, `extractor_cmd` spawns a subprocess, the
 BatPak store is real file I/O — and for cloud deployment a native binary is
 already maximally portable. But the *replay/projection core* is HTTP-free,
 subprocess-free, and float-free by design (integer ppm), so it would compile
@@ -82,3 +84,17 @@ module can consume (no BatPak store access from wasm).
   (`texo.checkTimeoutMs`, default 30s), per-file trailing-edge debounce,
   status-bar indicator, and a once-per-session notice when
   `.texo/config.toml` is missing.
+
+## Post-Rebuild Closeout Items
+
+- **batpak 0.10 bump + hostbat manifest re-mount.** Replace the interim
+  `texo-canonical-v1` fingerprint with hostbat `HostModule` manifests once
+  texo moves past the 0.9.0 HostBuilder gap
+  (freebatteryfactory/batpak#166, fixed in #169/0.10.0).
+- **MemFs-backed test stores + SimFs crash tests (0.10).** Move the heavy
+  real-store tests onto family-provided memory stores where possible, and use
+  SimFs for crash-window proofs.
+- **SSE replay/snapshot endpoints.** Add LiteShip resumption support beyond
+  the current `/api/memory` re-sync plus live `/api/stream` signal feed.
+- **texo replay -> WASM.** The existing browser replay item becomes
+  stronger once MemFs-backed stores can provide a small journal-export reader.

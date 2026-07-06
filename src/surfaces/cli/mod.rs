@@ -157,7 +157,8 @@ pub fn run() -> Result<ExitCode, TexoError> {
 fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
     match cli.command {
         Command::Init { workspace } => {
-            let mut host = TexoHost::open(cli.root.clone(), workspace.clone(), observed_at_ms())?;
+            let mut host =
+                TexoHost::open_for_init(cli.root.clone(), workspace.clone(), observed_at_ms())?;
             let output =
                 host.invoke_json("texo.workspace.init", &json!({ "workspace_id": workspace }))?;
             render::init(&cli.root, &output);
@@ -342,7 +343,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Mcp => Ok(unimplemented_command("mcp")),
+        Command::Mcp => {
+            crate::surfaces::mcp_stdio::run(&cli.root, cli.workspace.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Serve {
             addr,
             root,
@@ -499,10 +503,4 @@ pub fn observed_at_ms() -> u64 {
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     u64::try_from(millis).unwrap_or(u64::MAX)
-}
-
-#[expect(clippy::print_stderr, reason = "CLI output contract")]
-fn unimplemented_command(name: &str) -> ExitCode {
-    eprintln!("texo: '{name}' is not wired yet (rebuild in progress)");
-    ExitCode::FAILURE
 }

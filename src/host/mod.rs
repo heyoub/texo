@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use syncbat::{Core, RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
 use crate::claims::workspace::WorkspaceCache;
-use crate::config::{TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
+use crate::config::{ConfigError, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 use crate::error::TexoError;
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
@@ -71,6 +71,27 @@ impl TexoHost {
         let root = root.into();
         let workspace_id = workspace_id.into();
         let config = load_or_default_config(&root, &workspace_id)?;
+        let store = open_store_for_config(&root, &config)?;
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+    }
+
+    /// Build a runnable host for `texo.workspace.init`.
+    ///
+    /// This opener permits the target workspace to be absent from an existing
+    /// root config so init can add it.
+    ///
+    /// # Errors
+    /// Returns [`TexoError::Registry`] when `BatPak`'s payload registry is invalid;
+    /// [`TexoError::Store`] when the target store cannot be opened;
+    /// [`TexoError::Host`] when syncbat registration or build validation fails.
+    pub fn open_for_init(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        observed_at_ms: u64,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        let config = load_or_init_config(&root, &workspace_id)?;
         let store = open_store_for_config(&root, &config)?;
         Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
     }
@@ -202,14 +223,37 @@ fn load_or_default_config(root: &Path, workspace_id: &str) -> Result<WorkspaceCo
             .resolve(Some(workspace_id))
             .map_err(config_error);
     }
+    Ok(workspace_config_from_entry(
+        workspace_id,
+        WorkspaceEntry::for_id(workspace_id),
+    ))
+}
+
+fn load_or_init_config(root: &Path, workspace_id: &str) -> Result<WorkspaceConfig, TexoError> {
+    let config_path = root.join(".texo").join("config.toml");
+    if config_path.exists() {
+        let root_config = TexoRootConfig::load(&config_path).map_err(config_error)?;
+        return match root_config.resolve(Some(workspace_id)) {
+            Ok(config) => Ok(config),
+            Err(ConfigError::UnknownWorkspace(_)) => Ok(workspace_config_from_entry(
+                workspace_id,
+                WorkspaceEntry::for_id(workspace_id),
+            )),
+            Err(error) => Err(config_error(error)),
+        };
+    }
     let entry = WorkspaceEntry::for_id(workspace_id);
-    Ok(WorkspaceConfig {
+    Ok(workspace_config_from_entry(workspace_id, entry))
+}
+
+fn workspace_config_from_entry(workspace_id: &str, entry: WorkspaceEntry) -> WorkspaceConfig {
+    WorkspaceConfig {
         workspace_id: workspace_id.to_string(),
         store_path: entry.store_path,
         docs_glob: entry.docs_glob,
         extractor_cmd: entry.extractor_cmd,
         semantics: entry.semantics,
-    })
+    }
 }
 
 fn open_store_for_config(
