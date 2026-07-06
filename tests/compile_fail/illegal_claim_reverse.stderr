@@ -1,0 +1,10 @@
+error[E0308]: mismatched types
+ --> tests/compile_fail/illegal_claim_reverse.rs:6:5
+  |
+5 | fn reverse(payload: ClaimSupersededV2) -> Transition<Superseded, Current, ClaimSupersededV2> {
+  |                                           -------------------------------------------------- expected `batpak::typestate::Transition<texo::events::machines::Superseded, texo::events::machines::Current, ClaimSupersededV2>` because of return type
+6 |     supersede_claim(payload)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^ expected `Transition<Superseded, Current, ...>`, found `Transition<Current, Superseded, ...>`
+  |
+  = note: expected struct `batpak::typestate::Transition<texo::events::machines::Superseded, texo::events::machines::Current, ClaimSupersededV2>`
+             found struct `batpak::typestate::Transition<texo::events::machines::Current, texo::events::machines::Superseded, ClaimSupersededV2>`

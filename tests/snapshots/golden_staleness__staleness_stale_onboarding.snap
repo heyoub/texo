@@ -1,0 +1,45 @@
+---
+source: tests/golden_staleness.rs
+expression: report
+---
+{
+  "checked_path": "sample_sources/stale_onboarding.md",
+  "diagnostics": [
+    {
+      "claim_id": "claim_591c69e84c12",
+      "file": "sample_sources/stale_onboarding.md",
+      "line_end": 5,
+      "line_start": 5,
+      "message": "Claim appears stale: superseded by claim_2e3b9fcf2e18 at local seq 13.",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "severity": "warning",
+      "source": {
+        "line_start": 3,
+        "path": "sample_sources/meeting_notes.md"
+      },
+      "superseded_by": "claim_2e3b9fcf2e18"
+    },
+    {
+      "claim_id": "claim_956c3fdbcd20",
+      "file": "sample_sources/stale_onboarding.md",
+      "line_end": 7,
+      "line_start": 7,
+      "message": "Claim appears stale: superseded by claim_854bccbe8ce8 at local seq 14.",
+      "receipt": {
+        "event_id": "[event-id]",
+        "sequence": "[sequence]"
+      },
+      "severity": "warning",
+      "source": {
+        "line_start": 5,
+        "path": "sample_sources/meeting_notes.md"
+      },
+      "superseded_by": "claim_854bccbe8ce8"
+    }
+  ],
+  "replayed_through_sequence": "[frontier]",
+  "workspace_id": "demo"
+}

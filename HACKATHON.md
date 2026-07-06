@@ -1,5 +1,7 @@
 # Qwen Cloud hackathon — Track 1: MemoryAgent
 
+Rebuild note: supersedes, see [ADR-003](ADR-003-single-crate-rebuild.md).
+
 Working doc for the [Global AI Hackathon Series with Qwen Cloud](https://qwencloud-hackathon.devpost.com/)
 submission. **Deadline: Jul 9, 2026, 2:00pm PT.**
 
@@ -26,7 +28,7 @@ Track-1 requirement → texo mechanism:
 - [x] Public repo (`github.com/heyoub/texo`)
 - [x] Open-source license, detectable in About (LICENSE-MIT + LICENSE-APACHE, matches Cargo.toml)
 - [ ] Uses Qwen models on Qwen Cloud (DashScope OpenAI-compatible mode — see gaps below)
-- [x] The agent itself (Track 1 wants an *agent*, not a library — `crates/texo-agent`, see below)
+- [x] The agent itself (Track 1 wants an *agent*, not a library — `texo serve`)
 - [ ] Backend deployed on Alibaba Cloud + short proof recording + judge-visible code file using Alibaba Cloud APIs
 - [ ] Architecture diagram (Qwen Cloud ↔ backend ↔ journal ↔ agent surfaces)
 - [ ] ~3-min public demo video (YouTube/Vimeo)
@@ -47,15 +49,15 @@ description must say so explicitly.
 2. **Validate the pipeline on Qwen models.** Extractor + relater prompts
    demand strict JSON; verify with the config below. Oracle: the key-gated
    live tests + the Helios corpus (must stay 5/5).
-3. ~~**The memory agent.**~~ **Done pending Qwen validation (Jul 5).**
-   `crates/texo-agent` — an axum HTTP chat agent as a new thin consumer of
-   texo (sibling to the MCP surface — texo stays the substrate, journal stays
-   source of truth):
+3. ~~**The memory agent.**~~ **Done pending Qwen validation (Jul 5), rebuilt
+   Jul 6 as one binary.** `texo serve` is a sync HTTP chat agent and thin
+   consumer of the claim-chain (sibling to the MCP surface — texo stays the
+   substrate, journal stays source of truth):
    - every turn injects the replayed *current* claims as trusted memory (with
      `path:line` + byte-span receipts) and lists superseded claims as
      "outdated — do not trust";
    - `POST /api/session/end` → transcript rendered to `sessions/<id>.md` →
-     ingest (`texo-extract` LLM path via `extractor_cmd`) → relate;
+     ingest (`texo extract` LLM path via `extractor_cmd`) → relate;
    - changed preferences get *superseded*, and the one-file UI at `/` shows
      the chain live (current, struck-through stale + what replaced it,
      conflicts). Chat model via `OPENROUTER_CHAT_MODEL`; remaining work is
@@ -115,8 +117,8 @@ relater is the hardest judgment in the pipeline, so downgrade it last.)
 flowchart TB
   UI["Browser: chat + live memory UI<br/>(single self-contained page)"]
   subgraph ECS["Alibaba Cloud ECS — ap-southeast-1 (provisioned via deploy/)"]
-    AGENT["texo-agent (axum)<br/>session transcripts in memory"]
-    EXTRACT["texo-extract<br/>record-once LLM extractor + faithfulness gate"]
+    AGENT["texo serve<br/>sync HTTP memory agent"]
+    EXTRACT["texo extract<br/>record-once LLM extractor + faithfulness gate"]
     JOURNAL[("BatPak journal (.texo store)<br/>append-only · hash-chained · receipts")]
   end
   subgraph QWEN["Qwen Cloud — DashScope compatible mode"]
@@ -186,15 +188,15 @@ unless time allows.
   `cosine_threshold` retuned 0.78 → 0.65 (measured Helios same-subject floor
   ≈ 0.70; rationale at the constant). Directly serves the memory agent:
   repeated relate passes over a growing memory corpus stay affordable.
-- **Jul 5:** `texo-agent` landed — the Track-1 memory agent (axum server +
-  one-file vanilla-JS UI). Chat is grounded in the replayed current claims
+- **Jul 5:** `texo-agent` landed — the Track-1 memory agent (later folded into
+  `texo serve` in WO-4) with a one-file vanilla-JS UI. Chat is grounded in the replayed current claims
   (every injected memory carries `path:line` + byte-span receipts;
   superseded claims are injected as "outdated — do not trust"); session end
   renders the transcript to `sessions/<id>.md`, ingests through the
-  `texo-extract` seam, and runs the relate pass so the next session sees the
+  `texo extract` seam, and runs the relate pass so the next session sees the
   updated chain. Self-bootstraps its workspace (`extractor_cmd` +
   `[semantics] enabled`), honors the record-once cache env vars, keeps
-  BatPak I/O on `spawn_blocking` behind texo-core APIs. Real-store tests
+  BatPak I/O behind typed texo host APIs. Real-store tests
   only (cross-session supersession, span receipts slicing the transcript,
   HTTP surface in-process); the LLM call is isolated behind a unit-tested
   pure request builder.
@@ -202,3 +204,33 @@ unless time allows.
   change → recall; supersession with receipts and cited recall all verified
   against real models). Transcript ingestion narrowed to user utterances only
   — the assistant's restatements were journaling every fact twice.
+- **Jul 6:** WO-0 flattened the workspace into one `texo` crate and binary,
+  added BatPak-family risk spikes, and ported schema-independent modules.
+- **Jul 6:** WO-1 introduced event schema v2, transition machines,
+  per-entity projections, session lanes, and deterministic `WorkspaceView`
+  assembly.
+- **Jul 6:** WO-2a added the unified `TexoError`, syncbat `OpEnv`,
+  `TexoEffectBackend`, host composition, and the first six operations.
+- **Jul 6:** WO-2b replaced the old HTTP/model stack with a hand-rolled sync
+  HTTP/1.1 client, retry loop, OpenAI-compatible edge, semantic backends, and
+  chat builders.
+- **Jul 6:** WO-3 wired the CLI through the operation kit, restored read and
+  compile operations, and re-blessed schema-v2 goldens deliberately.
+- **Jul 6:** WO-4 landed session lanes, the sync HTTP server, LiteShip SSE,
+  `texo serve`, and the 0.9.0 canonical interface fingerprint.
+- **Jul 6:** WO-5 landed the LLM extractor, record-once caches, `texo extract`,
+  `texo relate`, and the Helios frozen trophy guard on the new stack.
+- **Jul 6:** WO-6 closes the rebuild with sync MCP stdio, `just drift`, the
+  one-binary deploy path, ADR-003, and removal of the old crates.
+
+## Deployment update (Jul 6 rebuild closeout)
+
+The deployed service is now one binary: `/opt/texo/bin/texo serve`. The systemd
+unit still uses the `texo-agent` service name for operational continuity, but
+the workspace and env file move to `/opt/texo/`. The deploy script stops the
+old service, preserves the durable journal workspace, migrates a live env file
+when present, and ships only the `texo` binary.
+
+texo remains on batpak family 0.9.0 by choice for the submission closeout; see
+ROADMAP.md for the 0.10 hostbat manifest remount, MemFs/SimFs test stores, and
+SSE replay work.

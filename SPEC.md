@@ -1,85 +1,73 @@
-# texo — product spec (v0)
+# texo product spec
 
-**Codename:** `ctxvc` (context version control). The shipped binary is `texo`.
+Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 
 ## Thesis
 
-Teams treat markdown as state. It is not. Prose rots; claims supersede each other. texo is a tiny **claim-chain** on BatPak: ingest docs, append typed events with receipts, replay deterministic projection, expose current context to agents.
+Teams treat markdown as state. It is not. Prose rots; claims supersede each
+other. texo is a local claim-chain on BatPak: ingest docs, append typed events
+with receipts, replay deterministic projections, and expose current context to
+agents.
 
-Git tracks code diffs. texo tracks **claim diffs**.
+## Event Catalog V2
 
-## Demo narrative (Friday → Tuesday)
+All domain events are BatPak payloads in category `0xE`.
 
-1. `deploy_schedule.md` says deploys happen on **Friday**.
-2. `decision_deploy_day.md` records the team **moved deploys to Tuesday**.
-3. Ingest appends sources, claims, and a supersession edge.
-4. Replay marks the Friday claim **superseded**; Tuesday claim is **current**.
-5. `stale_onboarding.md` still says Friday — `check-staleness` flags exact lines.
-6. `agent-context` and MCP tools return replayed current claims with frontier + receipts.
+| Type | Version | Payload | Entity |
+|---|---:|---|---|
+| 1 | 2 | `SourceObservedV2` | `source:{source_id}` |
+| 2 | 2 | `ClaimRecordedV2` | `claim:{claim_id}` |
+| 3 | 2 | `ClaimSupersededV2` | `claim:{old_claim_id}` |
+| 4 | 2 | `ConflictOpenedV2` | `conflict:{conflict_id}` |
+| 5 | 2 | `OnboardingCompiledV2` | `projection:onboarding` |
+| 6 | 1 | `ConflictResolvedV2` | `conflict:{conflict_id}` |
+| 7 | 1 | `WorkspaceInitializedV2` | `workspace-meta:{workspace_id}` |
+| 8 | 1 | `SessionTurnV1` | `session:{session_id}` on `session_lane(id)` |
 
-Courtroom tests in `crates/texo-core/tests/` prove each step.
+Claim and conflict state changes carry `TransitionRecordV1` evidence with a
+deterministic blake3 transition id and explicit causes.
 
-## Event catalog (five payloads)
+## Demo Narrative
 
-| Kind | Purpose |
-|---|---|
-| `SourceObserved` | Hash-committed markdown source |
-| `ClaimRecorded` | Claim extracted from a source (heuristic by default, or the optional LLM extractor) |
-| `ClaimSuperseded` | Old claim replaced by new (same subject) |
-| `ClaimConflictDetected` | Two current claims contradict (heuristic detector, or the semantic relate pass) |
-| `OnboardingCompiled` | Audit trail when static compile runs |
-
-All appends go through BatPak; every commit verifies `AppendReceipt` before surfacing `ReceiptView`.
-
-Extractors compose at the ingest seam: default `heuristic-v1`, optional per-workspace `extractor_cmd` (NDJSON subprocess — e.g. the `texo-extract` LLM extractor), or test injection via `ExtractClaimsFn` — no trait hierarchy.
-
-## Semantic pipeline (v1, optional)
-
-Enabled per-workspace via `[semantics]`. AST segmentation → LLM extraction (`texo-extract`) → deterministic faithfulness gate → embedding prefilter + LLM relation-judge (`texo relate`) → journal. The model runs **once** at ingest (record-once boundary); its outputs are cached content-addressed and become journaled events, so replay/compile stay deterministic. Heuristic extraction remains the default. See [`ADR-001`](ADR-001-semantic-pipeline.md).
-
-## Multi-workspace (v1)
-
-Single [`.texo/config.toml`](.texo/config.toml) holds named scopes:
-
-```toml
-default_workspace = "demo"
-
-[workspaces.demo]
-store_path = ".texo/store"
-docs_glob = "sample_sources/**/*.md"
-
-[workspaces.staging]
-store_path = ".texo/stores/staging"
-docs_glob = "sample_sources/**/*.md"
-# extractor_cmd = "python3 scripts/extract-identity.py"
-```
-
-CLI: global `--workspace <id>`. VS Code: `texo.workspaceId`.
+1. `deploy_schedule.md` says deploys happen on Friday.
+2. `decision_deploy_day.md` says deploys moved to Tuesday.
+3. Ingest records sources and claims.
+4. Supersession records transition evidence from the Friday claim to Tuesday.
+5. Replay marks Friday superseded and Tuesday current.
+6. Staleness, agent context, MCP, and static compile report current state with
+   provenance and receipts.
 
 ## Surfaces
 
-- **CLI** (`texo`) — ingest, claims, relate, staleness, compile, conflicts, verify
-- **MCP** — read-only tools over replay (spawn_blocking for BatPak I/O)
-- **Memory agent** (`texo-agent`) — HTTP chat agent whose persistent memory is the claim-chain: current claims injected as trusted context, session-end transcript → ingest → relate
-- **VS Code extension** — thin shell over CLI diagnostics
-- **Static compile** — `public/` trophy case (onboarding, claims JSON, index)
+- CLI: `init`, `ingest`, `claims`, `supersede`, `check-staleness`,
+  `agent-context`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
+  `extract`, `session export`, `host fingerprint`, and `mcp`.
+- HTTP: `GET /`, `POST /api/chat`, `GET /api/memory`,
+  `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
+  8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
+- SSE: `hello` signal on connect, `journal` signal per workspace event,
+  keep-alive comments on quiet ticks, and `lastEventId` accepted but ignored.
+- MCP: line-delimited JSON-RPC 2.0 stdio with `initialize`, `tools/list`, and
+  `tools/call` for four read-only tools: `check_staleness`,
+  `get_current_claims`, `get_agent_context`, and `explain_claim`.
+- Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
-## Non-goals (v0)
+## Semantic Pipeline
 
-- Database server, consensus, Slack crawler, Google Docs clone
-- A general-purpose vector database or semantic-search engine (embeddings are an internal, optional prefilter for relating claims — not a queryable index)
-- A general-purpose LLM-extraction framework (the optional semantic extractor is record-once perception into the claim-chain; the heuristic extractor is the default)
-- BatPak projection reactor framework or distributed replication
+The default extractor is heuristic. When configured, `texo extract` runs an
+OpenAI-compatible proposer, faithfulness gate, and record-once cache. `texo
+relate` embeds current claims, clusters related claims, and asks the relation
+judge for supersession/conflict verdicts. Model outputs are cached by content
+identity before becoming journal events.
 
-## Invariants
+## Non-Goals
 
-See [`INVARIANTS.md`](INVARIANTS.md) for the full map. Key laws:
+- Database server, consensus system, Slack crawler, or Google Docs clone.
+- General-purpose vector database or semantic-search engine.
+- General-purpose LLM extraction framework.
+- Distributed replication.
+- Async runtime stack; the rebuilt binary is sync-first by design.
 
-- Replay errors propagate (no silent partial state)
-- Receipts verify against store after append
-- Compile journals `OnboardingCompiled`
-- Conflicts are contradictory **current** claims, not supersession edges
+## Test Anchors
 
-## Architecture
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`AGENTS.md`](AGENTS.md).
+See [INVARIANTS.md](INVARIANTS.md) for the invariant map and test anchors.

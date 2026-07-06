@@ -9,3 +9,15 @@ reason = "Use proper error propagation in library and CLI code"
 [[disallowed-methods]]
 path = "std::env::set_var"
 reason = "Not thread-safe; use config structs"
+
+[[disallowed-methods]]
+path = "std::env::remove_var"
+reason = "Not thread-safe; use config structs (batpak BANNED-003)"
+
+[[disallowed-methods]]
+path = "std::thread::spawn"
+reason = "Use std::thread::Builder::new().name(...).spawn() for fallible, named thread creation (batpak Bug 7 post-mortem)"
+
+[[disallowed-methods]]
+path = "std::mem::forget"
+reason = "Leaking resources is a bug, not a feature; use ManuallyDrop if truly needed (batpak BANNED-002)"

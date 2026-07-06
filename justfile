@@ -5,23 +5,23 @@ fmt-check:
     cargo fmt --all --check
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --all-targets -- -D warnings
 
 test:
-    cargo test --workspace
+    cargo test
 
 test-invariants:
-    cargo test -p texo-core --test thesis_meta --test replay_truth --test staleness_courtroom --test agent_context --test idempotent_replay
+    cargo test --test projection_laws --test compile_fail --test spike_family
 
 test-hygiene:
     #!/usr/bin/env bash
     set -euo pipefail
-    if rg -n 'mock|fake_store' crates/ --glob '!**/deny.toml' 2>/dev/null; then
-      echo "test-hygiene: mock/fake BatPak stores are banned in crates/"
+    if rg -n 'mock|fake_store' src/ tests/ 2>/dev/null; then
+      echo "test-hygiene: mock/fake BatPak stores are banned in src/ tests/"
       exit 1
     fi
-    if rg -n '\.unwrap\(\)' crates/texo-core/src --glob '!**/tests/**' 2>/dev/null; then
-      echo "test-hygiene: unwrap() banned in texo-core library code"
+    if rg -n '\.unwrap\(\)' src/ 2>/dev/null; then
+      echo "test-hygiene: unwrap() banned in src/"
       exit 1
     fi
 
@@ -34,14 +34,14 @@ typos:
 verify: fmt-check clippy test-hygiene deny typos test
 
 test-prop:
-    PROPTEST_CASES=256 cargo test -p texo-core properties
+    PROPTEST_CASES=256 cargo test properties
 
 demo:
-    cargo run -p texo-cli -- init --workspace demo
-    cargo run -p texo-cli -- ingest sample_sources
-    cargo run -p texo-cli -- agent-context --out public/agent-context.json
-    cargo run -p texo-cli -- check-staleness sample_sources/stale_onboarding.md --json
-    cargo run -p texo-cli -- compile --out public
+    cargo run --bin texo -- init --workspace demo
+    cargo run --bin texo -- ingest sample_sources
+    cargo run --bin texo -- agent-context --out public/agent-context.json
+    cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json || true
+    cargo run --bin texo -- compile --out public
 
 demo-fresh:
     #!/usr/bin/env bash
@@ -56,8 +56,8 @@ demo-helios:
     set -euo pipefail
     : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY to run the semantic demo}"
     # Build the LLM extractor and the CLI.
-    cargo build -q -p texo-extract -p texo-cli
-    EXTRACT="$(pwd)/target/debug/texo-extract"
+    cargo build -q --bin texo
+    EXTRACT="$(pwd)/target/debug/texo extract"
     TEXO="./target/debug/texo"
     # Record-once caches live OUTSIDE the wiped journal, so a re-run replays the
     # captured model output instantly and deterministically (first run fills them).
@@ -99,4 +99,28 @@ ext-package:
     npx --yes @vscode/vsce package
 
 mcp:
-    cargo run -p texo-cli -- mcp
+    cargo run --bin texo -- mcp
+
+# Ingest the repo's own prose and show which architecture claims are
+# current vs superseded. Informational: always exits 0. Set
+# OPENROUTER_API_KEY for the semantic relate pass; the heuristic
+# supersession runs without it.
+drift:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --bin texo
+    TEXO="$(pwd)/target/debug/texo"
+    DIR="$(mktemp -d)"; trap 'rm -rf "$DIR"' EXIT
+    mkdir -p "$DIR/docs"
+    for f in *.md deploy/README.md hackathon/*.md; do
+      case "$f" in *generated*) continue;; esac
+      cp "$f" "$DIR/docs/${f//\//__}"
+    done
+    ( cd "$DIR" \
+      && "$TEXO" init --workspace drift \
+      && "$TEXO" ingest docs \
+      && { [ -n "${OPENROUTER_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
+      && echo "================ drift: claims ================" \
+      && "$TEXO" claims \
+      && echo "================ drift: conflicts ================" \
+      && { "$TEXO" conflicts || true; } ) || echo "drift: run failed (informational only)"

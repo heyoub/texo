@@ -1,4 +1,4 @@
-# Deploying texo-agent to Alibaba Cloud
+# Deploying texo to Alibaba Cloud
 
 This directory is the submission's **proof-of-Alibaba-Cloud code**: the
 backend is provisioned with the [Alibaba Cloud CLI](https://github.com/aliyun/aliyun-cli)
@@ -10,12 +10,12 @@ backend is provisioned with the [Alibaba Cloud CLI](https://github.com/aliyun/al
 aliyun configure                       # AccessKey auth, region ap-southeast-1
 KEY_PAIR=<your-ecs-keypair> ./provision-ecs.sh
 ./deploy.sh <public-ip>                # build, ship, systemd enable --now
-ssh root@<public-ip> 'vi /opt/texo-agent/env && systemctl restart texo-agent'
+ssh root@<public-ip> 'vi /opt/texo/env && systemctl restart texo-agent'
 ```
 
 - `provision-ecs.sh` — security group + ECS instance via Alibaba Cloud APIs
-- `deploy.sh` — release build, scp binaries, install + start systemd unit
-- `texo-agent.service` — systemd unit (journal workspace under `/opt/texo-agent`)
+- `deploy.sh` — release build, scp the single `texo` binary, install + start systemd unit
+- `texo-agent.service` — systemd unit (journal workspace under `/opt/texo`)
 - `env.example` — Qwen Cloud (DashScope compatible-mode) model configuration
 
 ## Proof-recording checklist (per hackathon rules)

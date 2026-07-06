@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>texo memory agent</title>
+<style>
+body{margin:0;min-height:100vh;background:#101418;color:#e7eaee;font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:880px;margin:0 auto;padding:32px 20px}
+h1{font-size:22px;margin:0 0 8px}
+p{color:#a8b0ba}
+textarea{width:100%;min-height:120px;border:1px solid #2d3642;border-radius:8px;background:#171d24;color:#e7eaee;padding:12px;font:inherit}
+button{margin-top:10px;border:1px solid #2d3642;border-radius:8px;background:#202833;color:#e7eaee;padding:9px 13px;font:inherit}
+pre{white-space:pre-wrap;background:#171d24;border:1px solid #2d3642;border-radius:8px;padding:12px}
+</style>
+</head>
+<body>
+<main>
+<h1>texo memory agent</h1>
+<p>Fallback UI. Use <code>/api/memory</code>, <code>/api/chat</code>, and <code>/api/session/end</code>.</p>
+<textarea id="message" placeholder="Say something"></textarea>
+<br>
+<button id="send">Send</button>
+<button id="end">End session</button>
+<pre id="out"></pre>
+</main>
+<script>
+const sessionId = "s-" + Date.now().toString(36);
+const out = document.getElementById("out");
+async function post(path, body) {
+  const response = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const text = await response.text();
+  out.textContent = text;
+}
+document.getElementById("send").onclick = () => post("/api/chat", {session_id:sessionId, message:document.getElementById("message").value});
+document.getElementById("end").onclick = () => post("/api/session/end", {session_id:sessionId});
+fetch("/api/memory").then((r) => r.text()).then((text) => { out.textContent = text; }).catch((error) => { out.textContent = String(error); });
+</script>
+</body>
+</html>

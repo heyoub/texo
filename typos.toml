@@ -17,6 +17,6 @@ extend-exclude = [
     "extensions/vscode/out/",
     "target/",
     "public/",
-    "crates/texo-core/tests/snapshots/",
+    "tests/snapshots/",
     "Cargo.lock",
 ]

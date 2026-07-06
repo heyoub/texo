@@ -5,15 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/opt/texo-agent/env
-Environment=TEXO_AGENT_ROOT=/opt/texo-agent/workspace
+EnvironmentFile=/opt/texo/env
+Environment=TEXO_AGENT_ROOT=/opt/texo/workspace
 Environment=TEXO_AGENT_ADDR=0.0.0.0:8787
-Environment=TEXO_EXTRACT_BIN=/opt/texo-agent/bin/texo-extract
-ExecStart=/opt/texo-agent/bin/texo-agent
+ExecStart=/opt/texo/bin/texo serve
 Restart=on-failure
 RestartSec=2
 # The journal is the durable state; give it a stable home.
-WorkingDirectory=/opt/texo-agent/workspace
+WorkingDirectory=/opt/texo/workspace
 
 [Install]
 WantedBy=multi-user.target

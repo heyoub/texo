@@ -1,0 +1,16 @@
+error[E0277]: the trait bound `ExternalState: batpak::typestate::transition::sealed::Sealed` is not satisfied
+ --> tests/compile_fail/sealed_state_marker.rs:3:41
+  |
+3 | impl batpak::typestate::StateMarker for ExternalState {}
+  |                                         ^^^^^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `batpak::typestate::transition::sealed::Sealed` is not implemented for `ExternalState`
+ --> tests/compile_fail/sealed_state_marker.rs:1:1
+  |
+1 | struct ExternalState;
+  | ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `StateMarker`
+ --> $CARGO/batpak-$VERSION/src/typestate/transition.rs
+  |
+  | pub trait StateMarker: sealed::Sealed {}
+  |                        ^^^^^^^^^^^^^^ required by this bound in `StateMarker`

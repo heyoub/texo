@@ -1,47 +1,61 @@
 # Agent Guide
 
-## Repo map
+Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 
-- [`crates/texo-core/`](crates/texo-core/) — domain logic, BatPak journal adapter, replay, staleness, semantic trait seams + relate logic
-- [`crates/texo-cli/`](crates/texo-cli/) — `texo` binary (incl. `texo relate`)
-- [`crates/texo-mcp/`](crates/texo-mcp/) — read-only MCP stdio tools
-- [`crates/texo-semantics/`](crates/texo-semantics/) — optional ML backends (OpenAI-compatible hosted API, base-URL overridable — OpenRouter default; local ONNX opt-in)
-- [`crates/texo-extract/`](crates/texo-extract/) — LLM extractor binary (`extract_via_cmd` seam) + record-once cache
-- [`crates/texo-agent/`](crates/texo-agent/) — memory-agent HTTP server (`texo-agent` binary): chat + live memory UI over the claim-chain, session-end transcript ingest + relate
-- [`extensions/vscode/`](extensions/vscode/) — thin diagnostics shell over CLI
-- [`sample_sources/`](sample_sources/) — demo markdown inputs
-- [`examples/helios/`](examples/helios/) — the messy dogfood corpus + ground truth + committed trophy
+<!-- codebase-memory-mcp:start -->
+# Codebase Knowledge Graph (codebase-memory-mcp)
 
-## Canonical commands
+This project uses codebase-memory-mcp to maintain a knowledge graph of the codebase.
+ALWAYS prefer MCP graph tools over grep/glob/file-search for code discovery.
 
-- `just verify` — fmt, clippy, test-hygiene, cargo-deny, typos, full test suite
-- `just test-prop` — property tests with `PROPTEST_CASES=256`
-- `just demo` — spec demo flow
-- `just demo-fresh` — wipe `.texo` + `public/` then demo (non-zero ingest)
-- `just demo-helios` — semantic pipeline end-to-end on the messy Helios corpus (needs `OPENROUTER_API_KEY`)
-- `just ext-package` — build VS Code `.vsix`
-- `just test-invariants` — courtroom invariant tests
+## Priority Order
+1. `search_graph` - find functions, classes, routes, variables by pattern
+2. `trace_path` - trace who calls a function or what it calls
+3. `get_code_snippet` - read specific function/class source code
+4. `query_graph` - run Cypher queries for complex patterns
+5. `get_architecture` - high-level project summary
 
-## Disk quota (agent / CI)
+## When to fall back to grep/glob
+- Searching for string literals, error messages, config values
+- Searching non-code files (Dockerfiles, shell scripts, configs)
+- When MCP tools return insufficient results
+<!-- codebase-memory-mcp:end -->
 
-If builds fail with `Disk quota exceeded (errno 122)`:
+## Repo Map
 
-```sh
-cargo clean                                    # drop target/ artifacts (often multi-GB)
-export TMPDIR="$PWD/target/tmp"                # avoid sandbox /tmp quota
-mkdir -p "$TMPDIR"
-export CARGO_TARGET_DIR="$PWD/target"           # keep cargo output in-repo
-```
+- `src/events/` - event schema v2, transitions, coordinates, IDs.
+- `src/claims/` - projections, statuses, `WorkspaceView`, session log.
+- `src/extract/` - markdown, heuristic and LLM extraction, caches.
+- `src/semantics/` - OpenAI-compatible model backends and chat.
+- `src/ops/` - syncbat op handlers, effect backend, operation environment.
+- `src/host/` - store opening, invocation, fingerprints.
+- `src/surfaces/` - CLI, HTTP, SSE, MCP stdio, bootstrap, model edge.
+- `tests/` - real-store integration, projection, HTTP, MCP, Helios, goldens.
+- `sample_sources/` - small demo corpus.
+- `examples/helios/` - dogfood corpus, ground truth, generated trophy.
+- `extensions/vscode/` - thin CLI-based diagnostics shell.
 
-Also prune `/tmp/cursor-sandbox-cache` if the agent sandbox is full.
+## Canonical Commands
 
-## Boundaries
+- `just verify` - fmt-check, clippy, hygiene, cargo-deny, typos, full tests.
+- `just test-invariants` - projection, compile-fail, and BatPak-family spikes.
+- `just demo` / `just demo-fresh` - spec demo flow.
+- `just demo-helios` - semantic Helios run, requires `OPENROUTER_API_KEY`
+  unless caches fully satisfy it.
+- `just drift` - informational texo-on-texo prose audit; always exits 0.
+- `cargo run --bin texo -- <command>` - the only runtime binary.
 
-- BatPak imports only in [`crates/texo-core/src/journal/`](crates/texo-core/src/journal/)
-- CLI/MCP/extension never import `batpak` directly
-- Current state is always rebuilt from journal replay
-- MCP tool handlers run BatPak I/O on `spawn_blocking` worker threads
+## Rules
 
-## Product spec
+- Stay on the single crate; do not reintroduce workspace crates.
+- Do not add tokio, reqwest, axum, tower, rmcp, schemars, or anyhow.
+- Keep code sync-first and thread names explicit when spawning.
+- No `unwrap()`, `panic!`, `todo!`, `unimplemented!`, `dbg!`, or unsanctioned
+  stdout/stderr prints.
+- Integration tests use real BatPak stores.
+- The words banned by `just test-hygiene` must not appear in `src/` or `tests/`.
 
-See [`SPEC.md`](SPEC.md) for event catalog, demo narrative, and non-goals.
+## Product Spec
+
+See [SPEC.md](SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
+[INVARIANTS.md](INVARIANTS.md).
