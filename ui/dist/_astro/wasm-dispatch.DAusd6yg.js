@@ -1,0 +1,21 @@
+import{r as e}from"./defaults.BiwXaGHJ.js";import{cr as t,lr as n}from"./page.DJh9l2y9.js";function r(e){return Math.fround(e)}function i(e,t){let n=e.length;if(n===0)return 0;let i=r(t),a=t=>r(e[t]);if(n<=4)return n===1?0:n===2?+(i>=a(1)):n===3?i>=a(2)?2:+(i>=a(1)):i>=a(3)?3:i>=a(2)?2:+(i>=a(1));let o=0,s=n;for(;o<s;){let e=o+s>>>1;a(e)<=i?o=e+1:s=e}return o>0?o-1:0}var a=`/**
+ * Evaluate which discrete state a value falls into based on thresholds.
+ * f32-canonical (Math.fround); thresholds sorted ascending; value below all
+ * thresholds maps to the first state.
+ *
+ * Canonical kernel: packages/core/src/boundary-f32.ts (rawIndexF32).
+ *
+ * @param {number[]} thresholds
+ * @param {string[]} states
+ * @param {number} value
+ * @returns {string}
+ */
+function evaluateThresholds(thresholds, states, value) {
+  const v = Math.fround(value);
+  for (let i = thresholds.length - 1; i >= 0; i--) {
+    if (v >= Math.fround(thresholds[i])) {
+      return states[i] || states[0] || "";
+    }
+  }
+  return states[0] || "";
+}`;function o(e,t,n,r){let i=n<=0?1:n,a=Math.min(Math.max(0,r|0),255),o=Math.sqrt(e/i),s=t/(2*Math.sqrt(e*i)),c=new Float32Array(a+1);for(let e=0;e<=a;e++){let t=e/a;if(t<=0)c[e]=0;else if(t>=1)c[e]=1;else if(s<1){let n=o*Math.sqrt(1-s*s);c[e]=1-Math.exp(-s*o*t)*(Math.cos(n*t)+s*o/n*Math.sin(n*t))}else if(s===1)c[e]=1-(1+o*t)*Math.exp(-o*t);else{let n=Math.sqrt(s*s-1),r=-o*(s+n),i=-o*(s-n),a=i/(i-r),l=-r/(i-r);c[e]=1-(a*Math.exp(r*t)+l*Math.exp(i*t))}}return c}function s(e,t){let n=t.length,r=new Uint32Array(n);for(let a=0;a<n;a++)r[a]=i(e,t[a]);return r}function c(e){let t=e.length;if(t===0)return e;let n=0;for(let r=0;r<t;r++){let t=e[r];t<0&&(t=0,e[r]=0),n+=t}if(n>0){let r=1/n;for(let n=0;n<t;n++)e[n]=e[n]*r}return e}var l={springCurve:o,batchBoundaryEval:s,blendNormalize:c},u=e=>{for(let n of[`spring_curve`,`batch_boundary_eval`,`blend_normalize`])if(typeof e[n]!=`function`)throw t(`wasm.exports`,`WASM module missing required export: "${n}". Available exports: [${Object.keys(e).join(`, `)}]`);let n=e.memory;if(!(typeof n==`object`&&n&&`buffer`in n&&Reflect.get(n,`buffer`)instanceof ArrayBuffer))throw t(`wasm.exports`,`WASM module missing required memory export. Available exports: [${Object.keys(e).join(`, `)}]`);return e},d=null;function f(e){return{status:`ok`,available:e}}function p(){return{status:`unavailable`}}function m(e){return{status:`error`,error:e}}function h(){try{return typeof WebAssembly>`u`?p():f(typeof WebAssembly.instantiate==`function`&&typeof WebAssembly.Module==`function`)}catch(e){return m(e)}}function g(e){return e.status===`ok`?e.available:!1}function _(t){return{springCurve(e,n,r,i){let a=Math.min(Math.max(0,i|0),255),o=t.spring_curve(e,n,r,a),s=new Float32Array(t.memory.buffer,o,a+1);return new Float32Array(s)},batchBoundaryEval(n,r){let i=n.length,a=r.length,o=e,s=o+i*4,c=s+a*4,l=t.memory.buffer.byteLength;if(c>l){let e=Math.ceil((c-l)/65536);t.memory.grow(e)}let u=new Float32Array(t.memory.buffer,o,i);for(let e=0;e<i;e++)u[e]=n[e];let d=new Float32Array(t.memory.buffer,s,a);for(let e=0;e<a;e++)d[e]=r[e];let f=t.batch_boundary_eval(o,i,s,a),p=new Uint32Array(t.memory.buffer,f,a);return new Uint32Array(p)},blendNormalize(n){let r=n.length;if(r===0)return n;let i=e,a=i+r*4,o=t.memory.buffer.byteLength;if(a>o){let e=Math.ceil((a-o)/65536);t.memory.grow(e)}new Float32Array(t.memory.buffer,i,r).set(n),t.blend_normalize(i,r);let s=new Float32Array(t.memory.buffer,i,r);return n.set(s),n}}}var v=null,y=null,b=null,x=0,S={detect(){return g(h())},load(e){if(!S.detect())return Promise.reject(Error(`WebAssembly is not available in this environment`));if(v!==null)return Promise.resolve(v);if(y!==null)return y;let t=++x,r={};b=r;let i=(async()=>{try{let r;if(typeof e==`string`){let t=await fetch(e);if(!t.ok)throw n(`wasm.fetch`,`Failed to fetch WASM module: ${t.status} ${t.statusText}`,{path:e});r=await t.arrayBuffer()}else r=e;let{instance:i}=await WebAssembly.instantiate(r,{env:{}});return d=u(i.exports),v=_(d),x===t?v:(d=null,v=null,l)}finally{b===r&&(y=null,b=null)}})();return y=i,i},kernels(){return v??l},isLoaded(){return v!==null},unload(){x+=1,d=null,v=null,y=null,b=null}};export{a as n,i as r,S as t};

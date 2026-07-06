@@ -1,0 +1,613 @@
+---
+import Base from '../layouts/Base.astro';
+import { satelliteAttrs } from '@czap/astro';
+import { layout } from '../boundaries/layout.boundaries.ts';
+---
+
+<Base title="texo — claim-chain memory">
+  <!-- SSE satellite: texo's /api/stream sends signal frames only, so this
+       container never receives patch HTML — it exists to hold the stream
+       connection. Signals bubble up as czap:signal CustomEvents. -->
+  <div id="stream" data-czap-stream-url="/api/stream" client:stream hidden></div>
+
+  <div class="app" {...satelliteAttrs({ boundary: layout })}>
+    <section class="panel chat" aria-label="Chat">
+      <header class="panel__head">
+        <h2>Chat</h2>
+        <button id="end-session" class="btn btn--ghost" title="Journal this session's turns as claims">
+          End session
+        </button>
+      </header>
+      <div class="chat__messages" id="chat-messages">
+        <p class="chat__hint">
+          Teach texo a fact, change your mind in a later session, then ask it
+          back — the answer carries the supersession chain.
+        </p>
+      </div>
+      <form class="chat__form" id="chat-form">
+        <input
+          id="chat-input"
+          class="chat__field"
+          type="text"
+          placeholder="Tell texo something worth remembering…"
+          autocomplete="off"
+        />
+        <button type="submit" class="btn">Send</button>
+      </form>
+    </section>
+
+    <aside class="rail">
+      <section class="panel memory" aria-label="Memory">
+        <header class="panel__head">
+          <h2>Memory</h2>
+          <span class="panel__meta" id="memory-meta"></span>
+        </header>
+        <h3 class="memory__label memory__label--current">Current</h3>
+        <ul class="memory__list" id="mem-current"><li class="memory__empty">nothing yet</li></ul>
+        <h3 class="memory__label memory__label--stale">Superseded</h3>
+        <ul class="memory__list" id="mem-stale"><li class="memory__empty">nothing yet</li></ul>
+        <h3 class="memory__label memory__label--conflict">Conflicts</h3>
+        <ul class="memory__list" id="mem-conflicts"><li class="memory__empty">none open</li></ul>
+      </section>
+
+      <section class="panel receipts" aria-label="Receipts">
+        <header class="panel__head">
+          <h2>Receipts</h2>
+        </header>
+        <dl class="receipts__grid">
+          <dt>Interface</dt>
+          <dd><code id="host-fingerprint" title="">…</code></dd>
+          <dt>Schema</dt>
+          <dd><code id="host-schema">…</code></dd>
+          <dt>Handshake</dt>
+          <dd id="host-handshake">waiting for stream…</dd>
+          <dt>Binary</dt>
+          <dd id="host-version">…</dd>
+        </dl>
+      </section>
+    </aside>
+
+    <section class="panel timeline" aria-label="Journal timeline">
+      <header class="panel__head">
+        <h2>Journal</h2>
+        <span class="panel__meta">append-only · sequence-keyed · live</span>
+      </header>
+      <ol class="timeline__list" id="timeline"></ol>
+    </section>
+  </div>
+</Base>
+
+<style>
+  .app {
+    display: grid;
+    gap: 1rem;
+    align-items: start;
+  }
+
+  /* ── Adaptive grid via @quantize ── */
+  @quantize layout {
+    mobile {
+      .app { grid-template-columns: 1fr; }
+      .chat__messages { max-height: 45dvh; }
+    }
+    desktop {
+      .app {
+        grid-template-columns: minmax(0, 1fr) 22rem;
+        grid-template-areas:
+          'chat rail'
+          'timeline timeline';
+      }
+      .chat { grid-area: chat; }
+      .rail { grid-area: rail; }
+      .timeline { grid-area: timeline; }
+      .chat__messages { max-height: 58dvh; }
+    }
+  }
+
+  .panel {
+    background: var(--czap-panel, #ffffff);
+    border: 1px solid var(--czap-border, #e7e5e4);
+    border-radius: 0.75rem;
+    padding: 1rem;
+  }
+
+  .panel__head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .panel__head h2 {
+    font-size: 0.9375rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .panel__meta {
+    font-size: 0.71875rem;
+    color: var(--czap-muted, #78716c);
+    margin-left: auto;
+  }
+
+  .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-width: 0;
+  }
+
+  /* ── Chat ── */
+  .chat {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .chat .panel__head { margin-bottom: 0.5rem; }
+  .chat .panel__head button { margin-left: auto; }
+
+  .chat__messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    padding: 0.25rem 0.125rem;
+    min-height: 16rem;
+  }
+
+  .chat__hint {
+    color: var(--czap-muted, #78716c);
+    font-size: 0.875rem;
+    font-style: italic;
+    align-self: center;
+    text-align: center;
+    max-width: 30rem;
+    margin-top: 2rem;
+  }
+
+  .chat__form {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .chat__field {
+    flex: 1;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--czap-border, #e7e5e4);
+    border-radius: 0.5rem;
+    font-size: 0.9375rem;
+    background: var(--czap-surface, #faf9f6);
+    color: var(--czap-text, #1c1917);
+    outline: none;
+    min-width: 0;
+  }
+  .chat__field:focus {
+    border-color: var(--czap-primary, #4338ca);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--czap-primary, #4338ca) 25%, transparent);
+  }
+
+  .btn {
+    appearance: none;
+    border: none;
+    background: var(--czap-primary, #4338ca);
+    color: #ffffff;
+    padding: 0.5rem 1.1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn:disabled { opacity: 0.5; cursor: wait; }
+
+  .btn--ghost {
+    background: transparent;
+    color: var(--czap-muted, #78716c);
+    border: 1px solid var(--czap-border, #e7e5e4);
+    font-weight: 500;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+  }
+  .btn--ghost:hover {
+    color: var(--czap-conflict, #dc2626);
+    border-color: var(--czap-conflict, #dc2626);
+    filter: none;
+  }
+
+  /* Message bubbles + citation chips (built by JS). */
+  .chat__messages :global(.msg) {
+    padding: 0.6rem 0.85rem;
+    border-radius: 0.6rem;
+    font-size: 0.9375rem;
+    max-width: 85%;
+    overflow-wrap: anywhere;
+  }
+  .chat__messages :global(.msg--user) {
+    align-self: flex-end;
+    background: color-mix(in srgb, var(--czap-primary, #4338ca) 14%, var(--czap-panel, #ffffff));
+    border: 1px solid color-mix(in srgb, var(--czap-primary, #4338ca) 30%, transparent);
+  }
+  .chat__messages :global(.msg--agent) {
+    align-self: flex-start;
+    background: var(--czap-surface, #faf9f6);
+    border: 1px solid var(--czap-border, #e7e5e4);
+    white-space: pre-wrap;
+  }
+  .chat__messages :global(.msg--system) {
+    align-self: center;
+    max-width: 100%;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--czap-muted, #78716c);
+    background: transparent;
+    border: 1px dashed var(--czap-border, #e7e5e4);
+  }
+  .chat__messages :global(.msg__chips) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+  }
+  .chat__messages :global(.chip) {
+    font-size: 0.6875rem;
+    font-family: ui-monospace, monospace;
+    padding: 0.1rem 0.45rem;
+    border-radius: 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--czap-secondary, #0d9488) 45%, transparent);
+    color: var(--czap-secondary, #0d9488);
+    cursor: help;
+    white-space: nowrap;
+  }
+
+  /* ── Memory ── */
+  .memory__label {
+    font-size: 0.71875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0.75rem 0 0.35rem;
+  }
+  .memory__label--current { color: var(--czap-current, #16a34a); }
+  .memory__label--stale { color: var(--czap-stale, #d97706); }
+  .memory__label--conflict { color: var(--czap-conflict, #dc2626); }
+
+  .memory__list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+  }
+  .memory__list :global(li) {
+    padding: 0.45rem 0.6rem;
+    border-radius: 0.5rem;
+    background: var(--czap-surface, #faf9f6);
+    border-left: 3px solid var(--czap-border, #e7e5e4);
+    overflow-wrap: anywhere;
+  }
+  #mem-current :global(li) { border-left-color: var(--czap-current, #16a34a); }
+  #mem-stale :global(li) { border-left-color: var(--czap-stale, #d97706); }
+  #mem-conflicts :global(li) { border-left-color: var(--czap-conflict, #dc2626); }
+
+  .memory__list :global(.memory__empty) {
+    color: var(--czap-muted, #78716c);
+    font-style: italic;
+    background: transparent;
+    border-left-color: transparent;
+  }
+  .memory__list :global(.claim__src) {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.6875rem;
+    font-family: ui-monospace, monospace;
+    color: var(--czap-muted, #78716c);
+  }
+  .memory__list :global(.claim__arrow) {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: 0.71875rem;
+    color: var(--czap-stale, #d97706);
+  }
+
+  /* ── Receipts ── */
+  .receipts__grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    align-items: baseline;
+  }
+  .receipts__grid dt {
+    color: var(--czap-muted, #78716c);
+    font-size: 0.71875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .receipts__grid dd { min-width: 0; overflow-wrap: anywhere; }
+  .receipts__grid code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.75rem;
+  }
+  .receipts__grid :global([data-ok='true']) { color: var(--czap-current, #16a34a); }
+  .receipts__grid :global([data-ok='false']) { color: var(--czap-conflict, #dc2626); }
+
+  /* ── Timeline ── */
+  .timeline__list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.8125rem;
+    font-family: ui-monospace, monospace;
+    max-height: 14rem;
+    overflow-y: auto;
+  }
+  .timeline__list :global(li) {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 0.375rem;
+    background: var(--czap-surface, #faf9f6);
+  }
+  .timeline__list :global(.tl__seq) {
+    color: var(--czap-primary, #4338ca);
+    min-width: 4.5rem;
+  }
+  .timeline__list :global(.tl__kind) { color: var(--czap-text, #1c1917); }
+</style>
+
+<script>
+  // ── texo wire client ──
+  // All /api/* routes are texo's own sync Rust server (same origin).
+  // Live updates arrive as czap:signal CustomEvents bubbled from the
+  // client:stream satellite; frames were verified against src/surfaces/http/sse.rs.
+
+  const KINDS: Record<number, string> = {
+    0xe001: 'source observed',
+    0xe002: 'claim recorded',
+    0xe003: 'claim superseded',
+    0xe004: 'conflict opened',
+    0xe005: 'onboarding compiled',
+    0xe006: 'conflict resolved',
+    0xe007: 'workspace initialized',
+    0xe008: 'session turn',
+  };
+
+  let sessionId = newSessionId();
+  let hostFingerprint: string | null = null;
+
+  function newSessionId(): string {
+    return `ui-${crypto.randomUUID()}`;
+  }
+
+  const $ = (id: string): HTMLElement => {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`missing #${id}`);
+    return el;
+  };
+
+  // ── Receipts: host identity ──
+  async function loadHost(): Promise<void> {
+    try {
+      const res = await fetch('/api/host');
+      const body = await res.json();
+      hostFingerprint = body.fingerprint ?? null;
+      const fp = $('host-fingerprint');
+      fp.textContent = hostFingerprint ? `${hostFingerprint.slice(0, 16)}…` : 'unavailable';
+      fp.title = hostFingerprint ?? '';
+      $('host-schema').textContent = body.schema ?? '?';
+      $('host-version').textContent = `texo ${body.version ?? '?'} · workspace ${body.workspace_id ?? '?'}`;
+      checkHandshake();
+    } catch {
+      $('host-fingerprint').textContent = 'unreachable';
+    }
+  }
+
+  let helloFingerprint: string | null = null;
+  function checkHandshake(): void {
+    if (!helloFingerprint || !hostFingerprint) return;
+    const ok = helloFingerprint === hostFingerprint;
+    const el = $('host-handshake');
+    el.textContent = ok
+      ? '✓ stream hello matches /api/host'
+      : '✗ fingerprint mismatch between stream and host';
+    el.dataset.ok = String(ok);
+  }
+
+  // ── Memory sidebar ──
+  let memoryTimer: number | undefined;
+  function scheduleMemory(): void {
+    window.clearTimeout(memoryTimer);
+    memoryTimer = window.setTimeout(() => void loadMemory(), 250);
+  }
+
+  function claimSource(claim: Record<string, unknown>): string {
+    const path = typeof claim.source_path === 'string' ? claim.source_path : '';
+    const line = typeof claim.line === 'number' ? `:${claim.line}` : '';
+    return path ? `${path}${line}` : '';
+  }
+
+  function renderList(el: HTMLElement, items: HTMLLIElement[], empty: string): void {
+    el.replaceChildren(
+      ...(items.length
+        ? items
+        : [Object.assign(document.createElement('li'), { className: 'memory__empty', textContent: empty })]),
+    );
+  }
+
+  async function loadMemory(): Promise<void> {
+    try {
+      const res = await fetch('/api/memory');
+      const body = await res.json();
+
+      const current = (body.current ?? []).map((claim: Record<string, unknown>) => {
+        const li = document.createElement('li');
+        li.textContent = String(claim.text ?? '');
+        const src = document.createElement('span');
+        src.className = 'claim__src';
+        src.textContent = claimSource(claim);
+        li.append(src);
+        return li;
+      });
+      renderList($('mem-current'), current, 'nothing yet');
+
+      const stale = (body.stale ?? []).map((claim: Record<string, unknown>) => {
+        const li = document.createElement('li');
+        li.textContent = String(claim.text ?? '');
+        const arrow = document.createElement('span');
+        arrow.className = 'claim__arrow';
+        arrow.textContent = `↳ superseded by: ${String(claim.superseded_by_text ?? claim.superseded_by ?? '?')}`;
+        li.append(arrow);
+        return li;
+      });
+      renderList($('mem-stale'), stale, 'nothing yet');
+
+      const conflicts = (body.conflicts ?? []).map((conflict: Record<string, unknown>) => {
+        const li = document.createElement('li');
+        li.textContent = JSON.stringify(conflict);
+        return li;
+      });
+      renderList($('mem-conflicts'), conflicts, 'none open');
+
+      $('memory-meta').textContent = `replayed through seq ${body.replayed_through_sequence ?? '?'}`;
+    } catch {
+      $('memory-meta').textContent = 'memory unreachable';
+    }
+  }
+
+  // ── Timeline ──
+  const TIMELINE_CAP = 50;
+  function timelineRow(sequence: number, kindBits: number): void {
+    const li = document.createElement('li');
+    const seq = document.createElement('span');
+    seq.className = 'tl__seq';
+    seq.textContent = `#${sequence}`;
+    const kind = document.createElement('span');
+    kind.className = 'tl__kind';
+    kind.textContent = KINDS[kindBits] ?? `0x${kindBits.toString(16)}`;
+    li.append(seq, kind);
+    const list = $('timeline');
+    list.prepend(li);
+    while (list.children.length > TIMELINE_CAP) list.lastChild?.remove();
+  }
+
+  // ── Chat ──
+  function bubble(kind: 'user' | 'agent' | 'system', text: string): HTMLDivElement {
+    const div = document.createElement('div');
+    div.className = `msg msg--${kind}`;
+    div.textContent = text;
+    const messages = $('chat-messages');
+    document.querySelector('.chat__hint')?.remove();
+    messages.append(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+
+  function citationChips(target: HTMLElement, memoryUsed: Record<string, unknown>[]): void {
+    if (!memoryUsed.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'msg__chips';
+    for (const claim of memoryUsed) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = String(claim.claim_id ?? 'claim');
+      chip.title = `${String(claim.text ?? '')} — ${claimSource(claim)}`;
+      wrap.append(chip);
+    }
+    target.append(wrap);
+  }
+
+  async function sendChat(message: string): Promise<void> {
+    bubble('user', message);
+    const send = document.querySelector<HTMLButtonElement>('#chat-form button');
+    if (send) send.disabled = true;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        bubble('system', String(body.error ?? `chat failed (${res.status})`));
+        return;
+      }
+      const reply = bubble('agent', String(body.reply ?? ''));
+      citationChips(reply, Array.isArray(body.memory_used) ? body.memory_used : []);
+    } catch (error) {
+      bubble('system', `network error: ${String(error)}`);
+    } finally {
+      if (send) send.disabled = false;
+    }
+  }
+
+  async function endSession(): Promise<void> {
+    const btn = document.querySelector<HTMLButtonElement>('#end-session');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch('/api/session/end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        bubble('system', String(body.error ?? `session end failed (${res.status})`));
+        return;
+      }
+      const relate = body.relate ?? {};
+      bubble(
+        'system',
+        `session journaled — ${body.claims_recorded ?? 0} claim(s) recorded, ` +
+          `relate ${relate.status ?? 'skipped'}` +
+          (relate.status === 'ran'
+            ? ` (${relate.supersessions ?? 0} supersession(s), ${relate.conflicts ?? 0} conflict(s))`
+            : ''),
+      );
+      sessionId = newSessionId();
+      scheduleMemory();
+    } catch (error) {
+      bubble('system', `network error: ${String(error)}`);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ── Wiring ──
+  document.addEventListener('czap:signal', (event) => {
+    const data = (event as CustomEvent).detail as Record<string, unknown>;
+    if (data?.kind === 'hello') {
+      helloFingerprint = typeof data.fingerprint === 'string' ? data.fingerprint : null;
+      checkHandshake();
+      return;
+    }
+    if (data?.kind === 'journal') {
+      timelineRow(Number(data.sequence), Number(data.kind_bits));
+      scheduleMemory();
+    }
+  });
+
+  document.addEventListener('czap:stream-connected', () => {
+    $('stream-status').dataset.live = 'true';
+  });
+  document.addEventListener('czap:stream-reconnecting', () => {
+    $('stream-status').dataset.live = 'false';
+  });
+
+  $('chat-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const input = $('chat-input') as HTMLInputElement;
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    void sendChat(message);
+  });
+
+  $('end-session').addEventListener('click', () => void endSession());
+
+  void loadHost();
+  void loadMemory();
+</script>

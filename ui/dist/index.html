@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="en" data-theme="dark" data-astro-cid-hkbrpulz><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>texo — claim-chain memory</title><link rel="stylesheet" href="/_astro/index.CQYiZk-d.css"><script type="module" src="/_astro/page.DJh9l2y9.js"></script><script>(function(){
+  if (window.__CZAP_OFF__) return;
+  function writeDetectState(next) {
+    const safe = Object.freeze(Object.assign({}, next));
+    try {
+      Object.defineProperty(window, '__CZAP_DETECT__', {
+        value: safe,
+        configurable: true,
+        enumerable: false,
+        writable: false
+      });
+    } catch (_) {
+      try {
+        window.__CZAP_DETECT__ = safe;
+      } catch (_) {}
+    }
+  }
+
+  // Cap-tier ladder — the canonical headProbeCapTier (@czap/detect), emitted
+  // verbatim. The provisional and the deferred GPU-probe upgrade both call THIS
+  // one function, so the provisional tier can never be a divergent hand-copy.
+  const headProbeCapTier = function headProbeCapTier(caps) {
+    if (caps.prefersReducedMotion && caps.gpu <= 1)
+        return 'static';
+    if (caps.gpu === 0)
+        return 'styled';
+    if (caps.gpu === 1)
+        return caps.cores >= 4 && caps.memory >= 4 ? 'reactive' : 'styled';
+    if (caps.gpu === 2) {
+        if (caps.prefersReducedMotion)
+            return 'reactive';
+        return caps.cores >= 4 && caps.memory >= 4 ? 'animated' : 'reactive';
+    }
+    if (caps.webgpu && caps.cores >= 4 && caps.memory >= 4) {
+        return caps.prefersReducedMotion ? 'animated' : 'gpu';
+    }
+    if (caps.prefersReducedMotion)
+        return 'reactive';
+    return 'animated';
+};
+
+  try {
+    const h = document.documentElement;
+    const w = window.innerWidth || 0;
+    const cores = navigator.hardwareConcurrency || 2;
+    const mem = navigator.deviceMemory || 4;
+    const touch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const dpr = window.devicePixelRatio || 1;
+
+    h.style.setProperty('--czap-vw', w + 'px');
+    h.style.setProperty('--czap-cores', String(cores));
+    h.style.setProperty('--czap-dpr', String(dpr));
+    h.setAttribute('data-czap-touch', String(touch));
+    // The reduced-motion PREFERENCE — distinct from data-czap-motion, which is the
+    // motion capability TIER (animations/transitions/.../none) emitted by
+    // EdgeTier.tierDataAttributes server-side and refined by the GPU-probe upgrade.
+    h.setAttribute('data-czap-reduced-motion', motion ? 'reduce' : 'no-preference');
+    h.setAttribute('data-czap-scheme', dark ? 'dark' : 'light');
+
+    // Provisional tier — NO GPU probe is available inline (it needs a WebGL
+    // context, which the deferred upgrade script creates). Feed canonical
+    // headProbeCapTier the inline primitives with the conservative GPU fallback
+    // (1 = integrated, the same default the runtime sweep uses when the
+    // renderer probe is unavailable) so the provisional value IS canonical for a
+    // GPU-unknown device. The upgrade script supplies the real GPU tier and
+    // re-runs the same function, replacing data-czap-tier.
+    const capTier = headProbeCapTier({
+      gpu: 1,
+      cores: cores,
+      memory: mem,
+      webgpu: false,
+      prefersReducedMotion: motion
+    });
+    h.setAttribute('data-czap-tier', capTier);
+    h.setAttribute('data-czap-tier-provisional', 'true');
+
+    writeDetectState({
+      tier: capTier,
+      provisional: true
+    });
+  } catch(e) {}
+})();</script></head><body data-astro-cid-hkbrpulz><nav class="texo-nav" data-astro-cid-hkbrpulz><span class="texo-nav__brand" data-astro-cid-hkbrpulz>texo</span><span class="texo-nav__tag" data-astro-cid-hkbrpulz>claim-chain memory · every answer carries its receipts</span><div class="texo-nav__spacer" data-astro-cid-hkbrpulz></div><span class="texo-nav__status" id="stream-status" data-live="false" data-astro-cid-hkbrpulz>stream</span><button class="texo-theme-toggle" id="theme-toggle" data-astro-cid-hkbrpulz>Theme</button></nav><main class="texo-main" data-astro-cid-hkbrpulz><div id="stream" data-czap-stream-url="/api/stream" client:stream hidden data-astro-cid-lcdefpme></div><div class="app" class="czap-satellite" data-czap-boundary="{&quot;id&quot;:&quot;fnv1a:9fa73731&quot;,&quot;input&quot;:&quot;viewport.width&quot;,&quot;thresholds&quot;:[0,768],&quot;states&quot;:[&quot;mobile&quot;,&quot;desktop&quot;],&quot;hysteresis&quot;:40}" data-czap-directive="satellite" data-czap-state="mobile" data-astro-cid-lcdefpme><section class="panel chat" aria-label="Chat" data-astro-cid-lcdefpme><header class="panel__head" data-astro-cid-lcdefpme><h2 data-astro-cid-lcdefpme>Chat</h2><button id="end-session" class="btn btn--ghost" title="Journal this session's turns as claims" data-astro-cid-lcdefpme>End session</button></header><div class="chat__messages" id="chat-messages" data-astro-cid-lcdefpme><p class="chat__hint" data-astro-cid-lcdefpme>Teach texo a fact, change your mind in a later session, then ask it back — the answer carries the supersession chain.</p></div><form class="chat__form" id="chat-form" data-astro-cid-lcdefpme><input id="chat-input" class="chat__field" type="text" placeholder="Tell texo something worth remembering…" autocomplete="off" data-astro-cid-lcdefpme><button type="submit" class="btn" data-astro-cid-lcdefpme>Send</button></form></section><aside class="rail" data-astro-cid-lcdefpme><section class="panel memory" aria-label="Memory" data-astro-cid-lcdefpme><header class="panel__head" data-astro-cid-lcdefpme><h2 data-astro-cid-lcdefpme>Memory</h2><span class="panel__meta" id="memory-meta" data-astro-cid-lcdefpme></span></header><h3 class="memory__label memory__label--current" data-astro-cid-lcdefpme>Current</h3><ul class="memory__list" id="mem-current" data-astro-cid-lcdefpme><li class="memory__empty" data-astro-cid-lcdefpme>nothing yet</li></ul><h3 class="memory__label memory__label--stale" data-astro-cid-lcdefpme>Superseded</h3><ul class="memory__list" id="mem-stale" data-astro-cid-lcdefpme><li class="memory__empty" data-astro-cid-lcdefpme>nothing yet</li></ul><h3 class="memory__label memory__label--conflict" data-astro-cid-lcdefpme>Conflicts</h3><ul class="memory__list" id="mem-conflicts" data-astro-cid-lcdefpme><li class="memory__empty" data-astro-cid-lcdefpme>none open</li></ul></section><section class="panel receipts" aria-label="Receipts" data-astro-cid-lcdefpme><header class="panel__head" data-astro-cid-lcdefpme><h2 data-astro-cid-lcdefpme>Receipts</h2></header><dl class="receipts__grid" data-astro-cid-lcdefpme><dt data-astro-cid-lcdefpme>Interface</dt><dd data-astro-cid-lcdefpme><code id="host-fingerprint" title="" data-astro-cid-lcdefpme>…</code></dd><dt data-astro-cid-lcdefpme>Schema</dt><dd data-astro-cid-lcdefpme><code id="host-schema" data-astro-cid-lcdefpme>…</code></dd><dt data-astro-cid-lcdefpme>Handshake</dt><dd id="host-handshake" data-astro-cid-lcdefpme>waiting for stream…</dd><dt data-astro-cid-lcdefpme>Binary</dt><dd id="host-version" data-astro-cid-lcdefpme>…</dd></dl></section></aside><section class="panel timeline" aria-label="Journal timeline" data-astro-cid-lcdefpme><header class="panel__head" data-astro-cid-lcdefpme><h2 data-astro-cid-lcdefpme>Journal</h2><span class="panel__meta" data-astro-cid-lcdefpme>append-only · sequence-keyed · live</span></header><ol class="timeline__list" id="timeline" data-astro-cid-lcdefpme></ol></section></div></main><script type="module">document.getElementById(`theme-toggle`)?.addEventListener(`click`,()=>{let e=document.documentElement,t=e.getAttribute(`data-theme`)===`dark`?`light`:`dark`;e.setAttribute(`data-theme`,t)});</script></body></html><script type="module" src="/_astro/index.astro_astro_type_script_index_0_lang.c9WGBaJu.js"></script>

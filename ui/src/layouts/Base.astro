@@ -1,0 +1,154 @@
+---
+interface Props {
+  title?: string;
+}
+const { title = 'texo' } = Astro.props;
+---
+
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <style>
+      /* ── Token layer ──
+         Each named @token block resolves against an export in
+         src/tokens/colors.tokens.ts and compiles to a :root custom
+         property (--czap-<token-name>). */
+      @token primary {}
+      @token secondary {}
+      @token surface {}
+      @token panel {}
+      @token text {}
+      @token muted {}
+      @token border {}
+      @token current {}
+      @token stale {}
+      @token conflict {}
+
+      /* ── Theme layer ── */
+      @theme dark {
+        --czap-primary: #818cf8;
+        --czap-secondary: #2dd4bf;
+        --czap-surface: #0f1115;
+        --czap-panel: #171a21;
+        --czap-text: #e7e5e4;
+        --czap-muted: #a8a29e;
+        --czap-border: #2b2f38;
+        --czap-current: #4ade80;
+        --czap-stale: #fbbf24;
+        --czap-conflict: #f87171;
+      }
+
+      /* ── Reset + base ── */
+      *, *::before, *::after {
+        box-sizing: border-box;
+        margin: 0;
+      }
+
+      html {
+        font-family: system-ui, -apple-system, sans-serif;
+        line-height: 1.55;
+      }
+
+      body {
+        background: var(--czap-surface, #faf9f6);
+        color: var(--czap-text, #1c1917);
+        min-height: 100dvh;
+      }
+
+      /* ── Top bar ── */
+      .texo-nav {
+        display: flex;
+        align-items: center;
+        gap: 0.875rem;
+        padding: 0.75rem 1.25rem;
+        border-bottom: 1px solid var(--czap-border, #e7e5e4);
+        background: var(--czap-panel, #ffffff);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        flex-wrap: wrap;
+      }
+
+      .texo-nav__brand {
+        font-weight: 800;
+        font-size: 1.125rem;
+        letter-spacing: -0.02em;
+        color: var(--czap-primary, #4338ca);
+      }
+
+      .texo-nav__tag {
+        font-size: 0.75rem;
+        color: var(--czap-muted, #78716c);
+      }
+
+      .texo-nav__spacer {
+        flex: 1;
+      }
+
+      /* Stream status dot — JS flips data-live on czap stream lifecycle. */
+      .texo-nav__status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        font-size: 0.75rem;
+        color: var(--czap-muted, #78716c);
+      }
+      .texo-nav__status::before {
+        content: '';
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--czap-muted, #78716c);
+      }
+      .texo-nav__status[data-live='true']::before {
+        background: var(--czap-current, #16a34a);
+      }
+
+      .texo-theme-toggle {
+        appearance: none;
+        border: 1px solid var(--czap-border, #e7e5e4);
+        background: var(--czap-panel, #ffffff);
+        color: var(--czap-text, #1c1917);
+        padding: 0.3rem 0.7rem;
+        border-radius: 0.375rem;
+        font-size: 0.8125rem;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+      .texo-theme-toggle:hover {
+        background: var(--czap-primary, #4338ca);
+        color: #ffffff;
+      }
+
+      .texo-main {
+        max-width: 80rem;
+        margin: 0 auto;
+        padding: 1.25rem;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="texo-nav">
+      <span class="texo-nav__brand">texo</span>
+      <span class="texo-nav__tag">claim-chain memory · every answer carries its receipts</span>
+      <div class="texo-nav__spacer"></div>
+      <span class="texo-nav__status" id="stream-status" data-live="false">stream</span>
+      <button class="texo-theme-toggle" id="theme-toggle">Theme</button>
+    </nav>
+
+    <main class="texo-main">
+      <slot />
+    </main>
+
+    <script>
+      const btn = document.getElementById('theme-toggle');
+      btn?.addEventListener('click', () => {
+        const html = document.documentElement;
+        const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+      });
+    </script>
+  </body>
+</html>
