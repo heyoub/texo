@@ -42,6 +42,9 @@ enum Command {
         path: PathBuf,
         #[arg(long)]
         dry_run: bool,
+        /// Abort before all appends if any source fails planning.
+        #[arg(long)]
+        strict: bool,
         #[arg(long)]
         json: bool,
     },
@@ -176,19 +179,31 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
         Command::Ingest {
             path,
             dry_run,
+            strict,
             json,
         } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
             let output = host.invoke_json(
                 "texo.ingest.run",
-                &json!({"path": path, "dry_run": dry_run, "observed_at_ms": observed_at_ms()}),
+                &json!({
+                    "path": path,
+                    "dry_run": dry_run,
+                    "strict": strict,
+                    "observed_at_ms": observed_at_ms()
+                }),
             )?;
             if json {
                 render::json(&output)?;
             } else {
                 render::ingest(&output);
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(
+                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                },
+            )
         }
         Command::Claims { subject, json } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;

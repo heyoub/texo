@@ -30,7 +30,11 @@ pub fn init(root: &std::path::Path, value: &Value) {
 }
 
 /// Print ingest summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "CLI output and warning contract"
+)]
 pub fn ingest(value: &Value) {
     println!(
         "ingested {} sources, {} claims ({})",
@@ -47,6 +51,20 @@ pub fn ingest(value: &Value) {
             .and_then(Value::as_str)
             .unwrap_or_default()
     );
+    if value.get("empty").and_then(Value::as_bool) == Some(true) {
+        eprintln!("warning: source root exists but contains no markdown sources");
+    }
+    if let Some(skipped) = value.get("skipped").and_then(Value::as_array) {
+        for row in skipped {
+            eprintln!(
+                "warning: skipped {} ({})",
+                row.get("path").and_then(Value::as_str).unwrap_or("unknown"),
+                row.get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("source.io")
+            );
+        }
+    }
 }
 
 /// Print claims in the old four-line block format.

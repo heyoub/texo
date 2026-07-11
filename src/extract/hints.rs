@@ -45,8 +45,11 @@ const KEYWORDS: &[(&str, u32)] = &[
 
 /// Derive hints from a raw markdown line.
 pub fn hints_from_line(line: &str) -> Option<ClaimHints> {
+    if !super::heuristics::is_claim_line(line) {
+        return None;
+    }
     let normalized = normalize_line(line);
-    if normalized.is_empty() || !super::heuristics::is_claim_line(line) {
+    if normalized.is_empty() {
         return None;
     }
 

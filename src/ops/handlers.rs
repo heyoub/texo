@@ -21,7 +21,9 @@ use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
 use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
 use crate::error::TexoError;
-use crate::events::coordinate::{entity_for_claim, entity_for_conflict, scope_for_workspace};
+use crate::events::coordinate::{
+    entity_for_claim, entity_for_conflict, entity_for_workspace_meta, scope_for_workspace,
+};
 use crate::events::ids::{claim_id_from_parts, ClaimId, SourceId, WorkspaceId};
 use crate::events::machines::{
     transition_record, TransitionCauseV1, CLAIM_EDGES, CLAIM_MACHINE, CONFLICT_EDGES,
@@ -44,6 +46,8 @@ use crate::semantics::pipeline::{
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
 const CLAIM_EXPLAIN_PROJECTION: &str = "texo.claim.explain.v2";
 const RELATE_PREFILTER: f32 = 0.60;
+const MAX_INLINE_SOURCE_FAILURES: usize = 256;
+const MAX_SOURCE_FAILURE_DETAIL_CHARS: usize = 512;
 #[cfg(feature = "openrouter")]
 const ENV_RELATE_CACHE: &str = "TEXO_RELATE_CACHE";
 #[cfg(feature = "openrouter")]
@@ -89,11 +93,32 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             detail: error.to_string(),
             source: Some(Box::new(error)),
         })?;
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let config_unchanged = std::fs::read(&config_path)
+            .ok()
+            .is_some_and(|existing| existing == raw.as_bytes());
+        if !config_unchanged {
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&config_path, raw.as_bytes())?;
         }
-        std::fs::write(&config_path, raw.as_bytes())?;
         let config_digest_hex = blake3::hash(raw.as_bytes()).to_hex().to_string();
+        let journal_digest_matches = env::with(|op_env| {
+            let entity = entity_for_workspace_meta(&input.workspace_id);
+            let mut entries = op_env.store.by_entity(&entity);
+            entries.sort_by_key(batpak::store::IndexEntry::global_sequence);
+            let Some(entry) = entries.last() else {
+                return Ok::<_, TexoError>(false);
+            };
+            let raw = op_env.store.read_raw(entry.event_id())?;
+            let payload: WorkspaceInitializedV2 = batpak::encoding::from_bytes(&raw.event.payload)
+                .map_err(|error| TexoError::Decode {
+                    entity,
+                    detail: error.to_string(),
+                })?;
+            Ok(payload.config_digest_hex == config_digest_hex)
+        })??;
+        let already_initialized = config_unchanged && journal_digest_matches;
 
         append_json(
             "texo.workspace.init",
@@ -116,6 +141,7 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         Ok(WorkspaceInitOutput {
             workspace_id: input.workspace_id,
             config_path: config_path.to_string_lossy().to_string(),
+            already_initialized,
             receipt,
         })
     })
@@ -134,6 +160,10 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "ingest planning and append phases stay visibly separated to prove strict atomicity"
+)]
 fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.ingest.run", || {
         let input: IngestRunInput = parse_input("texo.ingest.run", input)?;
@@ -149,7 +179,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         })?;
         let mut view = assemble_current_view()?;
         let path = resolve_path(&root, &input.path);
-        let sources = plan_sources(
+        let plan = plan_sources(
             "texo.ingest.run",
             &root,
             &path,
@@ -158,19 +188,35 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             config.extractor_cmd.as_deref(),
             &view,
         )?;
+        if !plan.skipped.is_empty() && (input.strict || plan.succeeded == 0 && !plan.empty) {
+            let sample =
+                serde_json::to_string(&plan.skipped.iter().take(8).cloned().collect::<Vec<_>>())?;
+            let (_, artifact) =
+                settle_source_failures(&root, input.observed_at_ms, plan.skipped.clone())?;
+            return Err(TexoError::Source {
+                path: path.to_string_lossy().to_string(),
+                detail: format!(
+                    "{} source(s) failed during planning; strict={} good_sources={}; sample={sample}; artifact={}",
+                    plan.skipped.len(),
+                    input.strict,
+                    plan.succeeded,
+                    artifact.as_deref().unwrap_or("inline")
+                ),
+            });
+        }
 
         let mut source_count = 0_u32;
         let mut claim_count = 0_u32;
         let mut supersede_count = 0_u32;
 
         if input.dry_run {
-            for source in &sources {
+            for source in &plan.sources {
                 source_count = source_count.saturating_add(1);
                 let planned = u32::try_from(source.claims.len()).unwrap_or(u32::MAX);
                 claim_count = claim_count.saturating_add(planned);
             }
         } else {
-            for source in &sources {
+            for source in &plan.sources {
                 append_json(
                     "texo.ingest.run",
                     cx,
@@ -190,7 +236,8 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             }
 
             view = assemble_current_view()?;
-            let new_claims = sources
+            let new_claims = plan
+                .sources
                 .iter()
                 .flat_map(|source| source.claims.iter().cloned())
                 .collect::<Vec<_>>();
@@ -211,12 +258,25 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             }
         }
 
+        let outcome = if plan.skipped.is_empty() {
+            IngestCompletion::Complete
+        } else {
+            IngestCompletion::Partial
+        };
+        let skipped_total = plan.skipped.len();
+        let (skipped, skipped_artifact) =
+            settle_source_failures(&root, input.observed_at_ms, plan.skipped)?;
         Ok(IngestRunOutput {
+            outcome,
             workspace_id,
             sources_observed: source_count,
             claims_recorded: claim_count,
             claims_superseded: supersede_count,
             dry_run: input.dry_run,
+            empty: plan.empty,
+            skipped,
+            skipped_total,
+            skipped_artifact,
             receipts: if input.dry_run {
                 Vec::new()
             } else {
@@ -862,6 +922,7 @@ struct WorkspaceInitInput {
 struct WorkspaceInitOutput {
     workspace_id: String,
     config_path: String,
+    already_initialized: bool,
     receipt: ReceiptNote,
 }
 
@@ -869,16 +930,46 @@ struct WorkspaceInitOutput {
 struct IngestRunInput {
     path: PathBuf,
     dry_run: bool,
+    #[serde(default)]
+    strict: bool,
     observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum IngestCompletion {
+    Complete,
+    Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum SourceFailureCode {
+    #[serde(rename = "source.utf8")]
+    Utf8,
+    #[serde(rename = "source.io")]
+    Io,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SourceSkipRow {
+    path: String,
+    code: SourceFailureCode,
+    detail: String,
 }
 
 #[derive(Debug, Serialize)]
 struct IngestRunOutput {
+    outcome: IngestCompletion,
     workspace_id: String,
     sources_observed: u32,
     claims_recorded: u32,
     claims_superseded: u32,
     dry_run: bool,
+    empty: bool,
+    skipped: Vec<SourceSkipRow>,
+    skipped_total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped_artifact: Option<String>,
     receipts: Vec<ReceiptNote>,
 }
 
@@ -1157,6 +1248,13 @@ pub(crate) struct PlannedSource {
     pub(crate) claims: Vec<ClaimRecordedV2>,
 }
 
+pub(crate) struct SourcePlan {
+    pub(crate) sources: Vec<PlannedSource>,
+    pub(crate) skipped: Vec<SourceSkipRow>,
+    empty: bool,
+    succeeded: usize,
+}
+
 #[derive(Debug, Deserialize)]
 struct CmdClaimLine {
     line_start: u32,
@@ -1363,7 +1461,7 @@ pub(crate) fn plan_sources(
     observed_at_ms: u64,
     extractor_cmd: Option<&str>,
     view: &WorkspaceView,
-) -> Result<Vec<PlannedSource>, TexoError> {
+) -> Result<SourcePlan, TexoError> {
     let existing_hashes = view
         .sources
         .iter()
@@ -1371,15 +1469,39 @@ pub(crate) fn plan_sources(
         .collect::<BTreeSet<_>>();
     let mut batch_hashes = BTreeSet::new();
     let mut planned = Vec::new();
-    let files = collect_markdown_files(input_path).map_err(|error| TexoError::Source {
+    let discovery = collect_markdown_files(input_path).map_err(|error| TexoError::Source {
         path: input_path.to_string_lossy().to_string(),
         detail: error.to_string(),
     })?;
-    for path in files {
-        let doc = MarkdownDocument::from_path(&path, root).map_err(|error| TexoError::Source {
-            path: path.to_string_lossy().to_string(),
-            detail: error.to_string(),
-        })?;
+    let empty = discovery.files.is_empty();
+    let mut skipped = discovery
+        .failures
+        .into_iter()
+        .map(|failure| SourceSkipRow {
+            path: failure.path.to_string_lossy().to_string(),
+            code: SourceFailureCode::Io,
+            detail: bounded_source_detail(&failure.error.to_string()),
+        })
+        .collect::<Vec<_>>();
+    let mut succeeded = 0;
+    for path in discovery.files {
+        let doc = match MarkdownDocument::from_path(&path, root) {
+            Ok(doc) => doc,
+            Err(error) => {
+                skipped.push(SourceSkipRow {
+                    path: path.to_string_lossy().to_string(),
+                    code: match error {
+                        crate::extract::markdown::SourceError::Utf8(_) => SourceFailureCode::Utf8,
+                        crate::extract::markdown::SourceError::Io(_)
+                        | crate::extract::markdown::SourceError::Walk(_)
+                        | crate::extract::markdown::SourceError::Id(_) => SourceFailureCode::Io,
+                    },
+                    detail: bounded_source_detail(&error.to_string()),
+                });
+                continue;
+            }
+        };
+        succeeded += 1;
         if existing_hashes.contains(&doc.body_hash_hex)
             || !batch_hashes.insert(doc.body_hash_hex.clone())
         {
@@ -1402,7 +1524,48 @@ pub(crate) fn plan_sources(
             claims,
         });
     }
-    Ok(planned)
+    skipped.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(SourcePlan {
+        sources: planned,
+        skipped,
+        empty,
+        succeeded,
+    })
+}
+
+fn bounded_source_detail(detail: &str) -> String {
+    detail
+        .chars()
+        .take(MAX_SOURCE_FAILURE_DETAIL_CHARS)
+        .collect()
+}
+
+fn settle_source_failures(
+    root: &Path,
+    observed_at_ms: u64,
+    rows: Vec<SourceSkipRow>,
+) -> Result<(Vec<SourceSkipRow>, Option<String>), TexoError> {
+    if rows.len() <= MAX_INLINE_SOURCE_FAILURES {
+        return Ok((rows, None));
+    }
+    let bytes = serde_json::to_vec(&rows)?;
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let short_digest: String = digest.chars().take(16).collect();
+    let relative = PathBuf::from(".texo")
+        .join("operations")
+        .join("ingest-skips")
+        .join(format!("{observed_at_ms}-{short_digest}.json"));
+    let path = root.join(&relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(temporary, path)?;
+    Ok((
+        rows.into_iter().take(MAX_INLINE_SOURCE_FAILURES).collect(),
+        Some(relative.to_string_lossy().to_string()),
+    ))
 }
 
 /// Run the semantic relate pass and journal resulting v2 transition payloads.
@@ -1892,6 +2055,12 @@ fn extract_heuristic_claims(
     Ok(claims)
 }
 
+/// Execute the workspace-configured extractor command.
+///
+/// This is an explicit local-code-execution trust boundary: anyone who can
+/// write workspace configuration can execute as the Texo process via `sh -c`.
+/// A future bvisor adapter belongs at this function boundary; this campaign
+/// does not claim confinement for configured extractors.
 fn extract_cmd_claims(
     op: &str,
     root: &Path,
@@ -2148,17 +2317,23 @@ fn check_staleness_from_view(
         .unwrap_or(input)
         .to_string_lossy()
         .to_string();
-    let files = collect_markdown_files(input).map_err(|error| TexoError::Source {
+    let discovery = collect_markdown_files(input).map_err(|error| TexoError::Source {
         path: input.to_string_lossy().to_string(),
         detail: error.to_string(),
     })?;
+    if let Some(failure) = discovery.failures.first() {
+        return Err(TexoError::Source {
+            path: failure.path.to_string_lossy().to_string(),
+            detail: failure.error.to_string(),
+        });
+    }
     let by_id = view
         .claims
         .iter()
         .map(|claim| (claim.card.claim_id.clone(), claim))
         .collect::<BTreeMap<_, _>>();
     let mut diagnostics = Vec::new();
-    for path in files {
+    for path in discovery.files {
         let doc = MarkdownDocument::from_path(&path, root).map_err(|error| TexoError::Source {
             path: path.to_string_lossy().to_string(),
             detail: error.to_string(),

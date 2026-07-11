@@ -293,6 +293,10 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "session settlement keeps transcript, ingest, and relate ordering in one operation"
+)]
 fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.agent.session.end", || {
         let input: AgentSessionEndInput = parse_input("texo.agent.session.end", input)?;
@@ -334,12 +338,19 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             extractor_cmd.as_deref(),
             &view,
         )?;
+        if !planned.skipped.is_empty() {
+            return Err(TexoError::Source {
+                path: doc_path.to_string_lossy().to_string(),
+                detail: "generated session transcript could not be planned".to_string(),
+            });
+        }
         let new_claims = planned
+            .sources
             .iter()
             .flat_map(|source| source.claims.iter().cloned())
             .collect::<Vec<_>>();
         let supersessions = infer_supersessions(&view, &new_claims, input.observed_at_ms);
-        for source in &planned {
+        for source in &planned.sources {
             append_json(
                 "texo.agent.session.end",
                 cx,
@@ -382,7 +393,7 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 .unwrap_or(&doc_path)
                 .to_string_lossy()
                 .to_string(),
-            sources_observed: u32::try_from(planned.len()).unwrap_or(u32::MAX),
+            sources_observed: u32::try_from(planned.sources.len()).unwrap_or(u32::MAX),
             claims_recorded: u32::try_from(new_claims.len()).unwrap_or(u32::MAX),
             ingest_supersessions: u32::try_from(supersessions.len()).unwrap_or(u32::MAX),
             relate,

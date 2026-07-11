@@ -6,6 +6,10 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::events::ids::{blake3_bytes_hex, source_id_from_hash, IdParseError};
 
+/// Maximum source-line size admitted to claim extraction. Longer physical
+/// lines remain covered by the source hash but are not materialized as claims.
+pub const MAX_EXTRACTABLE_LINE_BYTES: usize = 64 * 1024;
+
 /// One logical line in a markdown document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownLine {
@@ -91,6 +95,10 @@ fn parse_lines(text: &str) -> Vec<MarkdownLine> {
             None => segment,
         };
 
+        if raw.len() > MAX_EXTRACTABLE_LINE_BYTES {
+            continue;
+        }
+
         let number = u32::try_from(idx + 1).unwrap_or(u32::MAX);
         if !frontmatter_done && idx == 0 && raw.trim() == "---" {
             skipping_frontmatter = true;
@@ -165,6 +173,8 @@ pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
     options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
     options.insert(Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
 
+    let bounded_source = mask_oversized_lines(source);
+    let source = bounded_source.as_ref();
     let mut spans = Vec::new();
     let mut headings: Vec<HeadingFrame> = Vec::new();
 
@@ -240,6 +250,33 @@ pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
     spans
 }
 
+fn mask_oversized_lines(source: &str) -> std::borrow::Cow<'_, str> {
+    if !source
+        .split_inclusive('\n')
+        .any(|line| line.trim_end_matches(['\r', '\n']).len() > MAX_EXTRACTABLE_LINE_BYTES)
+    {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    let mut start = 0;
+    while start < bytes.len() {
+        let end = bytes[start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |relative| start + relative);
+        let content_end = end - usize::from(end > start && bytes[end - 1] == b'\r');
+        if content_end.saturating_sub(start) > MAX_EXTRACTABLE_LINE_BYTES {
+            bytes[start..content_end].fill(b' ');
+        }
+        start = end.saturating_add(1);
+    }
+    // Replacing bytes only with ASCII spaces preserves UTF-8 validity and all
+    // subsequent source offsets.
+    let masked = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    std::borrow::Cow::Owned(masked)
+}
+
 /// Build and record a candidate span from a byte range, trimming trailing
 /// whitespace/newlines so offsets slice back exactly to the emitted text.
 fn push_span(
@@ -294,34 +331,73 @@ pub enum SourceError {
     /// Failed to derive a source id from the body hash.
     #[error("id: {0}")]
     Id(#[from] IdParseError),
+    /// Directory traversal failed.
+    #[error("walk: {0}")]
+    Walk(#[from] walkdir::Error),
+}
+
+/// One unreadable descendant discovered under an otherwise valid root.
+#[derive(Debug)]
+pub struct DiscoveryFailure {
+    /// Best available path.
+    pub path: PathBuf,
+    /// Traversal error.
+    pub error: walkdir::Error,
+}
+
+/// Deterministically sorted markdown discovery plus descendant failures.
+#[derive(Debug, Default)]
+pub struct MarkdownDiscovery {
+    /// Markdown files beneath the requested root.
+    pub files: Vec<PathBuf>,
+    /// Unreadable descendants. Root failures are returned as [`SourceError`].
+    pub failures: Vec<DiscoveryFailure>,
 }
 
 /// Collect markdown files under a directory.
 ///
 /// # Errors
 ///
-/// Currently never returns `Err`: unreadable entries are skipped during the
-/// walk. The [`SourceError`] return type is kept so collection failures can
-/// surface later without a signature change.
-pub fn collect_markdown_files(input: &Path) -> Result<Vec<PathBuf>, SourceError> {
+/// Missing paths and unreadable roots are hard errors. Unreadable descendants
+/// are retained as typed failure rows so tolerant ingest can settle them.
+pub fn collect_markdown_files(input: &Path) -> Result<MarkdownDiscovery, SourceError> {
+    if !input.exists() {
+        return Err(SourceError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("source root does not exist: {}", input.display()),
+        )));
+    }
     let mut files = Vec::new();
     if input.is_file() {
         if is_markdown(input) {
             files.push(input.to_path_buf());
         }
-        return Ok(files);
+        return Ok(MarkdownDiscovery {
+            files,
+            failures: Vec::new(),
+        });
     }
-    for entry in walkdir::WalkDir::new(input)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if path.is_file() && is_markdown(path) {
-            files.push(path.to_path_buf());
+    let mut failures = Vec::new();
+    for result in walkdir::WalkDir::new(input) {
+        match result {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_file() && is_markdown(path) {
+                    files.push(path.to_path_buf());
+                }
+            }
+            Err(error) if error.depth() == 0 => return Err(SourceError::Walk(error)),
+            Err(error) => failures.push(DiscoveryFailure {
+                path: error
+                    .path()
+                    .map_or_else(|| input.to_path_buf(), Path::to_path_buf),
+                error,
+            }),
         }
     }
     files.sort();
-    Ok(files)
+    failures.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(MarkdownDiscovery { files, failures })
 }
 
 fn is_markdown(path: &Path) -> bool {
@@ -572,6 +648,21 @@ mod tests {
     fn segment_empty_input_is_empty() {
         assert!(segment_candidates("").is_empty());
         assert!(segment_candidates("   \n\n  \n").is_empty());
+    }
+
+    #[test]
+    fn oversized_physical_line_is_bounded_without_hiding_following_prose() {
+        let oversized = "x".repeat(MAX_EXTRACTABLE_LINE_BYTES + 1);
+        let source = format!("{oversized}\n\nDeploys happen on Friday.\n");
+        let doc = MarkdownDocument::from_bytes("long.md", source.as_bytes()).expect("document");
+        assert_eq!(doc.lines.len(), 2);
+        assert_eq!(doc.lines[0].number, 2);
+        assert_eq!(doc.lines[1].number, 3);
+
+        let spans = segment_candidates(&source);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "Deploys happen on Friday.");
+        assert_eq!(spans[0].line_start, 3);
     }
 
     #[test]

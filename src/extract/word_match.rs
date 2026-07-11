@@ -6,13 +6,11 @@
 //! These helpers split the candidate into ASCII-alphanumeric tokens and compare
 //! whole tokens (a phrase compares a run of consecutive tokens).
 
-/// Tokenize `text` into lowercased ASCII-alphanumeric words, dropping all other
-/// characters (punctuation, whitespace) as separators.
-fn words(text: &str) -> Vec<String> {
+/// Tokenize `text` into borrowed ASCII-alphanumeric words. Matching uses
+/// `eq_ignore_ascii_case`, so scanning never allocates copies of the source.
+fn words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 /// Returns true when `needle` occurs as a whole word in `text`.
@@ -20,38 +18,48 @@ fn words(text: &str) -> Vec<String> {
 /// `needle` is matched case-insensitively against complete word tokens, so it
 /// will not match when it is only a substring of a larger word.
 pub fn contains_word(text: &str, needle: &str) -> bool {
-    let needle = needle.trim().to_ascii_lowercase();
+    let needle = needle.trim();
     if needle.is_empty() {
         return false;
     }
-    words(text).contains(&needle)
+    words(text).any(|word| word.eq_ignore_ascii_case(needle))
 }
 
 /// Returns true when `phrase` (one or more whitespace-separated words) occurs as
 /// a consecutive run of whole words in `text`.
 pub fn contains_phrase(text: &str, phrase: &str) -> bool {
-    let needle: Vec<String> = phrase
-        .split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect();
+    let needle: Vec<&str> = phrase.split_whitespace().collect();
     if needle.is_empty() {
         return false;
     }
     if needle.len() == 1 {
-        return contains_word(text, &needle[0]);
+        return contains_word(text, needle[0]);
     }
-    let haystack = words(text);
+    let haystack = words(text).collect::<Vec<_>>();
     if haystack.len() < needle.len() {
         return false;
     }
-    haystack
-        .windows(needle.len())
-        .any(|w| w == needle.as_slice())
+    haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(&needle)
+            .all(|(word, wanted)| word.eq_ignore_ascii_case(wanted))
+    })
 }
 
 /// Returns true when any of `needles` occurs as a whole word or phrase in `text`.
 pub fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|n| contains_phrase(text, n))
+    let haystack = words(text).collect::<Vec<_>>();
+    needles.iter().any(|needle| {
+        let wanted = needle.split_whitespace().collect::<Vec<_>>();
+        !wanted.is_empty()
+            && haystack.windows(wanted.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(&wanted)
+                    .all(|(word, wanted)| word.eq_ignore_ascii_case(wanted))
+            })
+    })
 }
 
 #[cfg(test)]
