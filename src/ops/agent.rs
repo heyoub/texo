@@ -364,18 +364,17 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             )?;
         }
         drop(take_receipts()?);
-        let relate =
-            if crate::host::grants_model_capability(std::env::var("OPENROUTER_API_KEY").ok()) {
-                let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms)?;
-                RelateOutcome::Ran {
-                    supersessions: out.supersessions.len(),
-                    conflicts: out.conflicts.len(),
-                }
-            } else {
-                RelateOutcome::Skipped {
-                    reason: "OPENROUTER_API_KEY is not set".to_string(),
-                }
-            };
+        let relate = if model_role_enabled(crate::gateway::ModelRole::Relate)? {
+            let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms)?;
+            RelateOutcome::Ran {
+                supersessions: out.supersessions.len(),
+                conflicts: out.conflicts.len(),
+            }
+        } else {
+            RelateOutcome::Skipped {
+                reason: "TEXO_LLM_API_KEY is not set".to_string(),
+            }
+        };
         Ok(SessionEndReport {
             session_id: input.session_id,
             doc_path: doc_path
@@ -718,16 +717,35 @@ fn claim_text(view: &WorkspaceView, claim_id: &str) -> String {
         .map_or_else(String::new, |claim| claim.card.text.clone())
 }
 
+fn model_role_enabled(role: crate::gateway::ModelRole) -> Result<bool, TexoError> {
+    let resolved = env::with(|op_env| {
+        crate::gateway::resolve_role(
+            role,
+            &crate::gateway::RoleOverrides::default(),
+            op_env.config.gateway.as_ref(),
+        )
+    })?;
+    Ok(crate::host::grants_model_capability(Some(resolved.api_key)))
+}
+
 #[cfg(feature = "openrouter")]
 fn complete_chat(
     memory: &MemorySnapshot,
     history: &[TurnEntry],
     user_message: &str,
 ) -> Result<String, TexoError> {
-    let config =
-        crate::semantics::chat::ChatConfig::from_env().ok_or_else(|| TexoError::Model {
-            detail: "chat is disabled: OPENROUTER_API_KEY is not set".to_string(),
-        })?;
+    let role = env::with(|op_env| {
+        crate::gateway::resolve_role(
+            crate::gateway::ModelRole::Chat,
+            &crate::gateway::RoleOverrides::default(),
+            op_env.config.gateway.as_ref(),
+        )
+    })?;
+    if !role.is_enabled() {
+        return Err(TexoError::Model {
+            detail: "chat is disabled: TEXO_LLM_API_KEY is not set".to_string(),
+        });
+    }
     let chat_memory = to_chat_memory(memory);
     let chat_history = history
         .iter()
@@ -745,12 +763,12 @@ fn complete_chat(
         .collect::<Vec<_>>();
     let system_prompt = crate::semantics::chat::build_system_prompt(&chat_memory);
     let body = crate::semantics::chat::build_chat_request(
-        &config.model,
+        &role,
         &system_prompt,
         &chat_history,
         user_message,
     );
-    crate::semantics::chat::complete(&config, &body)
+    crate::semantics::chat::complete(&role, &body)
 }
 
 #[cfg(not(feature = "openrouter"))]

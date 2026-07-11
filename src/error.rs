@@ -3,6 +3,19 @@
 use std::error::Error;
 use std::fmt;
 
+/// Render an error and every source in its causal chain.
+#[must_use]
+pub fn error_chain(error: &(dyn Error + 'static)) -> String {
+    let mut rendered = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        rendered.push_str(": ");
+        rendered.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    rendered
+}
+
 /// Surface families that can report transport-bound errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceKind {

@@ -36,39 +36,6 @@ pub trait Embedder {
     }
 }
 
-/// Natural-language-inference relationship between a premise and a hypothesis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Entailment {
-    /// The premise supports (entails) the hypothesis.
-    Entailment,
-    /// The premise neither supports nor contradicts the hypothesis.
-    Neutral,
-    /// The premise contradicts the hypothesis.
-    Contradiction,
-}
-
-/// A single NLI classification result.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct NliVerdict {
-    /// Predicted relationship.
-    pub label: Entailment,
-    /// Confidence score for [`NliVerdict::label`], typically in `[0.0, 1.0]`.
-    pub score: f32,
-}
-
-/// Classifies the inference relationship between two texts.
-pub trait Nli {
-    /// Classify whether `premise` entails, is neutral toward, or contradicts
-    /// `hypothesis`.
-    ///
-    /// # Errors
-    ///
-    /// Implementors return a [`SemanticsError`] (typically
-    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
-    fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError>;
-}
-
 /// The relationship of a *newer* claim to an *older* one about a shared subject.
 ///
 /// This is the judgment a 3-way NLI label cannot make: a value replacement (e.g.
@@ -108,8 +75,7 @@ pub struct RelationVerdict {
 ///
 /// The caller orders the pair by recency and passes them as `(older, newer)`; the
 /// implementor returns how `newer` relates to `older` (see [`ClaimRelation`]).
-/// This is the primary relating primitive of the semantic pipeline; [`Nli`]
-/// remains available as a lower-level building block.
+/// This is the primary relating primitive of the semantic pipeline.
 pub trait ClaimRelater {
     /// Judge how the more-recent `newer` claim relates to the older `older` claim.
     ///
@@ -169,19 +135,6 @@ pub trait Proposer {
     /// so that changing the model or prompt invalidates stale cached proposals
     /// rather than silently reusing them.
     fn fingerprint(&self) -> String;
-}
-
-/// Scores candidate documents against a query for relevance reranking.
-pub trait Reranker {
-    /// Return one relevance score per entry in `docs`, in the same order.
-    ///
-    /// Implementors must return exactly `docs.len()` scores.
-    ///
-    /// # Errors
-    ///
-    /// Implementors return a [`SemanticsError`] (typically
-    /// [`SemanticsError::Backend`]) when the underlying model or runtime fails.
-    fn rerank(&self, query: &str, docs: &[&str]) -> Result<Vec<f32>, SemanticsError>;
 }
 
 /// Cosine similarity between two embedding vectors.
@@ -258,20 +211,6 @@ mod tests {
         }
     }
 
-    /// Deterministic NLI stub: equal strings entail, otherwise neutral.
-    struct StubNli;
-
-    impl Nli for StubNli {
-        fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError> {
-            let label = if premise == hypothesis {
-                Entailment::Entailment
-            } else {
-                Entailment::Neutral
-            };
-            Ok(NliVerdict { label, score: 1.0 })
-        }
-    }
-
     #[test]
     fn cosine_orthogonal_is_zero() {
         let a = [1.0, 0.0];
@@ -332,16 +271,6 @@ mod tests {
         assert_eq!(batch[0], single);
     }
 
-    #[test]
-    fn nli_usable_as_trait_object() {
-        let nli = StubNli;
-        let dynamic: &dyn Nli = &nli;
-        let same = dynamic.classify("a", "a").expect("classify");
-        assert_eq!(same.label, Entailment::Entailment);
-        let diff = dynamic.classify("a", "b").expect("classify");
-        assert_eq!(diff.label, Entailment::Neutral);
-    }
-
     /// Deterministic relater stub: equal strings duplicate, otherwise unrelated.
     struct StubRelater;
 
@@ -383,13 +312,5 @@ mod tests {
             serde_json::to_string(&ClaimRelation::Conflict).expect("ser"),
             "\"conflict\""
         );
-    }
-
-    #[test]
-    fn entailment_serde_roundtrip() {
-        let json = serde_json::to_string(&Entailment::Contradiction).expect("ser");
-        assert_eq!(json, "\"contradiction\"");
-        let back: Entailment = serde_json::from_str(&json).expect("de");
-        assert_eq!(back, Entailment::Contradiction);
     }
 }

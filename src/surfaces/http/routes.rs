@@ -110,7 +110,7 @@ fn api_chat(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, T
     if !state.chat_enabled {
         return Ok(HttpResponse::json_error(
             503,
-            "chat is disabled: OPENROUTER_API_KEY is not set",
+            "chat is disabled: TEXO_LLM_API_KEY is not set",
         ));
     }
     let mut host = open_host(state)?;
@@ -125,7 +125,7 @@ fn api_chat(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, T
         Ok(value) => HttpResponse::json(200, &value).map_err(TexoError::Json),
         Err(TexoError::OpRuntime { denied: true, .. }) => Ok(HttpResponse::json_error(
             503,
-            "chat is disabled: OPENROUTER_API_KEY is not set",
+            "chat is disabled: TEXO_LLM_API_KEY is not set",
         )),
         Err(TexoError::Model { detail }) => Ok(HttpResponse::json_error(
             502,

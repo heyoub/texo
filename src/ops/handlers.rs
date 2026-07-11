@@ -73,6 +73,7 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             TexoRootConfig {
                 default_workspace: input.workspace_id.clone(),
                 workspaces: BTreeMap::new(),
+                gateway: None,
             }
         };
         root_config
@@ -1290,15 +1291,16 @@ pub(crate) fn run_relate_pass(
             receipts: Vec::new(),
         });
     }
-    let (root, cluster) = env::with(|op_env| {
+    let (root, cluster, gateway) = env::with(|op_env| {
         let cluster = op_env.config.semantics.as_ref().map_or_else(
             || crate::config::SemanticsConfig::default().cosine_threshold,
             |semantics| semantics.cosine_threshold,
         );
-        (op_env.root.clone(), cluster)
+        (op_env.root.clone(), cluster, op_env.config.gateway.clone())
     })?;
     let related = relate_with_backends(
         &root,
+        gateway.as_ref(),
         &claims,
         RelateThresholds {
             cluster,
@@ -1415,6 +1417,7 @@ struct SemanticRelateOutput {
 #[cfg(feature = "openrouter")]
 fn relate_with_backends(
     root: &Path,
+    gateway: Option<&crate::gateway::GatewayConfig>,
     claims: &[(ClaimId, SemanticClaimView)],
     thresholds: RelateThresholds,
 ) -> Result<SemanticRelateOutput, TexoError> {
@@ -1422,11 +1425,11 @@ fn relate_with_backends(
     use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
     use crate::semantics::pipeline::relate_claims;
 
-    let embedder = OpenRouterEmbedder::new(None).map_err(semantic_error)?;
+    let embedder = OpenRouterEmbedder::new(None, gateway).map_err(semantic_error)?;
     let cache_dir = std::env::var_os(ENV_RELATE_CACHE)
         .map_or_else(|| root.join(DEFAULT_RELATE_CACHE), PathBuf::from);
     let caching_relater = CachingRelater::new(
-        OpenRouterRelater::new(None).map_err(semantic_error)?,
+        OpenRouterRelater::new(None, gateway).map_err(semantic_error)?,
         cache_dir,
     );
     let relation_output =
@@ -1441,6 +1444,7 @@ fn relate_with_backends(
 #[cfg(not(feature = "openrouter"))]
 fn relate_with_backends(
     _root: &Path,
+    _gateway: Option<&crate::gateway::GatewayConfig>,
     _claims: &[(ClaimId, SemanticClaimView)],
     _thresholds: RelateThresholds,
 ) -> Result<SemanticRelateOutput, TexoError> {
@@ -1451,10 +1455,10 @@ fn relate_with_backends(
 }
 
 #[cfg(feature = "openrouter")]
-fn semantic_error(error: impl std::fmt::Display) -> TexoError {
+fn semantic_error(error: impl std::error::Error + Send + Sync + 'static) -> TexoError {
     TexoError::Semantics {
         backend: "openrouter".to_string(),
-        detail: error.to_string(),
+        detail: crate::error::error_chain(&error),
     }
 }
 

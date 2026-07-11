@@ -1,15 +1,14 @@
-//! Hosted semantic backends backed by the OpenRouter API.
+//! Hosted semantic backends over the typed OpenAI-compatible gateway.
 //!
 //! These implement the texo semantic traits over HTTP using the crate's
 //! synchronous OpenAI-compatible client. They run on any CPU and require only
 //! an API key, which makes them the portable default backend.
 //!
-//! Three backends are provided:
+//! Three role adapters are provided:
 //!
 //! - [`OpenRouterEmbedder`] -> `POST /embeddings`
-//! - [`OpenRouterReranker`] -> `POST /rerank`
-//! - [`OpenRouterNli`] -> `POST /chat/completions` (LLM-as-judge; OpenRouter has
-//!   no hosted NLI endpoint, so the model is prompted to return strict JSON)
+//! - [`OpenRouterRelater`] -> `POST /chat/completions`
+//! - [`OpenRouterProposer`] -> `POST /chat/completions`
 //!
 //! Request-body construction and response parsing are factored into pure
 //! functions ([`build_*_request`] / [`parse_*_response`]) so they can be unit
@@ -18,30 +17,30 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::semantics::{
-    ClaimRelater, ClaimRelation, Embedder, Entailment, Nli, NliVerdict, ProposedClaim, Proposer,
-    RelationVerdict, Reranker, SemanticsError,
+use crate::gateway::{
+    resolve_role, GatewayConfig, ModelRole, ResolvedRole, ResponseFormatPolicy, RoleOverrides,
 };
-use crate::surfaces::openai::OpenAiCompatClient;
+use crate::semantics::{
+    ClaimRelater, ClaimRelation, Embedder, ProposedClaim, Proposer, RelationVerdict, SemanticsError,
+};
+use crate::surfaces::openai::{ApiFailure, OpenAiCompatClient};
 
 /// Failures from `OpenRouter` semantic response handling.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-enum BackendError {
-    /// No API key was available.
-    #[error("missing OpenRouter API key (set OPENROUTER_API_KEY or pass one explicitly)")]
-    MissingApiKey,
+pub enum BackendError {
     /// A JSON request failed through the shared OpenAI-compatible client.
-    #[error("OpenRouter request to {endpoint} failed: {detail}")]
+    #[error("semantics {provider}: {source}")]
     Http {
-        /// The endpoint path that was requested.
-        endpoint: &'static str,
-        /// Failure detail.
-        detail: String,
+        /// Resolved provider id.
+        provider: String,
+        /// Typed transport cause.
+        #[source]
+        source: ApiFailure,
     },
     /// An `OpenRouter` response body could not be parsed as the expected JSON
     /// shape.
-    #[error("could not parse OpenRouter {endpoint} response")]
+    #[error("could not parse model {endpoint} response")]
     Parse {
         /// The endpoint path whose response failed to parse.
         endpoint: &'static str,
@@ -50,12 +49,22 @@ enum BackendError {
         source: serde_json::Error,
     },
     /// An `OpenRouter` response parsed as JSON but lacked required fields.
-    #[error("OpenRouter {endpoint} response was missing required data: {detail}")]
+    #[error("model {endpoint} response was missing required data: {detail}")]
     UnexpectedResponse {
         /// The endpoint path whose response was malformed.
         endpoint: &'static str,
         /// Human-readable detail about what was missing or invalid.
         detail: String,
+    },
+    /// A model positively reported token-limit truncation.
+    #[error("model {endpoint} response was truncated ({finish_reason}); max_tokens={max_tokens}")]
+    Truncated {
+        /// Endpoint path.
+        endpoint: &'static str,
+        /// Provider finish reason, preserved verbatim.
+        finish_reason: String,
+        /// Configured completion-token ceiling.
+        max_tokens: u32,
     },
 }
 
@@ -67,32 +76,6 @@ impl From<BackendError> for SemanticsError {
     }
 }
 
-/// Default `OpenRouter` API base URL, used when `OPENROUTER_BASE_URL` is unset.
-pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-/// Default embeddings model.
-const DEFAULT_EMBEDDING_MODEL: &str = "google/gemini-embedding-2";
-/// Default rerank model.
-const DEFAULT_RERANK_MODEL: &str = "cohere/rerank-4-pro";
-/// Default NLI judge model. A cheap/free model suited to testing; override via
-/// `OPENROUTER_NLI_MODEL` (or the explicit constructor) for production.
-const DEFAULT_NLI_MODEL: &str = "google/gemma-4-31b-it:free";
-/// Default claim-relation judge model. The supersede-vs-conflict call is the
-/// hardest judgment in the pipeline, so this defaults to a strong reasoning
-/// model; override via `OPENROUTER_RELATER_MODEL` or the explicit constructor.
-const DEFAULT_RELATER_MODEL: &str = "nvidia/nemotron-3-ultra-550b-a55b";
-
-/// Environment variable holding the bearer token.
-const ENV_API_KEY: &str = "OPENROUTER_API_KEY";
-/// Environment variable overriding the API base URL.
-const ENV_BASE_URL: &str = "OPENROUTER_BASE_URL";
-/// Environment variable overriding the embeddings model.
-const ENV_EMBED_MODEL: &str = "OPENROUTER_EMBED_MODEL";
-/// Environment variable overriding the rerank model.
-const ENV_RERANK_MODEL: &str = "OPENROUTER_RERANK_MODEL";
-/// Environment variable overriding the NLI judge model.
-const ENV_NLI_MODEL: &str = "OPENROUTER_NLI_MODEL";
-/// Environment variable overriding the claim-relation judge model.
-const ENV_RELATER_MODEL: &str = "OPENROUTER_RELATER_MODEL";
 /// Version tag for the Stage-1 proposer prompt/output contract. Bump whenever
 /// `PROPOSE_SYSTEM_PROMPT` or the parsed shape changes so the record-once cache
 /// invalidates proposals produced by an older prompt.
@@ -102,53 +85,24 @@ const PROPOSE_PROMPT_VERSION: u32 = 3;
 /// invalidates verdicts produced by an older prompt.
 const RELATION_PROMPT_VERSION: u32 = 2;
 
-/// Completion-token ceiling for the chat-completions judges. Reasoning models
-/// spend completion budget on a hidden reasoning trace *before* emitting the
-/// JSON answer; without ample headroom a long trace truncates the answer to empty
-/// content. This is a ceiling, not a target — only verbose pairs approach it — so
-/// it is sized well above the longest observed reasoning trace (a hard
-/// supersede-vs-conflict call on a marginal pair can run ~1.5k tokens before the
-/// JSON) to guarantee the verdict is never truncated away.
-const MAX_COMPLETION_TOKENS: u32 = 4096;
-/// Completion-token ceiling for the Stage-1 proposer. A single span can yield
-/// several atomic claims plus a reasoning trace, so it needs more room than the
-/// single-verdict judges.
-const MAX_PROPOSE_TOKENS: u32 = 2048;
-/// Maximum inputs per `/embeddings` request. A whole corpus can be hundreds of
-/// claims, which overruns the endpoint's per-request input cap (the response then
-/// lacks `data`), so `embed_batch` chunks at this size and concatenates in order.
-const EMBED_BATCH_MAX: usize = 64;
-
 /// A thin blocking HTTP client for the `OpenRouter` API.
 ///
 /// Holds the shared OpenAI-compatible client. Shared by all backends.
 struct OpenRouterClient {
     inner: OpenAiCompatClient,
+    provider_id: String,
 }
 
 impl OpenRouterClient {
-    /// Build a client, resolving the base URL from `OPENROUTER_BASE_URL` (else
-    /// the default) and the bearer token from `OPENROUTER_API_KEY`.
-    ///
-    /// Returns [`BackendError::MissingApiKey`] if no key is set; the constructor
-    /// is the single place a missing key is detected, so backend constructors
-    /// fail fast rather than at first request.
-    fn from_env() -> Result<Self, BackendError> {
-        let api_key = std::env::var(ENV_API_KEY)
-            .ok()
-            .filter(|key| !key.trim().is_empty())
-            .ok_or(BackendError::MissingApiKey)?;
-        let base_url = std::env::var(ENV_BASE_URL)
-            .ok()
-            .filter(|url| !url.trim().is_empty());
-        let inner =
-            OpenAiCompatClient::from_env_vars(Some(api_key), base_url).map_err(|error| {
-                BackendError::Http {
-                    endpoint: "/client",
-                    detail: error.to_string(),
-                }
-            })?;
-        Ok(Self { inner })
+    fn from_role(role: &ResolvedRole) -> Result<Self, BackendError> {
+        let inner = OpenAiCompatClient::from_role(role).map_err(|source| BackendError::Http {
+            provider: role.provider_id.clone(),
+            source,
+        })?;
+        Ok(Self {
+            inner,
+            provider_id: role.provider_id.clone(),
+        })
     }
 
     /// POST `body` as JSON to `endpoint` (a path like `/embeddings`) and return
@@ -159,29 +113,11 @@ impl OpenRouterClient {
     fn post_json(&self, endpoint: &'static str, body: &Value) -> Result<Value, BackendError> {
         self.inner
             .post_json(endpoint, body)
-            .map_err(|error| BackendError::Http {
-                endpoint,
-                detail: error.to_string(),
+            .map_err(|source| BackendError::Http {
+                provider: self.provider_id.clone(),
+                source,
             })
     }
-}
-
-/// Resolve a model id: explicit `Some` wins; else the environment variable if
-/// set and non-empty; else `default`. The env read is the only impure step;
-/// precedence lives in [`pick_model`] so it is unit-testable without touching
-/// process environment.
-fn resolve_model(explicit: Option<String>, env_var: Option<&str>, default: &str) -> String {
-    let env_value = env_var.and_then(|var| std::env::var(var).ok());
-    pick_model(explicit, env_value, default)
-}
-
-/// Pure precedence over already-read values: non-blank explicit, then
-/// non-blank env value, then `default`.
-fn pick_model(explicit: Option<String>, env_value: Option<String>, default: &str) -> String {
-    explicit
-        .filter(|m| !m.trim().is_empty())
-        .or_else(|| env_value.filter(|v| !v.trim().is_empty()))
-        .unwrap_or_else(|| default.to_owned())
 }
 
 // =====================================================================
@@ -191,23 +127,30 @@ fn pick_model(explicit: Option<String>, env_value: Option<String>, default: &str
 /// Hosted [`Embedder`] backed by `OpenRouter`'s `/embeddings` endpoint.
 pub struct OpenRouterEmbedder {
     client: OpenRouterClient,
-    model: String,
+    role: ResolvedRole,
 }
 
 impl OpenRouterEmbedder {
-    /// Build an embedder. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then `OPENROUTER_EMBED_MODEL`, then the default
-    /// ([`DEFAULT_EMBEDDING_MODEL`]). Reads the API key and base URL from the
-    /// environment.
+    /// Build an embedder through the shared gateway resolver.
     ///
     /// # Errors
     ///
-    /// Returns [`SemanticsError::Backend`] when `OPENROUTER_API_KEY` is absent
-    /// or the configured base URL is invalid.
-    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
-        let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, Some(ENV_EMBED_MODEL), DEFAULT_EMBEDDING_MODEL);
-        Ok(Self { client, model })
+    /// Returns [`SemanticsError::Backend`] when the resolved role has no key or
+    /// the configured base URL is invalid.
+    pub fn new(
+        model: Option<String>,
+        gateway: Option<&GatewayConfig>,
+    ) -> Result<Self, SemanticsError> {
+        let role = resolve_role(
+            ModelRole::Embed,
+            &RoleOverrides {
+                model,
+                ..RoleOverrides::default()
+            },
+            gateway,
+        );
+        let client = OpenRouterClient::from_role(&role)?;
+        Ok(Self { client, role })
     }
 }
 
@@ -282,8 +225,8 @@ impl Embedder for OpenRouterEmbedder {
         // Chunk to stay under the endpoint's per-request input cap; concatenate
         // in request order so the result still lines up 1:1 with `texts`.
         let mut vectors = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(EMBED_BATCH_MAX) {
-            let body = build_embeddings_request(&self.model, chunk);
+        for chunk in texts.chunks(self.role.profile.embed_batch_max.max(1)) {
+            let body = build_embeddings_request(&self.role.config.model, chunk);
             let value = self.client.post_json("/embeddings", &body)?;
             vectors.extend(parse_embeddings_response(&value, chunk.len())?);
         }
@@ -292,224 +235,43 @@ impl Embedder for OpenRouterEmbedder {
 }
 
 // =====================================================================
-// Rerank
-// =====================================================================
-
-/// Hosted [`Reranker`] backed by `OpenRouter`'s `/rerank` endpoint.
-pub struct OpenRouterReranker {
-    client: OpenRouterClient,
-    model: String,
-}
-
-impl OpenRouterReranker {
-    /// Build a reranker. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then `OPENROUTER_RERANK_MODEL`, then the default
-    /// ([`DEFAULT_RERANK_MODEL`]). Reads the API key and base URL from the
-    /// environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SemanticsError::Backend`] when `OPENROUTER_API_KEY` is absent
-    /// or the configured base URL is invalid.
-    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
-        let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, Some(ENV_RERANK_MODEL), DEFAULT_RERANK_MODEL);
-        Ok(Self { client, model })
-    }
-}
-
-/// Build the JSON request body for a rerank call.
-fn build_rerank_request(model: &str, query: &str, documents: &[&str]) -> Value {
-    json!({ "model": model, "query": query, "documents": documents })
-}
-
-/// `OpenRouter` `/rerank` response shape (the subset this backend reads).
-#[derive(Debug, Deserialize)]
-struct RerankResponse {
-    results: Vec<RerankResult>,
-}
-
-/// One scored document from a rerank response.
-#[derive(Debug, Deserialize)]
-struct RerankResult {
-    index: usize,
-    relevance_score: f32,
-}
-
-/// Parse a rerank response into one score per input document, realigned to the
-/// original document order via each result's `index`.
-fn parse_rerank_response(value: &Value, doc_count: usize) -> Result<Vec<f32>, BackendError> {
-    let endpoint = "/rerank";
-    let parsed: RerankResponse = serde_json::from_value(value.clone())
-        .map_err(|source| BackendError::Parse { endpoint, source })?;
-    if parsed.results.len() != doc_count {
-        return Err(BackendError::UnexpectedResponse {
-            endpoint,
-            detail: format!(
-                "expected {doc_count} rerank results, got {}",
-                parsed.results.len()
-            ),
-        });
-    }
-
-    let mut scores = vec![None; doc_count];
-    for result in parsed.results {
-        let slot =
-            scores
-                .get_mut(result.index)
-                .ok_or_else(|| BackendError::UnexpectedResponse {
-                    endpoint,
-                    detail: format!(
-                        "result index {} is out of range for {doc_count} documents",
-                        result.index
-                    ),
-                })?;
-        if slot.is_some() {
-            return Err(BackendError::UnexpectedResponse {
-                endpoint,
-                detail: format!("result index {} appeared more than once", result.index),
-            });
-        }
-        *slot = Some(result.relevance_score);
-    }
-
-    scores
-        .into_iter()
-        .enumerate()
-        .map(|(i, score)| {
-            score.ok_or_else(|| BackendError::UnexpectedResponse {
-                endpoint,
-                detail: format!("no rerank score returned for document index {i}"),
-            })
-        })
-        .collect()
-}
-
-impl Reranker for OpenRouterReranker {
-    fn rerank(&self, query: &str, docs: &[&str]) -> Result<Vec<f32>, SemanticsError> {
-        if docs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let body = build_rerank_request(&self.model, query, docs);
-        let value = self.client.post_json("/rerank", &body)?;
-        let scores = parse_rerank_response(&value, docs.len())?;
-        Ok(scores)
-    }
-}
-
-// =====================================================================
-// NLI (LLM-as-judge over chat/completions)
-// =====================================================================
-
-/// System prompt instructing the judge model to behave as an NLI classifier.
-const NLI_SYSTEM_PROMPT: &str = "You are a strict natural-language-inference \
-classifier. Given a premise and a hypothesis, decide whether the premise \
-entails the hypothesis (label \"entailment\"), is unrelated to or insufficient \
-for it (label \"neutral\"), or contradicts it (label \"contradiction\"). Reply \
-with ONLY a single JSON object of the form {\"label\": \"entailment\" | \
-\"neutral\" | \"contradiction\", \"score\": <number between 0 and 1>}. The score \
-is your confidence in the chosen label. Output no prose, no markdown, no code \
-fences.";
-
-/// JSON schema describing the strict NLI reply, sent as `response_format` so
-/// models that support structured outputs are constrained to it. Models that
-/// ignore it still produce parseable JSON because the prompt demands it, and the
-/// reply is parsed defensively regardless.
-fn nli_response_format() -> Value {
-    json!({
-        "type": "json_schema",
-        "json_schema": {
-            "name": "nli_verdict",
-            "strict": true,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "enum": ["entailment", "neutral", "contradiction"]
-                    },
-                    "score": { "type": "number" }
-                },
-                "required": ["label", "score"],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
-/// Hosted [`Nli`] implemented as an LLM-as-judge over `OpenRouter` chat
-/// completions. `OpenRouter` exposes no dedicated NLI endpoint, so a judge model
-/// is prompted to emit a strict JSON verdict.
-pub struct OpenRouterNli {
-    client: OpenRouterClient,
-    model: String,
-}
-
-impl OpenRouterNli {
-    /// Build an NLI judge. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then `OPENROUTER_NLI_MODEL`, then the default
-    /// ([`DEFAULT_NLI_MODEL`]). Reads the API key and base URL from the
-    /// environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SemanticsError::Backend`] when `OPENROUTER_API_KEY` is absent
-    /// or the configured base URL is invalid.
-    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
-        let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, Some(ENV_NLI_MODEL), DEFAULT_NLI_MODEL);
-        Ok(Self { client, model })
-    }
-}
-
-/// The strict JSON verdict the judge model is asked to return.
-#[derive(Debug, Serialize, Deserialize)]
-struct JudgeVerdict {
-    label: String,
-    score: f32,
-}
-
-/// Build the chat-completions request body for an NLI classification.
-fn build_nli_request(model: &str, premise: &str, hypothesis: &str) -> Value {
-    let user = format!("Premise: {premise}\nHypothesis: {hypothesis}");
-    json!({
-        "model": model,
-        "temperature": 0,
-        "max_tokens": MAX_COMPLETION_TOKENS,
-        "response_format": nli_response_format(),
-        "messages": [
-            { "role": "system", "content": NLI_SYSTEM_PROMPT },
-            { "role": "user", "content": user }
-        ]
-    })
-}
-
 /// Extract the assistant message text from a chat-completions response.
-fn extract_chat_content(value: &Value) -> Result<String, BackendError> {
+fn extract_chat_content(value: &Value, max_tokens: u32) -> Result<String, BackendError> {
     let endpoint = "/chat/completions";
-    value
+    let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
         .ok_or_else(|| BackendError::UnexpectedResponse {
             endpoint,
-            detail: "response had no choices[0].message.content string".to_owned(),
-        })
-}
-
-/// Map a judge label string onto the [`Entailment`] scheme, tolerant of casing
-/// and the common short spellings.
-fn parse_entailment_label(raw: &str) -> Option<Entailment> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "entailment" | "entail" | "entails" => Some(Entailment::Entailment),
-        "neutral" => Some(Entailment::Neutral),
-        "contradiction" | "contradict" | "contradicts" => Some(Entailment::Contradiction),
-        _ => None,
+            detail: "response had no choices[0]; finish_reason=<absent>".to_string(),
+        })?;
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .or_else(|| choice.get("native_finish_reason").and_then(Value::as_str));
+    let content = choice
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if finish_reason == Some("length") && (content.is_empty() || !content.contains('{')) {
+        return Err(BackendError::Truncated {
+            endpoint,
+            finish_reason: "length".to_string(),
+            max_tokens,
+        });
     }
+    if content.is_empty() {
+        return Err(BackendError::UnexpectedResponse {
+            endpoint,
+            detail: format!(
+                "response had no choices[0].message.content string; finish_reason={}",
+                finish_reason.unwrap_or("<absent>")
+            ),
+        });
+    }
+    Ok(content.to_string())
 }
 
 /// Pull a JSON object substring out of `content`, tolerating surrounding prose
@@ -524,47 +286,6 @@ fn extract_json_object(content: &str) -> Option<&str> {
     content.get(start..=end)
 }
 
-/// Parse a chat-completions response into an [`NliVerdict`], defensively: the
-/// model's reply may include stray text, so a JSON object is extracted before
-/// parsing, and an unknown label or non-finite score is a structured error
-/// rather than a panic.
-fn parse_nli_response(value: &Value) -> Result<NliVerdict, BackendError> {
-    let endpoint = "/chat/completions";
-    let content = extract_chat_content(value)?;
-    let object = extract_json_object(&content).ok_or_else(|| BackendError::UnexpectedResponse {
-        endpoint,
-        detail: format!("judge reply contained no JSON object: {content:?}"),
-    })?;
-    let verdict: JudgeVerdict =
-        serde_json::from_str(object).map_err(|source| BackendError::Parse { endpoint, source })?;
-
-    let label =
-        parse_entailment_label(&verdict.label).ok_or_else(|| BackendError::UnexpectedResponse {
-            endpoint,
-            detail: format!("judge returned an unrecognised label: {:?}", verdict.label),
-        })?;
-
-    if !verdict.score.is_finite() {
-        return Err(BackendError::UnexpectedResponse {
-            endpoint,
-            detail: format!("judge returned a non-finite score: {}", verdict.score),
-        });
-    }
-    let score = verdict.score.clamp(0.0, 1.0);
-
-    Ok(NliVerdict { label, score })
-}
-
-impl Nli for OpenRouterNli {
-    fn classify(&self, premise: &str, hypothesis: &str) -> Result<NliVerdict, SemanticsError> {
-        let body = build_nli_request(&self.model, premise, hypothesis);
-        let value = self.client.post_json("/chat/completions", &body)?;
-        let verdict = parse_nli_response(&value)?;
-        Ok(verdict)
-    }
-}
-
-// =====================================================================
 // Claim relation (LLM-as-judge over chat/completions)
 // =====================================================================
 
@@ -650,23 +371,30 @@ fn relation_response_format() -> Value {
 /// could not.
 pub struct OpenRouterRelater {
     client: OpenRouterClient,
-    model: String,
+    role: ResolvedRole,
 }
 
 impl OpenRouterRelater {
-    /// Build a relation judge. The model id is resolved from `model` (if `Some`
-    /// and non-empty), then `OPENROUTER_RELATER_MODEL`, then the default
-    /// ([`DEFAULT_RELATER_MODEL`]). Reads the API key and base URL from the
-    /// environment.
+    /// Build a relation judge through the shared gateway resolver.
     ///
     /// # Errors
     ///
-    /// Returns [`SemanticsError::Backend`] when `OPENROUTER_API_KEY` is absent
-    /// or the configured base URL is invalid.
-    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
-        let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, Some(ENV_RELATER_MODEL), DEFAULT_RELATER_MODEL);
-        Ok(Self { client, model })
+    /// Returns [`SemanticsError::Backend`] when the resolved role has no key or
+    /// the configured base URL is invalid.
+    pub fn new(
+        model: Option<String>,
+        gateway: Option<&GatewayConfig>,
+    ) -> Result<Self, SemanticsError> {
+        let role = resolve_role(
+            ModelRole::Relate,
+            &RoleOverrides {
+                model,
+                ..RoleOverrides::default()
+            },
+            gateway,
+        );
+        let client = OpenRouterClient::from_role(&role)?;
+        Ok(Self { client, role })
     }
 }
 
@@ -679,18 +407,25 @@ struct JudgeRelation {
 
 /// Build the chat-completions request body for a claim-relation judgment. The
 /// older claim is the premise, the newer the more-recent claim under judgment.
-fn build_relation_request(model: &str, older: &str, newer: &str) -> Value {
+fn build_relation_request(role: &ResolvedRole, older: &str, newer: &str) -> Value {
     let user = format!("First (older) claim: {older}\nSecond (newer) claim: {newer}");
-    json!({
-        "model": model,
-        "temperature": 0,
-        "max_tokens": MAX_COMPLETION_TOKENS,
-        "response_format": relation_response_format(),
+    let mut body = json!({
+        "model": role.config.model,
+        "temperature": role.config.temperature,
+        "max_tokens": role.config.max_completion_tokens,
         "messages": [
             { "role": "system", "content": RELATION_SYSTEM_PROMPT },
             { "role": "user", "content": user }
         ]
-    })
+    });
+    if matches!(
+        role.config.response_format,
+        ResponseFormatPolicy::JsonSchema
+    ) && role.profile.strict_json_schema_ok
+    {
+        body["response_format"] = relation_response_format();
+    }
+    body
 }
 
 /// Map a judge relation string onto [`ClaimRelation`], tolerant of casing and
@@ -708,9 +443,12 @@ fn parse_relation_label(raw: &str) -> Option<ClaimRelation> {
 /// Parse a chat-completions response into a [`RelationVerdict`], defensively (the
 /// reply may carry stray prose or fences; an unknown label or non-finite score is
 /// a structured error, never a panic).
-fn parse_relation_response(value: &Value) -> Result<RelationVerdict, BackendError> {
+fn parse_relation_response(
+    value: &Value,
+    max_tokens: u32,
+) -> Result<RelationVerdict, BackendError> {
     let endpoint = "/chat/completions";
-    let content = extract_chat_content(value)?;
+    let content = extract_chat_content(value, max_tokens)?;
     let object = extract_json_object(&content).ok_or_else(|| BackendError::UnexpectedResponse {
         endpoint,
         detail: format!("judge reply contained no JSON object: {content:?}"),
@@ -741,16 +479,16 @@ fn parse_relation_response(value: &Value) -> Result<RelationVerdict, BackendErro
 
 impl ClaimRelater for OpenRouterRelater {
     fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
-        let body = build_relation_request(&self.model, older, newer);
+        let body = build_relation_request(&self.role, older, newer);
         let value = self.client.post_json("/chat/completions", &body)?;
-        let verdict = parse_relation_response(&value)?;
+        let verdict = parse_relation_response(&value, self.role.config.max_completion_tokens)?;
         Ok(verdict)
     }
 
     fn fingerprint(&self) -> String {
         format!(
-            "openrouter:{}|relation-v{RELATION_PROMPT_VERSION}",
-            self.model
+            "{}:{}|relation-v{RELATION_PROMPT_VERSION}",
+            self.role.provider_id, self.role.config.model
         )
     }
 }
@@ -791,35 +529,34 @@ sentence), subject, predicate, object, and confidence (an integer from 0 to \
 \"subject\": ..., \"predicate\": ..., \"object\": ..., \"confidence\": ...}]}. \
 No prose, no markdown, no code fences.";
 
-/// Default Stage-1 extractor model. A capable instruction-follower for prod;
-/// override with `OPENROUTER_EXTRACTOR_MODEL` (e.g. a free model for testing).
-/// Note the `OpenRouter` slug uses a dotted version (`4.8`), unlike the Anthropic
-/// API's dashed model id (`claude-opus-4-8`).
-const DEFAULT_EXTRACTOR_MODEL: &str = "anthropic/claude-opus-4.8";
-/// Environment variable overriding the extractor model.
-const ENV_EXTRACTOR_MODEL: &str = "OPENROUTER_EXTRACTOR_MODEL";
-
 /// Hosted Stage-1 claim proposer over `OpenRouter` chat completions. Implements
 /// [`Proposer`].
 pub struct OpenRouterProposer {
     client: OpenRouterClient,
-    model: String,
+    role: ResolvedRole,
 }
 
 impl OpenRouterProposer {
-    /// Build a proposer. The model id is resolved from `model` (if `Some` and
-    /// non-empty), then `OPENROUTER_EXTRACTOR_MODEL`, then the default
-    /// ([`DEFAULT_EXTRACTOR_MODEL`]). Reads the API key and base URL from the
-    /// environment.
+    /// Build a proposer through the shared gateway resolver.
     ///
     /// # Errors
     ///
-    /// Returns [`SemanticsError::Backend`] when `OPENROUTER_API_KEY` is absent
-    /// or the configured base URL is invalid.
-    pub fn new(model: Option<String>) -> Result<Self, SemanticsError> {
-        let client = OpenRouterClient::from_env()?;
-        let model = resolve_model(model, Some(ENV_EXTRACTOR_MODEL), DEFAULT_EXTRACTOR_MODEL);
-        Ok(Self { client, model })
+    /// Returns [`SemanticsError::Backend`] when the resolved role has no key or
+    /// the configured base URL is invalid.
+    pub fn new(
+        model: Option<String>,
+        gateway: Option<&GatewayConfig>,
+    ) -> Result<Self, SemanticsError> {
+        let role = resolve_role(
+            ModelRole::Propose,
+            &RoleOverrides {
+                model,
+                ..RoleOverrides::default()
+            },
+            gateway,
+        );
+        let client = OpenRouterClient::from_role(&role)?;
+        Ok(Self { client, role })
     }
 }
 
@@ -829,16 +566,16 @@ impl Proposer for OpenRouterProposer {
         span_text: &str,
         heading_path: &[String],
     ) -> Result<Vec<ProposedClaim>, SemanticsError> {
-        let body = build_propose_request(&self.model, span_text, heading_path);
+        let body = build_propose_request(&self.role, span_text, heading_path);
         let value = self.client.post_json("/chat/completions", &body)?;
-        let claims = parse_propose_response(&value)?;
+        let claims = parse_propose_response(&value, self.role.config.max_completion_tokens)?;
         Ok(claims)
     }
 
     fn fingerprint(&self) -> String {
         format!(
-            "openrouter:{}|propose-v{PROPOSE_PROMPT_VERSION}",
-            self.model
+            "{}:{}|propose-v{PROPOSE_PROMPT_VERSION}",
+            self.role.provider_id, self.role.config.model
         )
     }
 }
@@ -865,7 +602,7 @@ struct ProposeReply {
 }
 
 /// Build the chat-completions request body for a Stage-1 proposal over one span.
-fn build_propose_request(model: &str, span_text: &str, heading_path: &[String]) -> Value {
+fn build_propose_request(role: &ResolvedRole, span_text: &str, heading_path: &[String]) -> Value {
     let context = if heading_path.is_empty() {
         String::new()
     } else {
@@ -876,9 +613,9 @@ fn build_propose_request(model: &str, span_text: &str, heading_path: &[String]) 
     // can degenerate into repetition loops on the variable-length claim array.
     // Anthropic emits clean JSON from the prompt alone, parsed defensively below.
     json!({
-        "model": model,
-        "temperature": 0,
-        "max_tokens": MAX_PROPOSE_TOKENS,
+        "model": role.config.model,
+        "temperature": role.config.temperature,
+        "max_tokens": role.config.max_completion_tokens,
         "messages": [
             { "role": "system", "content": PROPOSE_SYSTEM_PROMPT },
             { "role": "user", "content": user }
@@ -889,9 +626,12 @@ fn build_propose_request(model: &str, span_text: &str, heading_path: &[String]) 
 /// Parse a chat-completions response into proposed claims, defensively. Claims
 /// whose `text` is blank are dropped; confidence is clamped to `[0, 1]` and
 /// rescaled to parts-per-million.
-fn parse_propose_response(value: &Value) -> Result<Vec<ProposedClaim>, BackendError> {
+fn parse_propose_response(
+    value: &Value,
+    max_tokens: u32,
+) -> Result<Vec<ProposedClaim>, BackendError> {
     let endpoint = "/chat/completions";
-    let content = extract_chat_content(value)?;
+    let content = extract_chat_content(value, max_tokens)?;
     let object = extract_json_object(&content).ok_or_else(|| BackendError::UnexpectedResponse {
         endpoint,
         detail: format!("proposer reply contained no JSON object: {content:?}"),
@@ -922,6 +662,18 @@ fn parse_propose_response(value: &Value) -> Result<Vec<ProposedClaim>, BackendEr
 mod tests {
     use super::*;
 
+    fn test_role(role: ModelRole, model: &str) -> ResolvedRole {
+        resolve_role(
+            role,
+            &RoleOverrides {
+                api_key: Some("test-key".to_string()),
+                model: Some(model.to_string()),
+                ..RoleOverrides::default()
+            },
+            None,
+        )
+    }
+
     // --- request-body construction ---
 
     #[test]
@@ -932,26 +684,22 @@ mod tests {
     }
 
     #[test]
-    fn rerank_request_has_model_query_documents() {
-        let body = build_rerank_request("cohere/rerank-4-pro", "q", &["a", "b"]);
-        assert_eq!(body["model"], "cohere/rerank-4-pro");
-        assert_eq!(body["query"], "q");
-        assert_eq!(body["documents"], json!(["a", "b"]));
-    }
+    fn default_provider_fingerprints_remain_byte_stable() {
+        let relate_role = test_role(ModelRole::Relate, "relation/model");
+        let relate_client = OpenRouterClient::from_role(&relate_role).expect("client");
+        let relater = OpenRouterRelater {
+            client: relate_client,
+            role: relate_role,
+        };
+        assert_eq!(relater.fingerprint(), "openrouter:relation/model|relation-v2");
 
-    #[test]
-    fn nli_request_carries_prompt_and_strict_format() {
-        let body = build_nli_request("some/model", "P text", "H text");
-        assert_eq!(body["model"], "some/model");
-        assert_eq!(body["temperature"], 0);
-        assert_eq!(body["response_format"]["type"], "json_schema");
-        let messages = body["messages"].as_array().expect("messages array");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[1]["role"], "user");
-        let user = messages[1]["content"].as_str().expect("user content");
-        assert!(user.contains("P text"));
-        assert!(user.contains("H text"));
+        let propose_role = test_role(ModelRole::Propose, "propose/model");
+        let propose_client = OpenRouterClient::from_role(&propose_role).expect("client");
+        let proposer = OpenRouterProposer {
+            client: propose_client,
+            role: propose_role,
+        };
+        assert_eq!(proposer.fingerprint(), "openrouter:propose/model|propose-v3");
     }
 
     // --- embeddings parsing ---
@@ -1002,140 +750,47 @@ mod tests {
         assert!(matches!(err, BackendError::Parse { .. }));
     }
 
-    // --- rerank parsing ---
-
-    #[test]
-    fn rerank_response_realigns_to_document_order() {
-        let value = json!({
-            "results": [
-                { "index": 2, "relevance_score": 0.9 },
-                { "index": 0, "relevance_score": 0.1 },
-                { "index": 1, "relevance_score": 0.5 }
-            ]
-        });
-        let scores = parse_rerank_response(&value, 3).expect("parse");
-        assert_eq!(scores, vec![0.1, 0.5, 0.9]);
-    }
-
-    #[test]
-    fn rerank_response_out_of_range_index_is_error() {
-        let value = json!({ "results": [ { "index": 5, "relevance_score": 0.9 } ] });
-        let err = parse_rerank_response(&value, 1).expect_err("out of range");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
-    #[test]
-    fn rerank_response_duplicate_index_is_error() {
-        let value = json!({
-            "results": [
-                { "index": 0, "relevance_score": 0.1 },
-                { "index": 0, "relevance_score": 0.2 }
-            ]
-        });
-        let err = parse_rerank_response(&value, 2).expect_err("duplicate index");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
-    #[test]
-    fn rerank_response_wrong_count_is_error() {
-        let value = json!({ "results": [ { "index": 0, "relevance_score": 0.1 } ] });
-        let err = parse_rerank_response(&value, 2).expect_err("count mismatch");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
-    // --- NLI parsing + label mapping ---
-
-    #[test]
-    fn nli_label_strings_map_to_entailment() {
-        assert_eq!(
-            parse_entailment_label("ENTAILMENT"),
-            Some(Entailment::Entailment)
-        );
-        assert_eq!(
-            parse_entailment_label(" neutral "),
-            Some(Entailment::Neutral)
-        );
-        assert_eq!(
-            parse_entailment_label("contradiction"),
-            Some(Entailment::Contradiction)
-        );
-        assert_eq!(
-            parse_entailment_label("contradicts"),
-            Some(Entailment::Contradiction)
-        );
-        assert_eq!(parse_entailment_label("nonsense"), None);
-    }
-
     /// Helper that wraps a judge content string in a chat-completions envelope.
     fn chat_envelope(content: &str) -> Value {
         json!({ "choices": [ { "message": { "role": "assistant", "content": content } } ] })
     }
 
-    #[test]
-    fn nli_response_parses_clean_json() {
-        let value = chat_envelope("{\"label\": \"contradiction\", \"score\": 0.92}");
-        let verdict = parse_nli_response(&value).expect("parse");
-        assert_eq!(verdict.label, Entailment::Contradiction);
-        assert!((verdict.score - 0.92).abs() < 1e-6);
+    fn chat_envelope_with_reason(content: &str, finish_reason: &str) -> Value {
+        json!({
+            "choices": [{
+                "finish_reason": finish_reason,
+                "message": { "role": "assistant", "content": content }
+            }]
+        })
     }
 
     #[test]
-    fn nli_response_tolerates_prose_and_fences() {
-        let value = chat_envelope(
-            "Sure! Here is the verdict:\n```json\n{\"label\": \"entailment\", \"score\": 0.7}\n```",
-        );
-        let verdict = parse_nli_response(&value).expect("parse");
-        assert_eq!(verdict.label, Entailment::Entailment);
-        assert!((verdict.score - 0.7).abs() < 1e-6);
-    }
+    fn positive_length_finish_is_truncated_but_unknown_reason_is_preserved() {
+        let truncated = parse_relation_response(&chat_envelope_with_reason("", "length"), 4096)
+            .expect_err("positive truncation");
+        assert!(matches!(
+            truncated,
+            BackendError::Truncated {
+                finish_reason,
+                max_tokens: 4096,
+                ..
+            } if finish_reason == "length"
+        ));
 
-    #[test]
-    fn nli_response_clamps_out_of_range_score() {
-        let value = chat_envelope("{\"label\": \"neutral\", \"score\": 1.5}");
-        let verdict = parse_nli_response(&value).expect("parse");
-        assert_eq!(verdict.label, Entailment::Neutral);
-        assert!((verdict.score - 1.0).abs() < 1e-6);
+        let unknown =
+            parse_relation_response(&chat_envelope_with_reason("", "weird_variant"), 4096)
+                .expect_err("unknown finish reason is malformed, not truncation");
+        assert!(matches!(unknown, BackendError::UnexpectedResponse { .. }));
+        assert!(unknown.to_string().contains("weird_variant"));
     }
-
-    #[test]
-    fn nli_response_unknown_label_is_error() {
-        let value = chat_envelope("{\"label\": \"maybe\", \"score\": 0.5}");
-        let err = parse_nli_response(&value).expect_err("unknown label");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
-    #[test]
-    fn nli_response_non_finite_score_is_error() {
-        // NaN is not representable in JSON, so deliver it via a string the parser
-        // will reject as a Parse error; an out-of-band non-finite path is also
-        // covered by the clamp test. Here assert a missing score is rejected.
-        let value = chat_envelope("{\"label\": \"neutral\"}");
-        let err = parse_nli_response(&value).expect_err("missing score");
-        assert!(matches!(err, BackendError::Parse { .. }));
-    }
-
-    #[test]
-    fn nli_response_no_json_object_is_error() {
-        let value = chat_envelope("I cannot help with that.");
-        let err = parse_nli_response(&value).expect_err("no json");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
-    #[test]
-    fn nli_response_missing_content_is_error() {
-        let value = json!({ "choices": [] });
-        let err = parse_nli_response(&value).expect_err("no content");
-        assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
-    }
-
     // --- claim-relation parsing + label mapping ---
 
     #[test]
     fn relation_request_carries_prompt_and_strict_format() {
-        let body =
-            build_relation_request("nvidia/nemotron-3-ultra-550b-a55b", "older X", "newer Y");
+        let role = test_role(ModelRole::Relate, "nvidia/nemotron-3-ultra-550b-a55b");
+        let body = build_relation_request(&role, "older X", "newer Y");
         assert_eq!(body["model"], "nvidia/nemotron-3-ultra-550b-a55b");
-        assert_eq!(body["temperature"], 0);
+        assert_eq!(body["temperature"], json!(0.0));
         assert_eq!(
             body["response_format"]["json_schema"]["name"],
             "claim_relation"
@@ -1148,6 +803,14 @@ mod tests {
         assert!(user.contains("newer Y"));
         // Order must be conveyed: older is labeled first, newer second.
         assert!(user.find("older X") < user.find("newer Y"));
+    }
+
+    #[test]
+    fn provider_capability_suppresses_unsupported_response_format() {
+        let mut role = test_role(ModelRole::Relate, "provider/model");
+        role.profile.strict_json_schema_ok = false;
+        let body = build_relation_request(&role, "older", "newer");
+        assert!(body.get("response_format").is_none());
     }
 
     #[test]
@@ -1174,7 +837,7 @@ mod tests {
     #[test]
     fn relation_response_parses_clean_json() {
         let value = chat_envelope("{\"relation\": \"supersedes\", \"score\": 0.88}");
-        let verdict = parse_relation_response(&value).expect("parse");
+        let verdict = parse_relation_response(&value, 4096).expect("parse");
         assert_eq!(verdict.relation, ClaimRelation::Supersedes);
         assert!((verdict.score - 0.88).abs() < 1e-6);
     }
@@ -1182,7 +845,7 @@ mod tests {
     #[test]
     fn relation_response_tolerates_fences_and_clamps_score() {
         let value = chat_envelope("```json\n{\"relation\": \"conflict\", \"score\": 1.4}\n```");
-        let verdict = parse_relation_response(&value).expect("parse");
+        let verdict = parse_relation_response(&value, 4096).expect("parse");
         assert_eq!(verdict.relation, ClaimRelation::Conflict);
         assert!((verdict.score - 1.0).abs() < 1e-6);
     }
@@ -1190,14 +853,14 @@ mod tests {
     #[test]
     fn relation_response_unknown_label_is_error() {
         let value = chat_envelope("{\"relation\": \"maybe\", \"score\": 0.5}");
-        let err = parse_relation_response(&value).expect_err("unknown relation");
+        let err = parse_relation_response(&value, 4096).expect_err("unknown relation");
         assert!(matches!(err, BackendError::UnexpectedResponse { .. }));
     }
 
     #[test]
     fn relation_response_missing_score_is_parse_error() {
         let value = chat_envelope("{\"relation\": \"unrelated\"}");
-        let err = parse_relation_response(&value).expect_err("missing score");
+        let err = parse_relation_response(&value, 4096).expect_err("missing score");
         assert!(matches!(err, BackendError::Parse { .. }));
     }
 
@@ -1205,8 +868,9 @@ mod tests {
 
     #[test]
     fn propose_request_includes_heading_context_and_schema() {
+        let role = test_role(ModelRole::Propose, "anthropic/claude-opus-4.8");
         let body = build_propose_request(
-            "anthropic/claude-opus-4.8",
+            &role,
             "Deploys moved to Tuesday.",
             &["Operations".to_owned(), "Deploys".to_owned()],
         );
@@ -1218,7 +882,8 @@ mod tests {
 
     #[test]
     fn propose_request_without_headings_has_no_section_line() {
-        let body = build_propose_request("m", "Some span.", &[]);
+        let role = test_role(ModelRole::Propose, "m");
+        let body = build_propose_request(&role, "Some span.", &[]);
         let user = body["messages"][1]["content"].as_str().expect("user");
         assert!(!user.contains("Section:"));
         assert!(user.starts_with("Span:"));
@@ -1229,7 +894,7 @@ mod tests {
         let value = chat_envelope(
             "{\"claims\":[{\"text\":\"Deploys moved to Tuesday.\",\"subject\":\"deploys\",\"predicate\":\"scheduled\",\"object\":\"Tuesday\",\"confidence\":90}]}",
         );
-        let claims = parse_propose_response(&value).expect("parse");
+        let claims = parse_propose_response(&value, 2048).expect("parse");
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].text, "Deploys moved to Tuesday.");
         assert_eq!(claims[0].subject, "deploys");
@@ -1241,7 +906,7 @@ mod tests {
         let value = chat_envelope(
             "{\"claims\":[{\"text\":\"   \",\"subject\":\"\",\"predicate\":\"\",\"object\":\"\",\"confidence\":50},{\"text\":\"Real claim.\",\"subject\":\"x\",\"predicate\":\"y\",\"object\":\"z\",\"confidence\":170}]}",
         );
-        let claims = parse_propose_response(&value).expect("parse");
+        let claims = parse_propose_response(&value, 2048).expect("parse");
         assert_eq!(claims.len(), 1, "blank-text claim dropped");
         assert_eq!(claims[0].text, "Real claim.");
         assert_eq!(
@@ -1253,7 +918,7 @@ mod tests {
     #[test]
     fn propose_response_empty_list_is_ok() {
         let value = chat_envelope("{\"claims\":[]}");
-        let claims = parse_propose_response(&value).expect("parse");
+        let claims = parse_propose_response(&value, 2048).expect("parse");
         assert!(claims.is_empty());
     }
 
@@ -1262,7 +927,7 @@ mod tests {
         let value = chat_envelope(
             "```json\n{\"claims\":[{\"text\":\"A.\",\"subject\":\"a\",\"predicate\":\"b\",\"object\":\"c\",\"confidence\":40}]}\n```",
         );
-        let claims = parse_propose_response(&value).expect("parse");
+        let claims = parse_propose_response(&value, 2048).expect("parse");
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].confidence_ppm, 400_000);
     }
@@ -1270,103 +935,16 @@ mod tests {
     #[test]
     fn propose_response_missing_claims_key_is_parse_error() {
         let value = chat_envelope("{\"items\":[]}");
-        let err = parse_propose_response(&value).expect_err("missing claims");
+        let err = parse_propose_response(&value, 2048).expect_err("missing claims");
         assert!(matches!(err, BackendError::Parse { .. }));
     }
 
-    // --- model resolution ---
-
-    #[test]
-    fn resolve_model_prefers_explicit() {
-        let model = resolve_model(Some("explicit/model".to_owned()), None, "default/model");
-        assert_eq!(model, "explicit/model");
-    }
-
-    #[test]
-    fn resolve_model_falls_back_to_default() {
-        let model = resolve_model(None, None, "default/model");
-        assert_eq!(model, "default/model");
-    }
-
-    #[test]
-    fn resolve_model_ignores_blank_explicit() {
-        let model = resolve_model(Some("   ".to_owned()), None, "default/model");
-        assert_eq!(model, "default/model");
-    }
-
-    #[test]
-    fn pick_model_env_sits_between_explicit_and_default() {
-        assert_eq!(
-            pick_model(None, Some("env/model".to_owned()), "default/model"),
-            "env/model"
-        );
-        assert_eq!(
-            pick_model(
-                Some("explicit/model".to_owned()),
-                Some("env/model".to_owned()),
-                "default/model"
-            ),
-            "explicit/model"
-        );
-        assert_eq!(pick_model(None, None, "default/model"), "default/model");
-    }
-
-    #[test]
-    fn pick_model_ignores_blank_env() {
-        assert_eq!(
-            pick_model(None, Some("   ".to_owned()), "default/model"),
-            "default/model"
-        );
-    }
-
-    // --- live smoke test (network + key required) ---
-
-    /// Live smoke test against the real `OpenRouter` API. Ignored by default; run
-    /// with `cargo test -p texo-semantics -- --ignored`. Skips cleanly (returns
-    /// early) when `OPENROUTER_API_KEY` is not set, so it never fails for lack of
-    /// a key.
-    #[test]
-    #[ignore = "hits the live OpenRouter API; requires OPENROUTER_API_KEY"]
-    fn live_embeds_and_classifies() {
-        use crate::semantics::cosine_similarity;
-
-        if std::env::var(ENV_API_KEY)
-            .ok()
-            .filter(|k| !k.trim().is_empty())
-            .is_none()
-        {
-            return;
-        }
-
-        let embedder = OpenRouterEmbedder::new(None).expect("build embedder");
-        let base = embedder
-            .embed("Deploys happen on Friday")
-            .expect("embed base");
-        let paraphrase = embedder
-            .embed("The deploy schedule is Friday")
-            .expect("embed paraphrase");
-        let unrelated = embedder.embed("Lunch was tacos").expect("embed unrelated");
-
-        let para_sim = cosine_similarity(&base, &paraphrase);
-        let unrel_sim = cosine_similarity(&base, &unrelated);
-        assert!(
-            para_sim > unrel_sim,
-            "paraphrase cosine ({para_sim:.4}) should exceed unrelated ({unrel_sim:.4})"
-        );
-
-        let nli = OpenRouterNli::new(None).expect("build nli");
-        let verdict = nli
-            .classify("Deploys moved to Tuesday.", "Deploys happen on Friday.")
-            .expect("classify");
-        assert_eq!(verdict.label, Entailment::Contradiction);
-    }
-
-    /// PROVES: the three chat-completions response parsers are TOTAL functions on
+    /// PROVES: the chat-completions response parsers are TOTAL functions on
     /// arbitrary model output — they return `Ok` or a typed `Err`, never panic —
     /// and when `Ok`, scores are clamped to `[0,1]` and confidence to `0..=1e6`.
     /// The cargo-fuzz substitute for the judge/proposer parsers.
     mod robustness {
-        use super::super::{parse_nli_response, parse_propose_response, parse_relation_response};
+        use super::super::{parse_propose_response, parse_relation_response};
         use super::chat_envelope;
         use proptest::prelude::*;
 
@@ -1374,22 +952,15 @@ mod tests {
             #![proptest_config(ProptestConfig::with_cases(128))]
 
             #[test]
-            fn nli_parser_is_total(content in any::<String>()) {
-                if let Ok(v) = parse_nli_response(&chat_envelope(&content)) {
-                    prop_assert!((0.0..=1.0).contains(&v.score));
-                }
-            }
-
-            #[test]
             fn relation_parser_is_total(content in any::<String>()) {
-                if let Ok(v) = parse_relation_response(&chat_envelope(&content)) {
+                if let Ok(v) = parse_relation_response(&chat_envelope(&content), 4096) {
                     prop_assert!((0.0..=1.0).contains(&v.score));
                 }
             }
 
             #[test]
             fn propose_parser_is_total(content in any::<String>()) {
-                if let Ok(claims) = parse_propose_response(&chat_envelope(&content)) {
+                if let Ok(claims) = parse_propose_response(&chat_envelope(&content), 2048) {
                     for c in claims {
                         prop_assert!(c.confidence_ppm <= 1_000_000);
                         prop_assert!(!c.text.trim().is_empty());

@@ -85,9 +85,9 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 }
 
 #[test]
-#[ignore = "live OpenRouter e2e; requires OPENROUTER_API_KEY"]
+#[ignore = "live model e2e; requires TEXO_LLM_API_KEY"]
 fn helios_live_e2e_reaches_oracle() -> TestResult {
-    let Ok(key) = std::env::var("OPENROUTER_API_KEY") else {
+    let Ok(key) = std::env::var("TEXO_LLM_API_KEY") else {
         return Ok(());
     };
     if key.trim().is_empty() {

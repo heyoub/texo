@@ -54,7 +54,7 @@ demo-fresh:
 demo-helios:
     #!/usr/bin/env bash
     set -euo pipefail
-    : "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY to run the semantic demo}"
+    : "${TEXO_LLM_API_KEY:?set TEXO_LLM_API_KEY to run the semantic demo}"
     # Build the LLM extractor and the CLI.
     cargo build -q --bin texo
     EXTRACT="$(pwd)/target/debug/texo extract"
@@ -103,7 +103,7 @@ mcp:
 
 # Ingest the repo's own prose and show which architecture claims are
 # current vs superseded. Informational: always exits 0. Set
-# OPENROUTER_API_KEY for the semantic relate pass; the heuristic
+# TEXO_LLM_API_KEY for the semantic relate pass; the heuristic
 # supersession runs without it.
 drift:
     #!/usr/bin/env bash
@@ -119,7 +119,7 @@ drift:
     ( cd "$DIR" \
       && "$TEXO" init --workspace drift \
       && "$TEXO" ingest docs \
-      && { [ -n "${OPENROUTER_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
+      && { [ -n "${TEXO_LLM_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
       && echo "================ drift: claims ================" \
       && "$TEXO" claims \
       && echo "================ drift: conflicts ================" \
@@ -143,6 +143,6 @@ drift-ui:
     ( cd "$DIR" \
       && "$TEXO" init --workspace drift \
       && "$TEXO" ingest docs \
-      && { [ -n "${OPENROUTER_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
+      && { [ -n "${TEXO_LLM_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
       && "$TEXO" claims --json > "$OUT" )
     echo "wrote $OUT ($(grep -c 'claim_id' "$OUT") claims)"

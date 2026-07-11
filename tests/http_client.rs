@@ -89,8 +89,8 @@ fn retry_after_is_honored() {
         ),
         Step::Respond(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}".to_vec()),
     ]);
-    let client =
-        OpenAiCompatClient::from_env_vars(Some("key".to_string()), Some(base)).expect("client");
+    let client = OpenAiCompatClient::new(&base, "key".to_string(), 4, Duration::from_secs(120))
+        .expect("client");
     let started = Instant::now();
     let response = client
         .post_json("/chat/completions", &json!({}))

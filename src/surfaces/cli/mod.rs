@@ -83,7 +83,7 @@ enum Command {
         #[arg(long, default_value = "public")]
         out: PathBuf,
     },
-    /// Semantic supersession + conflict pass (`OpenRouter`; needs `OPENROUTER_API_KEY`).
+    /// Semantic supersession + conflict pass (needs `TEXO_LLM_API_KEY`).
     Relate {
         #[arg(long)]
         json: bool,
@@ -409,13 +409,19 @@ fn serve(
     })?;
     render::serve_listening(local);
     let store = crate::host::open_workspace_store(&root, &workspace)?;
+    let gateway = crate::config::TexoRootConfig::load(&root.join(".texo/config.toml"))
+        .ok()
+        .and_then(|config| config.gateway);
+    let chat_role = crate::gateway::resolve_role(
+        crate::gateway::ModelRole::Chat,
+        &crate::gateway::RoleOverrides::default(),
+        gateway.as_ref(),
+    );
     let state = crate::surfaces::http::routes::RouteState {
         root,
         workspace_id: workspace,
         store: Some(store),
-        chat_enabled: crate::host::grants_model_capability(
-            std::env::var("OPENROUTER_API_KEY").ok(),
-        ),
+        chat_enabled: crate::host::grants_model_capability(Some(chat_role.api_key)),
     };
     let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);
     let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
@@ -449,7 +455,11 @@ fn extract_impl(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("reading {}: {error}", path.display()))?;
     let cache_dir =
         PathBuf::from(std::env::var_os(ENV_CACHE_DIR).unwrap_or_else(|| DEFAULT_CACHE_DIR.into()));
-    let proposer = CachingProposer::new(OpenRouterProposer::new(None)?, cache_dir);
+    let gateway = crate::config::TexoRootConfig::load(Path::new(".texo/config.toml"))
+        .ok()
+        .and_then(|config| config.gateway);
+    let proposer =
+        CachingProposer::new(OpenRouterProposer::new(None, gateway.as_ref())?, cache_dir);
     let claims = run_extraction(&source, &proposer, DEFAULT_GROUNDING_THRESHOLD_PPM)?;
 
     let stdout = std::io::stdout();

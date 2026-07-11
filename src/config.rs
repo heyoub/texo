@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::events::ids::WorkspaceId;
+use crate::gateway::GatewayConfig;
 
 const DEFAULT_WORKSPACE_ID: &str = "demo";
 const DEFAULT_STORE_PATH: &str = ".texo/store";
@@ -83,10 +84,10 @@ pub struct WorkspaceConfig {
     /// Optional, disabled-by-default semantic ML pipeline configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantics: Option<SemanticsConfig>,
+    /// Optional process-wide model gateway configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayConfig>,
 }
-
-/// Backward-compatible alias for [`WorkspaceConfig`].
-pub type TexoConfig = WorkspaceConfig;
 
 /// Per-workspace entry in the root config file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,17 +114,9 @@ pub struct TexoRootConfig {
     /// Named workspace configurations.
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceEntry>,
-}
-
-/// Legacy flat config shape (pre-v1).
-#[derive(Debug, Deserialize)]
-struct LegacyFlatConfig {
-    workspace_id: String,
-    store_path: String,
-    docs_glob: String,
-    extractor_cmd: Option<String>,
-    #[serde(default)]
-    semantics: Option<SemanticsConfig>,
+    /// Optional model gateway configuration. Bootstrap never writes this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayConfig>,
 }
 
 impl WorkspaceEntry {
@@ -159,34 +152,18 @@ impl TexoRootConfig {
         Self {
             default_workspace: DEFAULT_WORKSPACE_ID.to_string(),
             workspaces,
+            gateway: None,
         }
     }
 
-    /// Load configuration from a TOML file (legacy flat or nested workspaces).
+    /// Load configuration from a TOML file.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError::Io`] when the config file cannot be read;
-    /// [`ConfigError::Parse`] when it is valid as neither the legacy flat shape
-    /// nor the nested root shape.
+    /// [`ConfigError::Parse`] when it does not match the current root shape.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let raw = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
-        if let Ok(legacy) = toml::from_str::<LegacyFlatConfig>(&raw) {
-            let mut workspaces = BTreeMap::new();
-            workspaces.insert(
-                legacy.workspace_id.clone(),
-                WorkspaceEntry {
-                    store_path: legacy.store_path,
-                    docs_glob: legacy.docs_glob,
-                    extractor_cmd: legacy.extractor_cmd,
-                    semantics: legacy.semantics,
-                },
-            );
-            return Ok(Self {
-                default_workspace: legacy.workspace_id,
-                workspaces,
-            });
-        }
         toml::from_str(&raw).map_err(ConfigError::Parse)
     }
 
@@ -223,6 +200,7 @@ impl TexoRootConfig {
             docs_glob: entry.docs_glob.clone(),
             extractor_cmd: entry.extractor_cmd.clone(),
             semantics: entry.semantics.clone(),
+            gateway: self.gateway.clone(),
         })
     }
 
@@ -245,6 +223,7 @@ impl WorkspaceConfig {
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         }
     }
 
@@ -278,6 +257,7 @@ impl WorkspaceConfig {
                 semantics: self.semantics.clone(),
             },
         );
+        root.gateway.clone_from(&self.gateway);
         root.save(path)
     }
 
@@ -355,26 +335,6 @@ mod tests {
     use assert_matches::assert_matches;
 
     #[test]
-    fn legacy_flat_config_loads_as_root() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-workspace_id = "demo"
-store_path = ".texo/store"
-docs_glob = "sample_sources/**/*.md"
-"#,
-        )
-        .expect("write");
-
-        let root = TexoRootConfig::load(&path).expect("load");
-        assert_eq!(root.default_workspace, "demo");
-        let ws = root.resolve(None).expect("resolve");
-        assert_eq!(ws.workspace_id, "demo");
-    }
-
-    #[test]
     fn nested_config_resolves_staging() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
@@ -400,6 +360,47 @@ docs_glob = "docs/**/*.md"
     }
 
     #[test]
+    fn gateway_is_read_when_present_and_omitted_from_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+default_workspace = "demo"
+
+[workspaces.demo]
+store_path = ".texo/store"
+docs_glob = "docs/**/*.md"
+
+[gateway.providers.dashscope]
+base_url = "https://dashscope.example/v1"
+api_key_env = "TEXO_LLM_API_KEY"
+embed_batch_max = 10
+strict_json_schema_ok = false
+expects_reasoning = true
+retry_max = 2
+request_timeout_secs = 30
+
+[gateway.relate]
+provider = "dashscope"
+model = "qwen"
+max_completion_tokens = 4096
+temperature = 0.0
+response_format = "json_schema"
+"#,
+        )
+        .expect("write");
+        let loaded = TexoRootConfig::load(&path).expect("load");
+        let gateway = loaded.gateway.as_ref().expect("gateway");
+        assert_eq!(gateway.relate.as_ref().expect("relate").model, "qwen");
+        assert_eq!(gateway.providers["dashscope"].embed_batch_max, 10);
+
+        let default_toml = toml::to_string(&TexoRootConfig::demo()).expect("serialize");
+        assert!(!default_toml.contains("[gateway]"));
+        assert!(!default_toml.contains("[gateway."));
+    }
+
+    #[test]
     fn docs_scan_root_uses_glob_prefix() {
         let root = Path::new("/ws");
 
@@ -412,14 +413,15 @@ docs_glob = "docs/**/*.md"
             docs_glob: "docs/**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         };
         assert_eq!(staging.docs_scan_root(root), root.join("docs"));
     }
 
     #[test]
     fn workspace_config_load_save_roundtrip() {
-        // WorkspaceConfig::save writes a legacy-flat file (creating the parent
-        // dir); WorkspaceConfig::load reads it back as the default workspace.
+        // WorkspaceConfig::save writes the current root shape and creates the
+        // parent directory; WorkspaceConfig::load resolves its default workspace.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nested/dir/config.toml");
         let cfg = WorkspaceConfig {
@@ -428,6 +430,7 @@ docs_glob = "docs/**/*.md"
             docs_glob: "docs/**/*.md".to_string(),
             extractor_cmd: Some("./extract.sh".to_string()),
             semantics: None,
+            gateway: None,
         };
         cfg.save(&path).expect("save");
         assert!(path.exists(), "save must create the parent directories");
@@ -452,6 +455,7 @@ docs_glob = "docs/**/*.md"
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         };
         assert_matches!(bad.workspace(), Err(ConfigError::InvalidWorkspace));
     }
@@ -470,6 +474,7 @@ docs_glob = "docs/**/*.md"
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         };
         // Absolute store paths ignore the root and are returned verbatim.
         assert_eq!(
@@ -486,6 +491,7 @@ docs_glob = "docs/**/*.md"
             docs_glob: "/srv/docs/**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         };
         // An absolute non-wildcard prefix is returned without joining root.
         assert_eq!(
@@ -499,6 +505,7 @@ docs_glob = "docs/**/*.md"
         let mut root = TexoRootConfig {
             default_workspace: "placeholder".to_string(),
             workspaces: BTreeMap::new(),
+            gateway: None,
         };
         // First upsert into an empty map promotes the id to the default.
         root.upsert_workspace("alpha", WorkspaceEntry::for_id("alpha"));
@@ -549,8 +556,7 @@ docs_glob = "docs/**/*.md"
 
     #[test]
     fn load_garbage_toml_is_parse_error() {
-        // Bytes that are neither a valid legacy-flat config nor a valid nested
-        // config must surface as a Parse error (after the legacy attempt fails).
+        // Invalid current-shape TOML must surface as a parse error.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, b"this is = = not valid toml {{{").expect("write");
@@ -559,8 +565,7 @@ docs_glob = "docs/**/*.md"
 
     #[test]
     fn load_well_formed_but_wrong_shape_is_parse_error() {
-        // Valid TOML that satisfies neither shape (missing required fields, and
-        // unknown fields under deny_unknown_fields) must be a Parse error.
+        // Unknown fields under deny_unknown_fields must be a parse error.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, b"unrelated_key = 42\n").expect("write");
@@ -592,6 +597,7 @@ docs_glob = "docs/**/*.md"
             docs_glob: "**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
+            gateway: None,
         };
         assert_eq!(cfg.docs_scan_root(root), root.to_path_buf());
     }

@@ -119,7 +119,7 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
         "POST /api/chat HTTP/1.1\r\nHost: localhost\r\nContent-Length: 44\r\n\r\n{\"session_id\":\"s1\",\"message\":\"hello memory\"}",
     )?;
     assert!(disabled.contains("HTTP/1.1 503 Service Unavailable"));
-    assert!(disabled.contains("chat is disabled: OPENROUTER_API_KEY is not set"));
+    assert!(disabled.contains("chat is disabled: TEXO_LLM_API_KEY is not set"));
 
     let missing = request(
         addr,

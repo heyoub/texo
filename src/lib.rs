@@ -2,6 +2,8 @@
 
 /// Error types.
 pub mod error;
+/// Typed configuration and resolution for every model role.
+pub mod gateway;
 /// Configuration loading and defaults.
 pub mod config;
 /// Event identifiers and schema surfaces.

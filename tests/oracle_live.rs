@@ -46,9 +46,9 @@ fn claim(seq: u64, text: &str, src: &str) -> (ClaimId, ClaimView) {
 }
 
 #[test]
-#[ignore = "live OpenRouter call; requires OPENROUTER_API_KEY"]
+#[ignore = "live model call; requires TEXO_LLM_API_KEY"]
 fn helios_relations_hold_with_real_models() {
-    if std::env::var("OPENROUTER_API_KEY").is_err() {
+    if std::env::var("TEXO_LLM_API_KEY").is_err() {
         return;
     }
 
@@ -84,8 +84,8 @@ fn helios_relations_hold_with_real_models() {
             .unwrap_or_default()
     };
 
-    let embedder = OpenRouterEmbedder::new(None).expect("embedder");
-    let relater = OpenRouterRelater::new(None).expect("relater");
+    let embedder = OpenRouterEmbedder::new(None, None).expect("embedder");
+    let relater = OpenRouterRelater::new(None, None).expect("relater");
 
     let out = relate_claims(&claims, &embedder, &relater, THRESHOLDS).expect("relate");
     let edges = &out.supersessions;

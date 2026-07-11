@@ -73,7 +73,7 @@ fn turns_survive_crash_before_session_end() -> TestResult {
         .expect("session end returns claim count");
     assert!(claims_recorded >= 1);
     let expected_status =
-        if texo::host::grants_model_capability(std::env::var("OPENROUTER_API_KEY").ok()) {
+        if texo::host::grants_model_capability(std::env::var("TEXO_LLM_API_KEY").ok()) {
             "ran"
         } else {
             "skipped"

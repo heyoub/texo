@@ -11,7 +11,7 @@ pub const ENV_EXTRACT_BIN: &str = "TEXO_EXTRACT_BIN";
 /// Environment variable selecting the record-once extractor cache directory.
 pub const ENV_EXTRACT_CACHE: &str = "TEXO_EXTRACT_CACHE";
 /// Environment variable holding the hosted model key.
-pub const ENV_OPENROUTER_API_KEY: &str = "OPENROUTER_API_KEY";
+pub const ENV_MODEL_API_KEY: &str = "TEXO_LLM_API_KEY";
 /// Default extraction cache directory relative to the workspace root.
 pub const DEFAULT_EXTRACT_CACHE: &str = ".texo/extract-cache";
 /// Whether first-run bootstrap may point `extractor_cmd` at `texo extract`.
@@ -22,8 +22,8 @@ pub const EXTRACT_SUBCOMMAND_READY: bool = true;
 pub struct BootstrapInputs {
     /// `TEXO_EXTRACT_BIN` value, when present.
     pub extract_bin: Option<String>,
-    /// `OPENROUTER_API_KEY` value, when present.
-    pub openrouter_api_key: Option<String>,
+    /// Resolved neutral model API-key value, when present.
+    pub model_api_key: Option<String>,
     /// Current executable path.
     pub current_exe: PathBuf,
 }
@@ -58,7 +58,7 @@ pub fn resolve_bootstrap(root: &Path, inputs: &BootstrapInputs) -> BootstrapDeci
         };
     }
     let has_key = inputs
-        .openrouter_api_key
+        .model_api_key
         .as_deref()
         .is_some_and(|key| !key.trim().is_empty());
     if has_key && EXTRACT_SUBCOMMAND_READY {
@@ -72,9 +72,8 @@ pub fn resolve_bootstrap(root: &Path, inputs: &BootstrapInputs) -> BootstrapDeci
     BootstrapDecision {
         extractor_cmd: None,
         semantics_enabled: false,
-        warning: (!has_key).then(|| {
-            "OPENROUTER_API_KEY is not set; using heuristic session extraction".to_string()
-        }),
+        warning: (!has_key)
+            .then(|| "TEXO_LLM_API_KEY is not set; using heuristic session extraction".to_string()),
     }
 }
 
@@ -86,7 +85,7 @@ pub fn resolve_bootstrap(root: &Path, inputs: &BootstrapInputs) -> BootstrapDeci
 pub fn resolve_bootstrap_from_env(root: &Path) -> Result<BootstrapDecision, TexoError> {
     let inputs = BootstrapInputs {
         extract_bin: std::env::var(ENV_EXTRACT_BIN).ok(),
-        openrouter_api_key: std::env::var(ENV_OPENROUTER_API_KEY).ok(),
+        model_api_key: std::env::var(ENV_MODEL_API_KEY).ok(),
         current_exe: std::env::current_exe()?,
     };
     Ok(resolve_bootstrap(root, &inputs))
@@ -133,6 +132,7 @@ pub fn ensure_workspace(
     let config = TexoRootConfig {
         default_workspace: workspace_id.to_string(),
         workspaces,
+        gateway: None,
     };
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -153,7 +153,7 @@ mod tests {
     fn inputs(bin: Option<&str>, key: Option<&str>) -> BootstrapInputs {
         BootstrapInputs {
             extract_bin: bin.map(str::to_string),
-            openrouter_api_key: key.map(str::to_string),
+            model_api_key: key.map(str::to_string),
             current_exe: PathBuf::from("/opt/texo"),
         }
     }
@@ -194,7 +194,7 @@ mod tests {
         assert!(!decision.semantics_enabled);
         assert_eq!(
             decision.warning.as_deref(),
-            Some("OPENROUTER_API_KEY is not set; using heuristic session extraction")
+            Some("TEXO_LLM_API_KEY is not set; using heuristic session extraction")
         );
     }
 }

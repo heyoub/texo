@@ -3,77 +3,15 @@
 //! The memory-grounded system prompt and request body are built by pure
 //! functions (unit-tested, no network). Only [`complete`] talks HTTP, against
 //! any OpenAI-compatible `/chat/completions` endpoint using the same environment
-//! conventions as the semantic backends (`OPENROUTER_BASE_URL`,
-//! `OPENROUTER_API_KEY`) plus `OPENROUTER_CHAT_MODEL` for the chat role.
+//! gateway configuration as every other model role.
 
 use std::fmt::Write as _;
 
 use serde_json::{json, Value};
 
 use crate::error::TexoError;
+use crate::gateway::ResolvedRole;
 use crate::surfaces::openai::OpenAiCompatClient;
-
-/// Default chat model (an `OpenRouter` slug, like the other role defaults).
-/// Override with `OPENROUTER_CHAT_MODEL` — e.g. `qwen3.7-max` when
-/// `OPENROUTER_BASE_URL` points at Qwen Cloud's `DashScope` compatible mode.
-pub const DEFAULT_CHAT_MODEL: &str = "anthropic/claude-opus-4.8";
-/// Default OpenAI-compatible base URL.
-pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-/// Environment variable holding the bearer token.
-pub const ENV_API_KEY: &str = "OPENROUTER_API_KEY";
-/// Environment variable overriding the API base URL.
-pub const ENV_BASE_URL: &str = "OPENROUTER_BASE_URL";
-/// Environment variable overriding the chat model.
-pub const ENV_CHAT_MODEL: &str = "OPENROUTER_CHAT_MODEL";
-/// Completion-token ceiling for one assistant reply.
-const MAX_REPLY_TOKENS: u32 = 1024;
-
-/// Resolved chat backend configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatConfig {
-    /// OpenAI-compatible API base URL.
-    pub base_url: String,
-    /// Bearer token.
-    pub api_key: String,
-    /// Chat model id.
-    pub model: String,
-}
-
-impl ChatConfig {
-    /// Resolve from explicit values. `None` when no API key is set.
-    #[must_use]
-    pub fn from_env_vars(
-        api_key: Option<String>,
-        base_url: Option<String>,
-        model: Option<String>,
-    ) -> Option<Self> {
-        let api_key = api_key.filter(|key| !key.trim().is_empty())?;
-        let base_url = base_url
-            .filter(|url| !url.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned())
-            .trim_end_matches('/')
-            .to_string();
-        let model = model
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_owned());
-        Some(Self {
-            base_url,
-            api_key,
-            model,
-        })
-    }
-
-    /// Resolve from the environment. `None` when no API key is set; chat is
-    /// disabled but memory endpoints can keep working.
-    #[must_use]
-    pub fn from_env() -> Option<Self> {
-        Self::from_env_vars(
-            std::env::var(ENV_API_KEY).ok(),
-            std::env::var(ENV_BASE_URL).ok(),
-            std::env::var(ENV_CHAT_MODEL).ok(),
-        )
-    }
-}
 
 /// Speaker role in a chat transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +181,7 @@ pub fn build_system_prompt(memory: &MemorySnapshot) -> String {
 /// first, then the session's turns in order, then the new user message.
 #[must_use]
 pub fn build_chat_request(
-    model: &str,
+    role: &ResolvedRole,
     system_prompt: &str,
     history: &[Utterance],
     user_message: &str,
@@ -257,8 +195,9 @@ pub fn build_chat_request(
     }
     messages.push(json!({ "role": "user", "content": user_message }));
     json!({
-        "model": model,
-        "max_tokens": MAX_REPLY_TOKENS,
+        "model": role.config.model,
+        "temperature": role.config.temperature,
+        "max_tokens": role.config.max_completion_tokens,
         "messages": messages,
     })
 }
@@ -288,19 +227,15 @@ pub fn parse_chat_reply(value: &Value) -> Result<String, TexoError> {
 ///
 /// Returns [`TexoError::Model`] for client construction, HTTP, JSON, or response
 /// shape failures.
-pub fn complete(config: &ChatConfig, body: &Value) -> Result<String, TexoError> {
-    let client = OpenAiCompatClient::from_env_vars(
-        Some(config.api_key.clone()),
-        Some(config.base_url.clone()),
-    )
-    .map_err(|error| model_from_texo(&error))?;
+pub fn complete(role: &ResolvedRole, body: &Value) -> Result<String, TexoError> {
+    let client = OpenAiCompatClient::from_role(role).map_err(|error| model_from_error(&error))?;
     let value = client
         .post_json("/chat/completions", body)
-        .map_err(|error| model_from_texo(&error))?;
+        .map_err(|error| model_from_error(&error))?;
     parse_chat_reply(&value)
 }
 
-fn model_from_texo(error: &TexoError) -> TexoError {
+fn model_from_error(error: &impl std::error::Error) -> TexoError {
     model_error(error.to_string())
 }
 
@@ -313,6 +248,18 @@ fn model_error(detail: impl Into<String>) -> TexoError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat_role() -> ResolvedRole {
+        crate::gateway::resolve_role(
+            crate::gateway::ModelRole::Chat,
+            &crate::gateway::RoleOverrides {
+                api_key: Some("test-key".to_string()),
+                model: Some("some/model".to_string()),
+                ..crate::gateway::RoleOverrides::default()
+            },
+            None,
+        )
+    }
 
     fn snapshot(
         current: Vec<MemoryClaim>,
@@ -337,24 +284,6 @@ mod tests {
             char_start: 0,
             char_end: 0,
         }
-    }
-
-    #[test]
-    fn config_from_env_vars_matches_old_precedence() {
-        assert!(ChatConfig::from_env_vars(None, None, None).is_none());
-        let config = ChatConfig::from_env_vars(
-            Some("k".to_string()),
-            Some("https://example.com/api/".to_string()),
-            Some("chat/model".to_string()),
-        )
-        .expect("api key present");
-        assert_eq!(config.base_url, "https://example.com/api");
-        assert_eq!(config.model, "chat/model");
-
-        let defaulted =
-            ChatConfig::from_env_vars(Some("k".to_string()), None, None).expect("api key present");
-        assert_eq!(defaulted.base_url, DEFAULT_BASE_URL);
-        assert_eq!(defaulted.model, DEFAULT_CHAT_MODEL);
     }
 
     #[test]
@@ -432,7 +361,7 @@ mod tests {
                 text: "hi!".to_owned(),
             },
         ];
-        let body = build_chat_request("some/model", "SYSTEM", &history, "what do you remember?");
+        let body = build_chat_request(&chat_role(), "SYSTEM", &history, "what do you remember?");
         assert_eq!(body["model"], "some/model");
         assert_eq!(body["max_tokens"], 1024);
         let messages = body["messages"].as_array().expect("messages array");

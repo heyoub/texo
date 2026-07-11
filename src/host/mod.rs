@@ -14,6 +14,7 @@ use syncbat::{Core, RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::{ConfigError, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 use crate::error::TexoError;
+use crate::gateway::{resolve_role, ModelRole, RoleOverrides};
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
 use crate::ops::{catalog, register_all};
@@ -132,7 +133,12 @@ impl TexoHost {
         builder.receipt_sink(receipt_sink);
         builder.status_sink(status_sink);
         builder.effect_backend(TexoEffectBackend);
-        if grants_model_capability(read_openrouter_key()) {
+        let model_role = resolve_role(
+            ModelRole::Relate,
+            &RoleOverrides::default(),
+            config.gateway.as_ref(),
+        );
+        if grants_model_capability(Some(model_role.api_key)) {
             builder.grant_capability("texo.cap.model");
         }
         let core = builder.build().map_err(build_error)?;
@@ -253,6 +259,7 @@ fn workspace_config_from_entry(workspace_id: &str, entry: WorkspaceEntry) -> Wor
         docs_glob: entry.docs_glob,
         extractor_cmd: entry.extractor_cmd,
         semantics: entry.semantics,
+        gateway: None,
     }
 }
 
@@ -294,10 +301,6 @@ fn digest_hex<T: Serialize>(domain: &str, value: &T) -> Result<String, TexoError
     })?;
     bytes.extend_from_slice(&encoded);
     Ok(blake3::hash(&bytes).to_hex().to_string())
-}
-
-fn read_openrouter_key() -> Option<String> {
-    std::env::var("OPENROUTER_API_KEY").ok()
 }
 
 fn config_error(error: crate::config::ConfigError) -> TexoError {
