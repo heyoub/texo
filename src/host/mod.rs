@@ -4,7 +4,7 @@ pub mod fingerprint;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use batpak::coordinate::Coordinate;
 use batpak::store::{Open, Store, StoreConfig};
@@ -18,6 +18,9 @@ use crate::gateway::{resolve_role, ModelRole, RoleOverrides};
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
 use crate::ops::{catalog, register_all};
+
+/// Cross-request checkout slot for the warm workspace projection.
+pub type SharedWorkspaceCache = Arc<Mutex<Option<WorkspaceCache>>>;
 
 /// Deterministic fingerprints exposed by the composed texo host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +38,7 @@ pub struct TexoHost {
     core: Core,
     env: Rc<OpEnv>,
     fingerprints: HostFingerprints,
+    shared_cache: Option<SharedWorkspaceCache>,
 }
 
 /// Open the configured workspace store.
@@ -73,7 +77,7 @@ impl TexoHost {
         let workspace_id = workspace_id.into();
         let config = load_or_default_config(&root, &workspace_id)?;
         let store = open_store_for_config(&root, &config)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
     }
 
     /// Build a runnable host for `texo.workspace.init`.
@@ -94,7 +98,7 @@ impl TexoHost {
         let workspace_id = workspace_id.into();
         let config = load_or_init_config(&root, &workspace_id)?;
         let store = open_store_for_config(&root, &config)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
     }
 
     /// Build a runnable host over an already-open workspace store.
@@ -114,7 +118,34 @@ impl TexoHost {
             detail: error.to_string(),
         })?;
         let config = load_or_default_config(&root, &workspace_id)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store)
+        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
+    }
+
+    /// Build a host that checks out a shared warm projection for one request.
+    ///
+    /// # Errors
+    /// Returns the same composition failures as [`Self::open_with_store`].
+    pub fn open_with_store_and_cache(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        observed_at_ms: u64,
+        store: Arc<Store<Open>>,
+        shared_cache: SharedWorkspaceCache,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+            detail: error.to_string(),
+        })?;
+        let config = load_or_default_config(&root, &workspace_id)?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            store,
+            Some(shared_cache),
+        )
     }
 
     fn from_parts(
@@ -123,6 +154,7 @@ impl TexoHost {
         observed_at_ms: u64,
         config: WorkspaceConfig,
         store: Arc<Store<Open>>,
+        shared_cache: Option<SharedWorkspaceCache>,
     ) -> Result<Self, TexoError> {
         let receipt_coordinate = op_receipt_coordinate(workspace_id)?;
         let receipt_sink = StoreReceiptSink::new(Arc::clone(&store), receipt_coordinate);
@@ -142,12 +174,16 @@ impl TexoHost {
             builder.grant_capability("texo.cap.model");
         }
         let core = builder.build().map_err(build_error)?;
+        let cache = shared_cache
+            .as_ref()
+            .and_then(|slot| slot.lock().ok()?.take())
+            .unwrap_or_else(|| WorkspaceCache::load(&root, workspace_id));
         let env = Rc::new(OpEnv {
             store,
             workspace_id: workspace_id.to_string(),
             root,
             config,
-            cache: std::cell::RefCell::new(WorkspaceCache::default()),
+            cache: std::cell::RefCell::new(cache),
             receipts: std::cell::RefCell::new(Vec::new()),
             observed_at_ms,
         });
@@ -156,6 +192,7 @@ impl TexoHost {
             core,
             env,
             fingerprints,
+            shared_cache,
         })
     }
 
@@ -208,6 +245,20 @@ impl TexoHost {
     /// `BatPak` validation.
     pub fn receipt_coordinate(&self) -> Result<Coordinate, TexoError> {
         op_receipt_coordinate(&self.env.workspace_id)
+    }
+}
+
+impl Drop for TexoHost {
+    fn drop(&mut self) {
+        let cache = self.env.cache.borrow().clone();
+        if let Err(error) = cache.save(&self.env.root, &self.env.workspace_id) {
+            tracing::warn!(error = %error, "workspace projection sidecar persist failed");
+        }
+        if let Some(shared) = &self.shared_cache {
+            if let Ok(mut slot) = shared.lock() {
+                *slot = Some(cache);
+            }
+        }
     }
 }
 

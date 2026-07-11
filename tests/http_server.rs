@@ -28,6 +28,7 @@ fn start_server(dir: &TempDir, keep_alive: Duration) -> TestResult<StartedServer
             root: dir.path().to_path_buf(),
             workspace_id: "demo".to_string(),
             store: Some(Arc::clone(&store)),
+            projection_cache: Arc::new(std::sync::Mutex::new(None)),
             chat_enabled: false,
         },
     );

@@ -5,7 +5,6 @@ use batpak::id::{EntityIdType, IdempotencyKey};
 use batpak::store::{AppendOptions, AppendPositionHint, AppendReceipt};
 use syncbat::{EffectBackend, EffectError};
 
-use crate::claims::workspace::assemble;
 use crate::error::TexoError;
 use crate::events::coordinate::{
     coordinate_for_claim, coordinate_for_conflict, coordinate_for_onboarding_projection,
@@ -32,20 +31,21 @@ impl EffectBackend for TexoEffectBackend {
     }
 
     fn read_event(&mut self, _event_category: &str) -> Result<(), EffectError> {
-        with_env_result(|op_env| {
-            let scope = scope_for_workspace(&op_env.workspace_id);
-            drop(op_env.store.by_scope(&scope));
-            Ok(())
-        })
+        with_env_result(effect_probe)
     }
 
     fn query_projection(&mut self, _projection_id: &str) -> Result<(), EffectError> {
-        with_env_result(|op_env| {
-            let mut cache = op_env.cache.borrow_mut();
-            drop(assemble(&op_env.store, &op_env.workspace_id, &mut cache)?);
-            Ok(())
-        })
+        with_env_result(effect_probe)
     }
+}
+
+fn effect_probe(op_env: &OpEnv) -> Result<(), TexoError> {
+    let scope = scope_for_workspace(&op_env.workspace_id);
+    let region = batpak::coordinate::Region::scope(&scope);
+    if let Some(entry) = op_env.store.query_entries_after(&region, None, 1).first() {
+        let _ = op_env.store.read_raw(entry.event_id())?;
+    }
+    Ok(())
 }
 
 fn with_env_result<T>(f: impl FnOnce(&OpEnv) -> Result<T, TexoError>) -> Result<T, EffectError> {

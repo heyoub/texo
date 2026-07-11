@@ -410,22 +410,31 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 errors.push(format!("chain: {chain:?}"));
             }
             let scope = scope_for_workspace(&op_env.workspace_id);
-            for entry in op_env.store.by_scope(&scope) {
-                if !DOMAIN_KINDS.contains(&entry.event_kind()) {
-                    journal_ok = false;
-                    errors.push(format!(
-                        "unknown event kind evt.{:04x} at {}",
-                        entry.event_kind().as_raw_u16(),
-                        entry.global_sequence()
-                    ));
+            let region = Region::scope(&scope);
+            let mut after = None;
+            loop {
+                let page = op_env.store.query_entries_after(&region, after, 256);
+                if page.is_empty() {
+                    break;
                 }
-                if let Err(error) = op_env.store.read_raw(entry.event_id()) {
-                    journal_ok = false;
-                    errors.push(format!(
-                        "decode {}: {error}",
-                        event_id_hex(entry.event_id())
-                    ));
+                for entry in &page {
+                    if !DOMAIN_KINDS.contains(&entry.event_kind()) {
+                        journal_ok = false;
+                        errors.push(format!(
+                            "unknown event kind evt.{:04x} at {}",
+                            entry.event_kind().as_raw_u16(),
+                            entry.global_sequence()
+                        ));
+                    }
+                    if let Err(error) = op_env.store.read_raw(entry.event_id()) {
+                        journal_ok = false;
+                        errors.push(format!(
+                            "decode {}: {error}",
+                            event_id_hex(entry.event_id())
+                        ));
+                    }
                 }
+                after = page.last().map(batpak::store::IndexEntry::global_sequence);
             }
             let mut cache = op_env.cache.borrow_mut();
             let view = assemble(&op_env.store, &op_env.workspace_id, &mut cache)?;
@@ -985,7 +994,7 @@ struct AgentContextOutput {
 
 #[derive(Debug, Serialize)]
 struct FreshnessView {
-    kind: String,
+    kind: crate::claims::workspace::ProjectionFreshness,
     description: String,
 }
 
@@ -2116,9 +2125,9 @@ fn build_agent_context_from_view(
         workspace_id: view.workspace_id.clone(),
         replayed_through_sequence: view.frontier,
         freshness: FreshnessView {
-            kind: "batpak-local-frontier".to_string(),
+            kind: view.freshness,
             description: format!(
-                "Projection replayed through local store sequence {}. No global order or consensus is claimed.",
+                "Projection anchor validated through local store sequence {}. No global order or consensus is claimed.",
                 view.frontier
             ),
         },

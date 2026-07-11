@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::TexoError;
-use crate::host::TexoHost;
+use crate::host::{SharedWorkspaceCache, TexoHost};
 use crate::ops::agent::valid_session_id;
 
 use super::request::{HttpRequest, Method};
@@ -26,6 +26,8 @@ pub struct RouteState {
     pub workspace_id: String,
     /// Shared open store for long-lived server processes.
     pub store: Option<Arc<Store<Open>>>,
+    /// Cross-request checkout slot for the warm workspace projection.
+    pub projection_cache: SharedWorkspaceCache,
     /// Whether model-backed chat should be exposed.
     pub chat_enabled: bool,
 }
@@ -218,11 +220,12 @@ fn static_file(path: &str) -> Result<HttpResponse, TexoError> {
 /// Returns [`TexoError`] when host composition fails.
 pub fn open_host(state: &RouteState) -> Result<TexoHost, TexoError> {
     if let Some(store) = &state.store {
-        TexoHost::open_with_store(
+        TexoHost::open_with_store_and_cache(
             state.root.clone(),
             state.workspace_id.clone(),
             now_ms(),
             Arc::clone(store),
+            Arc::clone(&state.projection_cache),
         )
     } else {
         TexoHost::open(state.root.clone(), state.workspace_id.clone(), now_ms())

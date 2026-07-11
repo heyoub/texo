@@ -452,6 +452,7 @@ fn serve(
         root,
         workspace_id: workspace,
         store: Some(store),
+        projection_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
         chat_enabled: crate::host::grants_model_capability(Some(chat_role.api_key)),
     };
     let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);

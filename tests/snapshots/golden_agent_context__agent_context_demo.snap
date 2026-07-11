@@ -81,7 +81,7 @@ expression: context
   ],
   "freshness": {
     "description": "[freshness]",
-    "kind": "batpak-local-frontier"
+    "kind": "fresh"
   },
   "replayed_through_sequence": "[frontier]",
   "stale_claims": [

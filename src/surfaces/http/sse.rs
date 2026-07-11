@@ -29,12 +29,7 @@ pub fn serve(
     let store = host.store();
     let scope = scope_for_workspace(host.workspace_id());
     let region = Region::scope(&scope);
-    let frontier = store
-        .by_scope(&scope)
-        .into_iter()
-        .map(|entry| entry.global_sequence())
-        .max()
-        .unwrap_or(0);
+    let frontier = visible_frontier(&store, &region);
     let resume_from = resume_from.filter(|cursor| *cursor <= frontier);
     let mut last_sequence = resume_from.unwrap_or(frontier);
     stream.write_all(
@@ -51,7 +46,7 @@ pub fn serve(
         }),
     )?;
     if resume_from.is_some() {
-        let _emitted = write_visible_since(stream, &store, &scope, &mut last_sequence)?;
+        let _emitted = write_visible_since(stream, &store, &region, &mut last_sequence)?;
     }
 
     // BatPak 0.9.0 APIs used here: Store::subscribe_lossy(&Region) creates a
@@ -74,7 +69,7 @@ pub fn serve(
                 )?;
             }
             Err(flume::RecvTimeoutError::Timeout) => {
-                if !write_visible_since(stream, &store, &scope, &mut last_sequence)? {
+                if !write_visible_since(stream, &store, &region, &mut last_sequence)? {
                     stream
                         .write_all(b": keep-alive\n\n")
                         .map_err(surface_error)?;
@@ -126,29 +121,44 @@ fn parse_cursor(value: &str) -> Option<u64> {
 fn write_visible_since(
     stream: &mut impl Write,
     store: &Store<Open>,
-    scope: &str,
+    region: &Region,
     last_sequence: &mut u64,
 ) -> Result<bool, TexoError> {
-    let mut entries = store
-        .by_scope(scope)
-        .into_iter()
-        .filter(|entry| entry.global_sequence() > *last_sequence)
-        .collect::<Vec<_>>();
-    entries.sort_by_key(batpak::store::IndexEntry::global_sequence);
-    let emitted = !entries.is_empty();
-    for entry in entries {
-        *last_sequence = entry.global_sequence();
-        write_signal(
-            stream,
-            Some(entry.global_sequence()),
-            &json!({
-                "kind": "journal",
-                "sequence": entry.global_sequence(),
-                "kind_bits": entry.event_kind().as_raw_u16()
-            }),
-        )?;
+    let mut emitted = false;
+    loop {
+        let page = store.query_entries_after(region, Some(*last_sequence), 256);
+        if page.is_empty() {
+            break;
+        }
+        emitted = true;
+        for entry in &page {
+            *last_sequence = entry.global_sequence();
+            write_signal(
+                stream,
+                Some(entry.global_sequence()),
+                &json!({
+                    "kind": "journal",
+                    "sequence": entry.global_sequence(),
+                    "kind_bits": entry.event_kind().as_raw_u16()
+                }),
+            )?;
+        }
     }
     Ok(emitted)
+}
+
+fn visible_frontier(store: &Store<Open>, region: &Region) -> u64 {
+    let mut after = None;
+    let mut frontier = 0;
+    loop {
+        let page = store.query_entries_after(region, after, 256);
+        let Some(last) = page.last() else {
+            break;
+        };
+        frontier = last.global_sequence();
+        after = Some(frontier);
+    }
+    frontier
 }
 
 fn write_signal(

@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use texo::claims::card::ClaimCard;
 use texo::claims::session_log::SessionLog;
 use texo::claims::status::ClaimStatus;
-use texo::claims::workspace::{assemble, ClaimView, WorkspaceCache};
+use texo::claims::workspace::{assemble, ClaimView, ProjectionFreshness, WorkspaceCache};
 use texo::events::coordinate::{
     coordinate_for_claim, coordinate_for_conflict, coordinate_for_session, entity_for_session,
     scope_for_workspace, session_lane,
@@ -222,6 +222,69 @@ fn cache_avoids_reprojection() -> TestResult {
 
     assert_eq!(cache.project_misses, misses_after_first);
     assert_eq!(first_claim_generation, second_claim_generation);
+    Ok(())
+}
+
+#[test]
+fn persisted_cache_uses_zero_delta_warm_view_and_advances_only_dirty_entity() -> TestResult {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir)?;
+    populate_three_claim_workspace(&store)?;
+    let mut cache = WorkspaceCache::default();
+    let initial = assemble(&store, WORKSPACE, &mut cache)?;
+    cache.save(dir.path(), WORKSPACE)?;
+
+    let mut warm = WorkspaceCache::load(dir.path(), WORKSPACE);
+    let reopened = assemble(&store, WORKSPACE, &mut warm)?;
+    assert_eq!(reopened, initial);
+    assert_eq!(warm.freshness(), ProjectionFreshness::Fresh);
+    assert_eq!(warm.counters.warm_view_hits, 1);
+    assert_eq!(warm.counters.discovery_entries_paged, 0);
+    assert_eq!(warm.counters.project_calls, 0);
+
+    append_record(&store, "claim_d", 6)?;
+    let advanced = assemble(&store, WORKSPACE, &mut warm)?;
+    assert_eq!(advanced.claims.len(), initial.claims.len() + 1);
+    assert_eq!(warm.counters.discovery_entries_paged, 1);
+    assert_eq!(warm.counters.project_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn missing_or_swapped_sidecar_rebuilds_to_source_truth() -> TestResult {
+    let first_dir = TempDir::new()?;
+    let first_store = open_store(&first_dir)?;
+    populate_three_claim_workspace(&first_store)?;
+    let mut first_cache = WorkspaceCache::default();
+    let _ = assemble(&first_store, WORKSPACE, &mut first_cache)?;
+    first_cache.save(first_dir.path(), WORKSPACE)?;
+
+    let sidecar = first_dir.path().join(".texo/cache/workspace-view/demo.bin");
+    std::fs::remove_file(&sidecar)?;
+    let mut missing = WorkspaceCache::load(first_dir.path(), WORKSPACE);
+    let rebuilt = assemble(&first_store, WORKSPACE, &mut missing)?;
+    let mut fresh = WorkspaceCache::default();
+    assert_eq!(rebuilt, assemble(&first_store, WORKSPACE, &mut fresh)?);
+
+    first_cache.save(first_dir.path(), WORKSPACE)?;
+    std::fs::write(&sidecar, b"not-msgpack")?;
+    let mut corrupt = WorkspaceCache::load(first_dir.path(), WORKSPACE);
+    assert_eq!(corrupt.freshness(), ProjectionFreshness::Invalid);
+    assert_eq!(assemble(&first_store, WORKSPACE, &mut corrupt)?, rebuilt);
+
+    first_cache.save(first_dir.path(), WORKSPACE)?;
+    let mut swapped = WorkspaceCache::load(first_dir.path(), WORKSPACE);
+    let second_dir = TempDir::new()?;
+    let second_store = open_store(&second_dir)?;
+    append_record(&second_store, "claim_other", 1)?;
+    let swapped_view = assemble(&second_store, WORKSPACE, &mut swapped)?;
+    let mut second_fresh = WorkspaceCache::default();
+    assert_eq!(
+        swapped_view,
+        assemble(&second_store, WORKSPACE, &mut second_fresh)?
+    );
+    assert_eq!(swapped_view.claims.len(), 1);
+    assert_eq!(swapped_view.claims[0].card.claim_id, "claim_other");
     Ok(())
 }
 
