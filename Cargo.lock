@@ -108,9 +108,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "batpak"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f2ed3182c3966ebe9263612e4421c2dbce097f2086ece575cf72f86fa89a290"
+checksum = "72c75fa606b8bfa4522329da115a4ce87bd2bde1c8840096395b091733abbca3"
 dependencies = [
  "batpak-macros",
  "batpak-macros-support",
@@ -138,9 +138,9 @@ dependencies = [
 
 [[package]]
 name = "batpak-macros"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8051611bd7607182b71219a6ba08550ff0f3e0b8d0eb9239af7ce242984b918"
+checksum = "ec24617c00024021f96d9730222ad655f1eb2407b8fde5f0690cd48d78eb4ec8"
 dependencies = [
  "batpak-macros-support",
  "proc-macro2",
@@ -150,9 +150,9 @@ dependencies = [
 
 [[package]]
 name = "batpak-macros-support"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "285eda7215e16729b6639f30262de582471f3d1bafb6024378a3a5ea6f0f498b"
+checksum = "43dbc82fe321140dc4bb5a7e3338309f112a457a3cd78fb6afc65172e85dca2c"
 dependencies = [
  "inventory",
  "rmpv",
@@ -337,9 +337,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -585,9 +585,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hostbat"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3498df1139af6add458bf6e480992742c2709aee8ae185cd1d3866b859a7ea69"
+checksum = "1a5c48736a7ef8812144675f6aaa27027df31bcbb467d3593abf99f6cd8a1745"
 dependencies = [
  "batpak",
  "rmpv",
@@ -1322,9 +1322,9 @@ dependencies = [
 
 [[package]]
 name = "syncbat"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b708eba66f100c6a874ec4d9b094fcbf7ece393b913d9a82f1a8a529f281613"
+checksum = "89e5ee0bd503a86d4131e412ed89750a83a02dfff86360e9ce11ef2a6ccd6370"
 dependencies = [
  "batpak",
  "batpak-macros",
