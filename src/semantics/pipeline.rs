@@ -23,9 +23,13 @@
 //! logic can be proven deterministically with in-test stubs (no model, no
 //! network).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::events::ids::{conflict_id_from_pair, ClaimId, ConflictId, SourceId};
+use crate::relate::settlement::{
+    HeldDecision, PairFailureView, RelationFailureClass, UnresolvedPair,
+};
 use crate::semantics::{cosine_similarity, ClaimRelater, ClaimRelation, Embedder, SemanticsError};
 
 /// Active lifecycle status for a claim view.
@@ -277,6 +281,40 @@ pub struct RelatedClaims {
     /// Open conflicts between contradictory claims that are *both* still current
     /// (neither has been superseded).
     pub conflicts: Vec<ConflictEntry>,
+    /// Successful verdicts for every judged pair, including unrelated pairs.
+    pub judgments: Vec<PairJudgment>,
+}
+
+/// One successful logical-pair judgment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairJudgment {
+    /// Older claim.
+    pub older_claim: ClaimId,
+    /// Newer claim.
+    pub newer_claim: ClaimId,
+    /// Model verdict.
+    pub verdict: crate::semantics::RelationVerdict,
+    /// True when authority was loaded from the journal instead of re-judged.
+    pub reused_authority: bool,
+}
+
+/// Complete, partial, or fully held semantic pipeline result.
+#[derive(Debug, Default)]
+pub struct RelateOutcome {
+    /// Decisions whose full evidence set is present.
+    pub related: RelatedClaims,
+    /// Candidate pairs for which no verdict exists.
+    pub unresolved: Vec<UnresolvedPair>,
+    /// Decisions withheld by the tainted-claim holdback rule.
+    pub held: Vec<HeldDecision>,
+}
+
+impl std::ops::Deref for RelateOutcome {
+    type Target = RelatedClaims;
+
+    fn deref(&self) -> &Self::Target {
+        &self.related
+    }
 }
 
 /// Relate claims by a single richer judgment per candidate pair.
@@ -332,10 +370,38 @@ pub fn relate_claims(
     embedder: &dyn Embedder,
     relater: &dyn ClaimRelater,
     thresholds: RelateThresholds,
-) -> Result<RelatedClaims, PipelineError> {
+) -> Result<RelateOutcome, PipelineError> {
+    relate_claims_with_settled(
+        claims,
+        embedder,
+        relater,
+        thresholds,
+        &BTreeMap::new(),
+        Duration::MAX,
+    )
+}
+
+/// Relate claims while reusing journal-authoritative verdicts and enforcing a
+/// global wall-clock budget.
+///
+/// # Errors
+/// Embedding failures remain fatal because no candidate substrate exists.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pair enumeration, holdback, and deterministic decision reduction form one state-machine fold"
+)]
+pub fn relate_claims_with_settled(
+    claims: &[(ClaimId, ClaimView)],
+    embedder: &dyn Embedder,
+    relater: &dyn ClaimRelater,
+    thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    budget: Duration,
+) -> Result<RelateOutcome, PipelineError> {
+    let started = Instant::now();
     let n = claims.len();
     if n < 2 {
-        return Ok(RelatedClaims::default());
+        return Ok(RelateOutcome::default());
     }
 
     let texts: Vec<&str> = claims.iter().map(|(_, v)| embedding_text(v)).collect();
@@ -347,6 +413,8 @@ pub fn relate_claims(
     // old_idx -> newest superseding new_idx; conflict pairs as (min_idx, max_idx).
     let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
     let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
+    let mut judgments = Vec::new();
+    let mut unresolved = Vec::new();
 
     for cluster in &clusters {
         for (pos, &i) in cluster.iter().enumerate() {
@@ -368,10 +436,51 @@ pub fn relate_claims(
                     continue;
                 }
 
-                // The relater is an LLM judge: feed it the *raw* claim text, not
-                // the normalized (lowercased) form used for embedding — case and
-                // natural wording carry the update-intent signal it reasons over.
-                let verdict = relater.relate(&old_view.text, &new_view.text)?;
+                let older_claim = claims[old_idx].0.clone();
+                let newer_claim = claims[new_idx].0.clone();
+                let pair = (older_claim.clone(), newer_claim.clone());
+                let (verdict, reused_authority) = if let Some(verdict) = settled.get(&pair) {
+                    // DECISION(campaign): any journaled judgment settles the
+                    // logical pair. Explicit authority supersession is the
+                    // future hook; model/config changes never re-judge here.
+                    (*verdict, true)
+                } else if started.elapsed() >= budget {
+                    unresolved.push(unresolved_pair(
+                        older_claim,
+                        newer_claim,
+                        old_view,
+                        new_view,
+                        PairFailureView {
+                            class: RelationFailureClass::BudgetExhausted,
+                            endpoint: None,
+                            status: None,
+                            attempts: 0,
+                        },
+                    ));
+                    continue;
+                } else {
+                    // Feed raw claim text: case and update wording carry the
+                    // intent signal that normalized embedding text discards.
+                    match relater.relate(&old_view.text, &new_view.text) {
+                        Ok(verdict) => (verdict, false),
+                        Err(error) => {
+                            unresolved.push(unresolved_pair(
+                                older_claim,
+                                newer_claim,
+                                old_view,
+                                new_view,
+                                classify_pair_failure(&error),
+                            ));
+                            continue;
+                        }
+                    }
+                };
+                judgments.push(PairJudgment {
+                    older_claim,
+                    newer_claim,
+                    verdict,
+                    reused_authority,
+                });
                 match verdict.relation {
                     ClaimRelation::Supersedes => {
                         let better = match winners.get(&old_idx) {
@@ -394,23 +503,31 @@ pub fn relate_claims(
         }
     }
 
-    let superseded: HashSet<ClaimId> = winners.keys().map(|&old| claims[old].0.clone()).collect();
-
-    let mut supersessions: Vec<SupersessionEdge> = winners
+    let tainted = unresolved
         .iter()
-        .map(|(&old, &new)| {
-            let (old_id, _) = &claims[old];
-            let (new_id, new_view) = &claims[new];
-            (
-                old_id.clone(),
-                new_id.clone(),
-                format!(
-                    "superseded by {}:{}",
-                    new_view.source_path, new_view.line_start
-                ),
-            )
-        })
-        .collect();
+        .flat_map(|pair| [pair.old_claim.clone(), pair.new_claim.clone()])
+        .collect::<BTreeSet<_>>();
+    let mut held = Vec::new();
+    let mut superseded = HashSet::new();
+    let mut supersessions = Vec::new();
+    for (&old, &new) in &winners {
+        let (old_id, _) = &claims[old];
+        let (new_id, new_view) = &claims[new];
+        let reason = format!(
+            "superseded by {}:{}",
+            new_view.source_path, new_view.line_start
+        );
+        if tainted.contains(old_id) {
+            held.push(HeldDecision::Supersession {
+                old_claim: old_id.clone(),
+                new_claim: new_id.clone(),
+                reason,
+            });
+        } else {
+            superseded.insert(old_id.clone());
+            supersessions.push((old_id.clone(), new_id.clone(), reason));
+        }
+    }
     supersessions.sort_by(|a, b| {
         a.0.as_str()
             .cmp(b.0.as_str())
@@ -422,14 +539,11 @@ pub fn relate_claims(
     for (i, j) in conflict_pairs {
         let (a_id, a_view) = &claims[i];
         let (b_id, b_view) = &claims[j];
-        if superseded.contains(a_id) || superseded.contains(b_id) {
-            continue;
-        }
         let conflict_id = conflict_id_from_pair(a_id, b_id);
         if !seen.insert(conflict_id.clone()) {
             continue;
         }
-        conflicts.push(ConflictEntry {
+        let entry = ConflictEntry {
             conflict_id,
             claim_a: a_id.clone(),
             claim_b: b_id.clone(),
@@ -439,14 +553,98 @@ pub fn relate_claims(
                 a_view.text, b_view.text
             ),
             status: ConflictStatus::Open,
-        });
+        };
+        if tainted.contains(a_id) || tainted.contains(b_id) {
+            held.push(HeldDecision::Conflict {
+                conflict_id: entry.conflict_id,
+                claim_a: entry.claim_a,
+                claim_b: entry.claim_b,
+                reason: entry.reason,
+            });
+        } else if !superseded.contains(a_id) && !superseded.contains(b_id) {
+            conflicts.push(entry);
+        }
     }
     conflicts.sort_by(|x, y| x.conflict_id.as_str().cmp(y.conflict_id.as_str()));
 
-    Ok(RelatedClaims {
-        supersessions,
-        conflicts,
+    Ok(RelateOutcome {
+        related: RelatedClaims {
+            supersessions,
+            conflicts,
+            judgments,
+        },
+        unresolved,
+        held,
     })
+}
+
+fn unresolved_pair(
+    old_claim: ClaimId,
+    new_claim: ClaimId,
+    old_view: &ClaimView,
+    new_view: &ClaimView,
+    failure: PairFailureView,
+) -> UnresolvedPair {
+    UnresolvedPair {
+        old_claim,
+        new_claim,
+        old_ref: format!("{}:{}", old_view.source_path, old_view.line_start),
+        new_ref: format!("{}:{}", new_view.source_path, new_view.line_start),
+        failure,
+    }
+}
+
+#[cfg(feature = "openrouter")]
+fn classify_pair_failure(error: &SemanticsError) -> PairFailureView {
+    use crate::semantics::openrouter::BackendError;
+    use crate::surfaces::openai::ApiFailureKind;
+
+    let SemanticsError::Backend { source } = error else {
+        return generic_pair_failure();
+    };
+    let Some(backend) = source.downcast_ref::<BackendError>() else {
+        return generic_pair_failure();
+    };
+    match backend {
+        BackendError::Http { source, .. } => PairFailureView {
+            class: match source.kind {
+                ApiFailureKind::HttpStatus => RelationFailureClass::HttpStatus,
+                ApiFailureKind::Transport => RelationFailureClass::Transport,
+                ApiFailureKind::DeadlineExceeded => RelationFailureClass::Deadline,
+                ApiFailureKind::BadResponseJson => RelationFailureClass::Parse,
+            },
+            endpoint: Some(source.endpoint.to_string()),
+            status: source.status,
+            attempts: source.attempts,
+        },
+        BackendError::Truncated { endpoint, .. } => PairFailureView {
+            class: RelationFailureClass::Truncated,
+            endpoint: Some((*endpoint).to_string()),
+            status: None,
+            attempts: 1,
+        },
+        BackendError::Parse { endpoint, .. }
+        | BackendError::UnexpectedResponse { endpoint, .. } => PairFailureView {
+            class: RelationFailureClass::Parse,
+            endpoint: Some((*endpoint).to_string()),
+            status: None,
+            attempts: 1,
+        },
+    }
+}
+
+#[cfg(not(feature = "openrouter"))]
+fn classify_pair_failure(_error: &SemanticsError) -> PairFailureView {
+    generic_pair_failure()
+}
+
+fn generic_pair_failure() -> PairFailureView {
+    PairFailureView {
+        class: RelationFailureClass::Transport,
+        endpoint: None,
+        status: None,
+        attempts: 1,
+    }
 }
 
 #[cfg(test)]
@@ -1066,5 +1264,100 @@ mod tests {
                 "conflict ids must be identical across runs"
             );
         }
+    }
+
+    #[test]
+    fn unresolved_pair_taints_and_holds_dependent_supersession() {
+        struct PartiallyFailingRelater;
+        impl ClaimRelater for PartiallyFailingRelater {
+            fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+                if older.contains("alpha") && newer.contains("beta") {
+                    return Err(SemanticsError::Backend {
+                        source: Box::new(std::io::Error::other("judge failed")),
+                    });
+                }
+                Ok(RelationVerdict {
+                    relation: if older.contains("alpha") && newer.contains("gamma") {
+                        ClaimRelation::Supersedes
+                    } else {
+                        ClaimRelation::Unrelated
+                    },
+                    score: 1.0,
+                })
+            }
+
+            fn fingerprint(&self) -> String {
+                "partial".to_string()
+            }
+        }
+
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "alpha old", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "beta uncertain", 2),
+            claim("claim_cccccccccccc", "x", "gamma winner", 3),
+        ];
+        let embedder = FixedEmbedder::new(
+            vec![
+                ("alpha", vec![1.0, 0.0]),
+                ("beta", vec![1.0, 0.0]),
+                ("gamma", vec![1.0, 0.0]),
+            ],
+            2,
+        );
+        let outcome = relate_claims(&claims, &embedder, &PartiallyFailingRelater, th(0.9, 0.9))
+            .expect("partial outcome");
+        assert_eq!(outcome.unresolved.len(), 1);
+        assert!(outcome.related.supersessions.is_empty());
+        assert!(matches!(
+            outcome.held.as_slice(),
+            [HeldDecision::Supersession { old_claim, new_claim, .. }]
+                if old_claim.as_str() == "claim_aaaaaaaaaaaa"
+                    && new_claim.as_str() == "claim_cccccccccccc"
+        ));
+    }
+
+    #[test]
+    fn authoritative_pair_is_reused_without_judge_call() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "x", "alpha", 1),
+            claim("claim_bbbbbbbbbbbb", "x", "beta", 2),
+            claim("claim_cccccccccccc", "x", "gamma", 3),
+        ];
+        let embedder = FixedEmbedder::new(
+            vec![
+                ("alpha", vec![1.0, 0.0]),
+                ("beta", vec![1.0, 0.0]),
+                ("gamma", vec![1.0, 0.0]),
+            ],
+            2,
+        );
+        let relater = CountingRelater::new();
+        let mut settled = BTreeMap::new();
+        settled.insert(
+            (claims[0].0.clone(), claims[1].0.clone()),
+            RelationVerdict {
+                relation: ClaimRelation::Unrelated,
+                score: 1.0,
+            },
+        );
+        let outcome = relate_claims_with_settled(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.9),
+            &settled,
+            Duration::MAX,
+        )
+        .expect("outcome");
+        assert_eq!(relater.count(), 2);
+        assert_eq!(
+            outcome
+                .related
+                .judgments
+                .iter()
+                .filter(|judgment| judgment.reused_authority)
+                .count(),
+            1
+        );
     }
 }

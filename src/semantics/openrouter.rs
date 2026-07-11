@@ -152,6 +152,37 @@ impl OpenRouterEmbedder {
         let client = OpenRouterClient::from_role(&role)?;
         Ok(Self { client, role })
     }
+
+    fn embed_chunk(
+        &self,
+        chunk: &[&str],
+        vectors: &mut Vec<Vec<f32>>,
+    ) -> Result<(), SemanticsError> {
+        let body = build_embeddings_request(&self.role.config.model, chunk);
+        match self.client.post_json("/embeddings", &body) {
+            Ok(value) => {
+                vectors.extend(parse_embeddings_response(&value, chunk.len())?);
+                Ok(())
+            }
+            Err(error) if downshiftable_embedding_error(&error, chunk.len()) => {
+                let split = chunk.len() / 2;
+                self.embed_chunk(&chunk[..split], vectors)?;
+                self.embed_chunk(&chunk[split..], vectors)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+fn downshiftable_embedding_error(error: &BackendError, chunk_len: usize) -> bool {
+    if chunk_len <= 1 {
+        return false;
+    }
+    matches!(
+        error,
+        BackendError::Http { source, .. }
+            if source.status.is_some_and(|status| matches!(status, 400 | 413 | 422))
+    )
 }
 
 /// Build the JSON request body for an embeddings call over `inputs`.
@@ -226,9 +257,7 @@ impl Embedder for OpenRouterEmbedder {
         // in request order so the result still lines up 1:1 with `texts`.
         let mut vectors = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(self.role.profile.embed_batch_max.max(1)) {
-            let body = build_embeddings_request(&self.role.config.model, chunk);
-            let value = self.client.post_json("/embeddings", &body)?;
-            vectors.extend(parse_embeddings_response(&value, chunk.len())?);
+            self.embed_chunk(chunk, &mut vectors)?;
         }
         Ok(vectors)
     }
@@ -691,7 +720,10 @@ mod tests {
             client: relate_client,
             role: relate_role,
         };
-        assert_eq!(relater.fingerprint(), "openrouter:relation/model|relation-v2");
+        assert_eq!(
+            relater.fingerprint(),
+            "openrouter:relation/model|relation-v2"
+        );
 
         let propose_role = test_role(ModelRole::Propose, "propose/model");
         let propose_client = OpenRouterClient::from_role(&propose_role).expect("client");
@@ -699,7 +731,10 @@ mod tests {
             client: propose_client,
             role: propose_role,
         };
-        assert_eq!(proposer.fingerprint(), "openrouter:propose/model|propose-v3");
+        assert_eq!(
+            proposer.fingerprint(),
+            "openrouter:propose/model|propose-v3"
+        );
     }
 
     // --- embeddings parsing ---

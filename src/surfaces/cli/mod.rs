@@ -77,16 +77,25 @@ enum Command {
         out: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+        /// Refuse context while semantic settlement remains incomplete.
+        #[arg(long)]
+        strict_settlement: bool,
     },
     /// Compile human-readable artifacts.
     Compile {
         #[arg(long, default_value = "public")]
         out: PathBuf,
+        /// Refuse compilation while semantic settlement remains incomplete.
+        #[arg(long)]
+        strict_settlement: bool,
     },
     /// Semantic supersession + conflict pass (needs `TEXO_LLM_API_KEY`).
     Relate {
         #[arg(long)]
         json: bool,
+        /// Refuse derived authority while any required pair is unresolved.
+        #[arg(long)]
+        strict: bool,
     },
     /// Report possible conflicts.
     Conflicts {
@@ -238,11 +247,20 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 ExitCode::SUCCESS
             })
         }
-        Command::AgentContext { subject, out, json } => {
+        Command::AgentContext {
+            subject,
+            out,
+            json,
+            strict_settlement,
+        } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
             let output = host.invoke_json(
                 "texo.context.agent",
-                &json!({"subject": subject, "include_stale": true}),
+                &json!({
+                    "subject": subject,
+                    "include_stale": true,
+                    "strict_settlement": strict_settlement
+                }),
             )?;
             let rendered = serde_json::to_string_pretty(&output)?;
             if let Some(path) = out {
@@ -259,12 +277,19 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Compile { out } => {
+        Command::Compile {
+            out,
+            strict_settlement,
+        } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
             let out_for_input = out.clone();
             let output = host.invoke_json(
                 "texo.compile.run",
-                &json!({"out_dir": out_for_input, "observed_at_ms": observed_at_ms()}),
+                &json!({
+                    "out_dir": out_for_input,
+                    "observed_at_ms": observed_at_ms(),
+                    "strict_settlement": strict_settlement
+                }),
             )?;
             render::compile(&out, &output);
             Ok(ExitCode::SUCCESS)
@@ -330,18 +355,24 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Relate { json } => {
+        Command::Relate { json, strict } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
             let output = host.invoke_json(
                 "texo.relate.run",
-                &json!({"observed_at_ms": observed_at_ms()}),
+                &json!({"observed_at_ms": observed_at_ms(), "strict": strict}),
             )?;
             if json {
                 render::json(&output)?;
             } else {
                 render::relate(&output);
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(
+                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                },
+            )
         }
         Command::Mcp => {
             crate::surfaces::mcp_stdio::run(&cli.root, cli.workspace.as_deref())?;

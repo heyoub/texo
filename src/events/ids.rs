@@ -101,6 +101,7 @@ id_newtype!(ClaimId, "claim_");
 id_newtype!(SourceId, "src_");
 id_newtype!(ConflictId, "conflict_");
 id_newtype!(DocId, "doc_");
+id_newtype!(RelationPairId, "pair_");
 
 /// Workspace scope identifier (no required prefix — validated for non-empty safe chars).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -196,6 +197,23 @@ pub fn conflict_id_from_pair(a: &ClaimId, b: &ClaimId) -> ConflictId {
     ConflictId::new_unchecked(format!("conflict_{}", &hash[..12]))
 }
 
+/// Compute the provider-neutral identity of an ordered logical relation pair.
+#[must_use]
+pub fn relation_pair_id(
+    workspace_id: &WorkspaceId,
+    older: &ClaimId,
+    newer: &ClaimId,
+) -> RelationPairId {
+    let material = format!(
+        "{}\u{1f}{}\u{1f}{}",
+        workspace_id.as_str(),
+        older.as_str(),
+        newer.as_str()
+    );
+    let hash = blake3_hash_hex(&material);
+    RelationPairId::new_unchecked(format!("pair_{}", &hash[..12]))
+}
+
 /// BLAKE3 hex digest for app-level content hashing (distinct from `BatPak` event hashes).
 pub fn blake3_hash_hex(input: &str) -> String {
     blake3::hash(input.as_bytes()).to_hex().to_string()
@@ -209,6 +227,7 @@ pub fn blake3_bytes_hex(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn expect_prefix_rejects_empty() {
@@ -291,6 +310,21 @@ mod tests {
         let a = ClaimId::try_from("claim_aaaaaaaaaaaa").expect("claim a");
         let b = ClaimId::try_from("claim_bbbbbbbbbbbb").expect("claim b");
         assert_eq!(conflict_id_from_pair(&a, &b), conflict_id_from_pair(&b, &a));
+    }
+
+    proptest! {
+        #[test]
+        fn logical_pair_identity_is_deterministic_and_ordered(a in any::<u64>(), b in any::<u64>()) {
+            let workspace = WorkspaceId::new("demo").expect("workspace");
+            let older = ClaimId::try_from(format!("claim_{a:012x}").as_str()).expect("older");
+            let newer = ClaimId::try_from(format!("claim_{b:012x}").as_str()).expect("newer");
+            let first = relation_pair_id(&workspace, &older, &newer);
+            let second = relation_pair_id(&workspace, &older, &newer);
+            prop_assert_eq!(&first, &second);
+            if older != newer {
+                prop_assert_ne!(first, relation_pair_id(&workspace, &newer, &older));
+            }
+        }
     }
 
     #[test]

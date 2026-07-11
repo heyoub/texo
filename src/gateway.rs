@@ -45,6 +45,10 @@ fn default_timeout_secs() -> u64 {
     120
 }
 
+fn default_relate_budget_secs() -> u64 {
+    900
+}
+
 /// Closed set of model responsibilities supported by Texo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,7 +142,7 @@ pub struct RoleConfig {
 }
 
 /// Optional `[gateway]` configuration. Absence means built-in defaults.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GatewayConfig {
     /// Named provider profiles.
@@ -151,6 +155,22 @@ pub struct GatewayConfig {
     pub relate: Option<RoleConfig>,
     /// Optional chat-role override.
     pub chat: Option<RoleConfig>,
+    /// Global semantic relate wall-clock budget.
+    #[serde(default = "default_relate_budget_secs")]
+    pub relate_budget_secs: u64,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            providers: BTreeMap::new(),
+            embed: None,
+            propose: None,
+            relate: None,
+            chat: None,
+            relate_budget_secs: default_relate_budget_secs(),
+        }
+    }
 }
 
 impl GatewayConfig {

@@ -4,9 +4,11 @@ use batpak::event::{EventKind, EventPayload, Upcast, UpcastError};
 use rmpv::Value;
 use serde::{Deserialize, Serialize};
 
+use crate::events::ids::{ClaimId, WorkspaceId};
 use crate::events::machines::{
     transition_id, TransitionCauseV1, TransitionRecordV1, CLAIM_MACHINE, CONFLICT_MACHINE,
 };
+use crate::relate::settlement::{RelationFailureClass, SettledRelation};
 
 /// A source document observation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, batpak::EventPayload)]
@@ -174,6 +176,46 @@ pub struct SessionTurnV1 {
     pub text: String,
     /// Monotonic turn number within the session.
     pub turn_no: u32,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// A completed semantic judgment for one logical relation pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 9, version = 1)]
+pub struct RelationJudgedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Older claim in commit-order semantics.
+    pub older_claim: ClaimId,
+    /// Newer claim in commit-order semantics.
+    pub newer_claim: ClaimId,
+    /// Closed semantic verdict.
+    pub relation: SettledRelation,
+    /// Confidence score in parts per million.
+    pub score_ppm: u32,
+    /// Provider/model/prompt attempt fingerprint.
+    pub judge_fingerprint: String,
+    /// Paid-verdict cache key as lowercase hex.
+    pub cache_key_hex: String,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// A failed semantic attempt for one logical relation pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 10, version = 1)]
+pub struct RelationDeferredV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Older claim.
+    pub older_claim: ClaimId,
+    /// Newer claim.
+    pub newer_claim: ClaimId,
+    /// Closed failure class.
+    pub failure_class: RelationFailureClass,
+    /// Provider attempts performed for this deferral.
+    pub attempts: u32,
     /// Observation wall-clock time in milliseconds.
     pub observed_at_ms: u64,
 }
@@ -470,6 +512,31 @@ mod tests {
             text: "hello".to_string(),
             turn_no: 1,
             observed_at_ms: 13,
+        })
+    }
+
+    #[test]
+    fn relation_settlement_payloads_round_trip() -> TestResult {
+        let workspace_id = WorkspaceId::new("demo")?;
+        let older_claim = ClaimId::try_from("claim_aaaaaaaaaaaa")?;
+        let newer_claim = ClaimId::try_from("claim_bbbbbbbbbbbb")?;
+        assert_round_trip(&RelationJudgedV1 {
+            workspace_id: workspace_id.clone(),
+            older_claim: older_claim.clone(),
+            newer_claim: newer_claim.clone(),
+            relation: SettledRelation::Supersedes,
+            score_ppm: 900_000,
+            judge_fingerprint: "openrouter:model|relation-v2".to_string(),
+            cache_key_hex: "abc".to_string(),
+            observed_at_ms: 14,
+        })?;
+        assert_round_trip(&RelationDeferredV1 {
+            workspace_id,
+            older_claim,
+            newer_claim,
+            failure_class: RelationFailureClass::Deadline,
+            attempts: 5,
+            observed_at_ms: 15,
         })
     }
 }

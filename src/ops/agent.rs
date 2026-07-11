@@ -16,7 +16,7 @@
 )]
 
 use batpak::event::EventPayload;
-use batpak::id::EntityIdType;
+use batpak::id::{EntityIdType, IdempotencyKey};
 use batpak::store::{AppendOptions, AppendPositionHint, Open, Store};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -288,7 +288,7 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.agent.session.end.input.v2",
     output_schema = "texo.agent.session.end.output.v2",
     receipt_kind = "receipt.texo.agent.session.end.v2",
-    appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004"],
+    appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e009", "evt.e00a"],
     reads_events = ["evt.e008"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
@@ -365,7 +365,7 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         }
         drop(take_receipts()?);
         let relate = if model_role_enabled(crate::gateway::ModelRole::Relate)? {
-            let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms)?;
+            let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms, false)?;
             RelateOutcome::Ran {
                 supersessions: out.supersessions.len(),
                 conflicts: out.conflicts.len(),
@@ -638,7 +638,16 @@ fn append_turn_direct(
     let receipt = store.append_typed_with_options(
         &coordinate,
         payload,
-        AppendOptions::new().with_position_hint(hint),
+        AppendOptions::new()
+            .with_position_hint(hint)
+            .with_idempotency(IdempotencyKey::for_operation(
+                "texo.session.turn.v1",
+                &[
+                    &payload.workspace_id,
+                    &payload.session_id,
+                    &payload.turn_no.to_string(),
+                ],
+            )),
     )?;
     let verification = store.verify_append_receipt(&receipt);
     if !verification.is_valid() {

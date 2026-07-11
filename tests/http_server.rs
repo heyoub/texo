@@ -154,8 +154,14 @@ fn sse_streams_journal_signal_and_keep_alive() -> TestResult {
         .is_empty());
 
     let mut append_host = TexoHost::open_with_store(dir.path(), "demo", 2, store)?;
-    let _output =
-        append_host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
+    std::fs::write(
+        dir.path().join("signal.md"),
+        "# Decision\n\nDeploys happen on Friday.\n",
+    )?;
+    let _output = append_host.invoke_json(
+        "texo.ingest.run",
+        &json!({"path": "signal.md", "dry_run": false, "observed_at_ms": 2}),
+    )?;
 
     let journal = read_until(&mut reader, "\"kind\":\"journal\"")?;
     assert!(journal.contains("id: "));

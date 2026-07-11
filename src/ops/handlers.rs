@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use batpak::coordinate::Region;
 use batpak::event::{EventKind, EventPayload};
 use batpak::id::EntityIdType;
 use batpak::store::Freshness;
@@ -21,14 +22,14 @@ use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
 use crate::error::TexoError;
 use crate::events::coordinate::{entity_for_claim, entity_for_conflict, scope_for_workspace};
-use crate::events::ids::{claim_id_from_parts, ClaimId, SourceId};
+use crate::events::ids::{claim_id_from_parts, ClaimId, SourceId, WorkspaceId};
 use crate::events::machines::{
     transition_record, TransitionCauseV1, CLAIM_EDGES, CLAIM_MACHINE, CONFLICT_EDGES,
     CONFLICT_MACHINE,
 };
 use crate::events::payloads::{
     ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, OnboardingCompiledV2,
-    SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
+    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
 };
 use crate::extract::hints::hints_from_line;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
@@ -37,7 +38,7 @@ use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
 use crate::semantics::pipeline::{
     receipt_view, ClaimStatus as SemanticClaimStatus, ClaimView as SemanticClaimView,
-    RelateThresholds, RelatedClaims,
+    RelateThresholds,
 };
 
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
@@ -385,7 +386,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.verify.run.input.v2",
     output_schema = "texo.verify.run.output.v2",
     receipt_kind = "receipt.texo.verify.run.v2",
-    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008"],
+    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -497,6 +498,9 @@ fn context_agent(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.context.agent", error))?;
+        if input.strict_settlement {
+            require_complete_settlement()?;
+        }
         let view = assemble_current_view()?;
         build_agent_context_from_view(&view, input.subject.as_deref(), input.include_stale)
     })
@@ -521,6 +525,9 @@ fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.compile.run", error))?;
+        if input.strict_settlement {
+            require_complete_settlement()?;
+        }
         let view = assemble_current_view()?;
         let context = build_agent_context_from_view(&view, None, true)?;
         let conflict_report = heuristic::detect_conflicts(&view)?;
@@ -741,7 +748,7 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.relate.run.input.v2",
     output_schema = "texo.relate.run.output.v2",
     receipt_kind = "receipt.texo.relate.run.v2",
-    appends_events = ["evt.e003", "evt.e004"],
+    appends_events = ["evt.e003", "evt.e004", "evt.e009", "evt.e00a"],
     queries_projections = ["texo.workspace.view.v2"],
     requires_capabilities = ["texo.cap.model"]
 )]
@@ -752,7 +759,7 @@ fn relate_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.relate.run", error))?;
-        run_relate_pass("texo.relate.run", cx, input.observed_at_ms)
+        run_relate_pass("texo.relate.run", cx, input.observed_at_ms, input.strict)
     })
 }
 
@@ -780,7 +787,7 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
-const DOMAIN_KINDS: [EventKind; 8] = [
+const DOMAIN_KINDS: [EventKind; 10] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
     <ClaimSupersededV2 as EventPayload>::KIND,
@@ -789,6 +796,8 @@ const DOMAIN_KINDS: [EventKind; 8] = [
     <ConflictResolvedV2 as EventPayload>::KIND,
     <WorkspaceInitializedV2 as EventPayload>::KIND,
     <SessionTurnV1 as EventPayload>::KIND,
+    <RelationJudgedV1 as EventPayload>::KIND,
+    <RelationDeferredV1 as EventPayload>::KIND,
 ];
 
 /// Return the operation registration items.
@@ -959,6 +968,8 @@ struct DiagnosticSource {
 struct ContextAgentInput {
     subject: Option<String>,
     include_stale: bool,
+    #[serde(default)]
+    strict_settlement: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -999,6 +1010,8 @@ struct AgentConflictRow {
 struct CompileRunInput {
     out_dir: PathBuf,
     observed_at_ms: u64,
+    #[serde(default)]
+    strict_settlement: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1061,13 +1074,27 @@ struct ConflictResolveOutput {
 #[derive(Debug, Deserialize)]
 struct RelateRunInput {
     observed_at_ms: u64,
+    #[serde(default)]
+    strict: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RelateCompletion {
+    Complete,
+    Partial,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct RelateRunOutput {
+    outcome: RelateCompletion,
     pub(crate) claims_related: usize,
     pub(crate) supersessions: Vec<RelateSupersessionRow>,
     pub(crate) conflicts: Vec<RelateConflictRow>,
+    unresolved: Vec<crate::relate::settlement::UnresolvedPair>,
+    held: Vec<crate::relate::settlement::HeldDecision>,
+    warnings: Vec<String>,
+    authority_warnings: Vec<crate::relate::settlement::AuthorityWarning>,
     pub(crate) receipts: Vec<ReceiptNote>,
 }
 
@@ -1207,6 +1234,110 @@ pub(crate) fn assemble_current_view() -> Result<WorkspaceView, TexoError> {
     })?
 }
 
+struct SettlementAuthority {
+    verdicts: BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    cache_keys: BTreeMap<(String, String), String>,
+    warnings: Vec<crate::relate::settlement::AuthorityWarning>,
+    unresolved_pairs: usize,
+}
+
+fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
+    env::with(|op_env| {
+        let scope = scope_for_workspace(&op_env.workspace_id);
+        let region = Region::scope(&scope);
+        let mut after = None;
+        let mut entities = BTreeSet::new();
+        loop {
+            let page = op_env.store.query_entries_after(&region, after, 256);
+            if page.is_empty() {
+                break;
+            }
+            for entry in &page {
+                let entity = entry.coord().entity();
+                if entity.starts_with("relation:") {
+                    entities.insert(entity.to_string());
+                }
+            }
+            after = page.last().map(batpak::store::IndexEntry::global_sequence);
+        }
+
+        let mut settled = BTreeMap::new();
+        let mut cache_keys = BTreeMap::new();
+        let mut warnings = Vec::new();
+        let mut unresolved_pairs = 0;
+        for entity in entities {
+            let Some(card) = op_env
+                .store
+                .project::<crate::claims::settlement::SettlementCard>(
+                    &entity,
+                    &Freshness::Consistent,
+                )?
+            else {
+                continue;
+            };
+            let Some(authoritative) = card.authoritative.as_ref() else {
+                if !card.deferrals.is_empty() {
+                    unresolved_pairs += 1;
+                }
+                continue;
+            };
+            let older = ClaimId::try_from(card.older_claim.as_str())?;
+            let newer = ClaimId::try_from(card.newer_claim.as_str())?;
+            for later in &card.later_judgments {
+                if later.relation != authoritative.relation {
+                    warnings.push(crate::relate::settlement::AuthorityWarning {
+                        old_claim: older.clone(),
+                        new_claim: newer.clone(),
+                        prior_verdict: authoritative.relation,
+                        prior_fingerprint: authoritative.judge_fingerprint.clone(),
+                        new_verdict: later.relation,
+                        new_fingerprint: later.judge_fingerprint.clone(),
+                        message: "authoritative verdict unchanged".to_string(),
+                    });
+                }
+            }
+            settled.insert(
+                (older.clone(), newer.clone()),
+                crate::semantics::RelationVerdict {
+                    relation: authoritative.relation.into(),
+                    score: ppm_to_score(authoritative.score_ppm),
+                },
+            );
+            cache_keys.insert(
+                (older.to_string(), newer.to_string()),
+                authoritative.cache_key_hex.clone(),
+            );
+        }
+        Ok::<_, TexoError>(SettlementAuthority {
+            verdicts: settled,
+            cache_keys,
+            warnings,
+            unresolved_pairs,
+        })
+    })?
+}
+
+fn require_complete_settlement() -> Result<(), TexoError> {
+    let unresolved = authoritative_settlements()?.unresolved_pairs;
+    if unresolved == 0 {
+        return Ok(());
+    }
+    Err(TexoError::Semantics {
+        backend: "settlement".to_string(),
+        detail: format!(
+            "strict settlement refused authority-bearing output: {unresolved} unresolved relation pair(s); run `texo relate` to resume"
+        ),
+    })
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "ppm values are bounded to one million and exactly adequate for model confidence"
+)]
+fn ppm_to_score(score_ppm: u32) -> f32 {
+    score_ppm as f32 / 1_000_000.0
+}
+
 pub(crate) fn resolve_path(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -1280,14 +1411,20 @@ pub(crate) fn run_relate_pass(
     op: &'static str,
     cx: &mut syncbat::Ctx<'_>,
     observed_at_ms: u64,
+    strict: bool,
 ) -> Result<RelateRunOutput, TexoError> {
     let view = assemble_current_view()?;
     let claims = semantic_claims_from_view(&view)?;
     if claims.len() < 2 {
         return Ok(RelateRunOutput {
+            outcome: RelateCompletion::Complete,
             claims_related: claims.len(),
             supersessions: Vec::new(),
             conflicts: Vec::new(),
+            unresolved: Vec::new(),
+            held: Vec::new(),
+            warnings: Vec::new(),
+            authority_warnings: Vec::new(),
             receipts: Vec::new(),
         });
     }
@@ -1298,7 +1435,13 @@ pub(crate) fn run_relate_pass(
         );
         (op_env.root.clone(), cluster, op_env.config.gateway.clone())
     })?;
-    let related = relate_with_backends(
+    let authority = authoritative_settlements()?;
+    let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| gateway.as_ref().map(|config| config.relate_budget_secs))
+        .unwrap_or(900);
+    let mut related = relate_with_backends(
         &root,
         gateway.as_ref(),
         &claims,
@@ -1306,14 +1449,90 @@ pub(crate) fn run_relate_pass(
             cluster,
             prefilter: RELATE_PREFILTER,
         },
+        &authority.verdicts,
+        std::time::Duration::from_secs(budget_secs),
     )?;
+    for (pair, cache_key) in &authority.cache_keys {
+        related.cache_keys.insert(pair.clone(), cache_key.clone());
+    }
+    let workspace_id = WorkspaceId::try_from(view.workspace_id.as_str())?;
+    for judgment in &related.outcome.related.judgments {
+        if judgment.reused_authority {
+            continue;
+        }
+        let cache_key_hex = related
+            .cache_keys
+            .get(&(
+                judgment.older_claim.to_string(),
+                judgment.newer_claim.to_string(),
+            ))
+            .cloned()
+            .unwrap_or_default();
+        append_json(
+            op,
+            cx,
+            <RelationJudgedV1 as EventPayload>::KIND,
+            &RelationJudgedV1 {
+                workspace_id: workspace_id.clone(),
+                older_claim: judgment.older_claim.clone(),
+                newer_claim: judgment.newer_claim.clone(),
+                relation: judgment.verdict.relation.into(),
+                score_ppm: score_to_ppm(judgment.verdict.score),
+                judge_fingerprint: related.judge_fingerprint.clone(),
+                cache_key_hex,
+                observed_at_ms,
+            },
+        )?;
+    }
+    for unresolved in &related.outcome.unresolved {
+        append_json(
+            op,
+            cx,
+            <RelationDeferredV1 as EventPayload>::KIND,
+            &RelationDeferredV1 {
+                workspace_id: workspace_id.clone(),
+                older_claim: unresolved.old_claim.clone(),
+                newer_claim: unresolved.new_claim.clone(),
+                failure_class: unresolved.failure.class,
+                attempts: unresolved.failure.attempts,
+                observed_at_ms,
+            },
+        )?;
+    }
+    let partial = !related.outcome.unresolved.is_empty();
+    let allow_derived = !strict || !partial;
+    let mut held = related.outcome.held.clone();
+    if strict && partial {
+        held.extend(related.outcome.related.supersessions.iter().map(
+            |(old_claim, new_claim, reason)| {
+                crate::relate::settlement::HeldDecision::Supersession {
+                    old_claim: old_claim.clone(),
+                    new_claim: new_claim.clone(),
+                    reason: reason.clone(),
+                }
+            },
+        ));
+        held.extend(related.outcome.related.conflicts.iter().map(|conflict| {
+            crate::relate::settlement::HeldDecision::Conflict {
+                conflict_id: conflict.conflict_id.clone(),
+                claim_a: conflict.claim_a.clone(),
+                claim_b: conflict.claim_b.clone(),
+                reason: conflict.reason.clone(),
+            }
+        }));
+    }
     let existing_conflicts = view
         .conflicts
         .iter()
         .map(|conflict| conflict.conflict_id.clone())
         .collect::<BTreeSet<_>>();
     let mut supersessions = Vec::new();
-    for (old, new, reason) in &related.related.supersessions {
+    let supersession_decisions: &[_] = if allow_derived {
+        &related.outcome.related.supersessions
+    } else {
+        &[]
+    };
+    for (old, new, reason) in supersession_decisions {
         let old_id = old.to_string();
         let new_id = new.to_string();
         let old_entity = entity_for_claim(&old_id);
@@ -1355,7 +1574,12 @@ pub(crate) fn run_relate_pass(
     }
 
     let mut conflicts = Vec::new();
-    for conflict in &related.related.conflicts {
+    let conflict_decisions: &[_] = if allow_derived {
+        &related.outcome.related.conflicts
+    } else {
+        &[]
+    };
+    for conflict in conflict_decisions {
         let conflict_id = conflict.conflict_id.to_string();
         if existing_conflicts.contains(&conflict_id) {
             continue;
@@ -1402,16 +1626,41 @@ pub(crate) fn run_relate_pass(
     }
 
     Ok(RelateRunOutput {
+        outcome: if partial {
+            RelateCompletion::Partial
+        } else {
+            RelateCompletion::Complete
+        },
         claims_related: claims.len(),
         supersessions,
         conflicts,
+        unresolved: related.outcome.unresolved,
+        held,
+        warnings: partial
+            .then(|| {
+                "semantic settlement is incomplete; unresolved pairs remain authoritative gaps"
+                    .to_string()
+            })
+            .into_iter()
+            .collect(),
+        authority_warnings: authority.warnings,
         receipts: take_receipts()?,
     })
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "score is clamped to the closed 0..=1 interval before ppm conversion"
+)]
+fn score_to_ppm(score: f32) -> u32 {
+    (score.clamp(0.0, 1.0) * 1_000_000.0).round() as u32
+}
+
 struct SemanticRelateOutput {
-    related: RelatedClaims,
+    outcome: crate::semantics::pipeline::RelateOutcome,
     cache_keys: BTreeMap<(String, String), String>,
+    judge_fingerprint: String,
 }
 
 #[cfg(feature = "openrouter")]
@@ -1420,10 +1669,13 @@ fn relate_with_backends(
     gateway: Option<&crate::gateway::GatewayConfig>,
     claims: &[(ClaimId, SemanticClaimView)],
     thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     use crate::extract::cache::CachingRelater;
     use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
-    use crate::semantics::pipeline::relate_claims;
+    use crate::semantics::pipeline::relate_claims_with_settled;
+    use crate::semantics::ClaimRelater as _;
 
     let embedder = OpenRouterEmbedder::new(None, gateway).map_err(semantic_error)?;
     let cache_dir = std::env::var_os(ENV_RELATE_CACHE)
@@ -1432,12 +1684,21 @@ fn relate_with_backends(
         OpenRouterRelater::new(None, gateway).map_err(semantic_error)?,
         cache_dir,
     );
-    let relation_output =
-        relate_claims(claims, &embedder, &caching_relater, thresholds).map_err(semantic_error)?;
+    let judge_fingerprint = caching_relater.fingerprint();
+    let relation_output = relate_claims_with_settled(
+        claims,
+        &embedder,
+        &caching_relater,
+        thresholds,
+        settled,
+        budget,
+    )
+    .map_err(semantic_error)?;
     let cache_keys = relate_cache_keys(&caching_relater, claims, &relation_output);
     Ok(SemanticRelateOutput {
-        related: relation_output,
+        outcome: relation_output,
         cache_keys,
+        judge_fingerprint,
     })
 }
 
@@ -1447,6 +1708,8 @@ fn relate_with_backends(
     _gateway: Option<&crate::gateway::GatewayConfig>,
     _claims: &[(ClaimId, SemanticClaimView)],
     _thresholds: RelateThresholds,
+    _settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    _budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     Err(TexoError::Semantics {
         backend: "openrouter".to_string(),
@@ -1557,50 +1820,28 @@ fn claim_record_receipts() -> Result<BTreeMap<String, AgentReceiptRow>, TexoErro
 fn relate_cache_keys<R: crate::semantics::ClaimRelater>(
     caching_relater: &crate::extract::cache::CachingRelater<R>,
     claims: &[(ClaimId, SemanticClaimView)],
-    relation_output: &RelatedClaims,
+    relation_output: &crate::semantics::pipeline::RelateOutcome,
 ) -> BTreeMap<(String, String), String> {
     let by_id = claims
         .iter()
         .map(|(id, view)| (id.to_string(), view))
         .collect::<BTreeMap<_, _>>();
     let mut keys = BTreeMap::new();
-    for (old, new, _) in &relation_output.supersessions {
-        if let (Some(old_view), Some(new_view)) = (by_id.get(old.as_str()), by_id.get(new.as_str()))
-        {
+    for judgment in &relation_output.related.judgments {
+        if let (Some(old_view), Some(new_view)) = (
+            by_id.get(judgment.older_claim.as_str()),
+            by_id.get(judgment.newer_claim.as_str()),
+        ) {
             keys.insert(
-                (old.to_string(), new.to_string()),
+                (
+                    judgment.older_claim.to_string(),
+                    judgment.newer_claim.to_string(),
+                ),
                 caching_relater.cache_key(&old_view.text, &new_view.text),
             );
         }
     }
-    for conflict in &relation_output.conflicts {
-        if let (Some(a), Some(b)) = (
-            by_id.get(conflict.claim_a.as_str()),
-            by_id.get(conflict.claim_b.as_str()),
-        ) {
-            let (older, newer) = ordered_for_relate_cache(a, b);
-            let key = caching_relater.cache_key(&older.text, &newer.text);
-            keys.insert(
-                (conflict.claim_a.to_string(), conflict.claim_b.to_string()),
-                key,
-            );
-        }
-    }
     keys
-}
-
-#[cfg(feature = "openrouter")]
-fn ordered_for_relate_cache<'a>(
-    left: &'a SemanticClaimView,
-    right: &'a SemanticClaimView,
-) -> (&'a SemanticClaimView, &'a SemanticClaimView) {
-    if (left.receipt.sequence.get(), left.claim_id.as_str())
-        <= (right.receipt.sequence.get(), right.claim_id.as_str())
-    {
-        (left, right)
-    } else {
-        (right, left)
-    }
 }
 
 fn extract_heuristic_claims(

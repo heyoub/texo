@@ -37,6 +37,11 @@ pub fn entity_for_session(session_id: &str) -> String {
     format!("session:{session_id}")
 }
 
+/// Entity string for one provider-neutral logical relation pair.
+pub fn entity_for_relation_pair(pair_id: &str) -> String {
+    format!("relation:{pair_id}")
+}
+
 /// Build a claim coordinate.
 ///
 /// # Errors
@@ -119,6 +124,20 @@ pub fn coordinate_for_session(
 ) -> Result<Coordinate, CoordinateError> {
     Coordinate::new(
         entity_for_session(session_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
+/// Build a logical relation-pair coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_relation_pair(
+    workspace_id: &str,
+    pair_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_relation_pair(pair_id),
         scope_for_workspace(workspace_id),
     )
 }
