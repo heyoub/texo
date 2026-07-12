@@ -308,6 +308,39 @@ pub fn serve_warning(message: &str) {
     eprintln!("{message}");
 }
 
+/// Print a concise install or uninstall change report.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn installation(value: &Value) {
+    let verb = if value.get("workspace_id").is_some() {
+        "install"
+    } else {
+        "uninstall"
+    };
+    let dry_run = value
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    println!("texo {verb}{}", if dry_run { " (dry run)" } else { "" });
+    for change in value
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  {:<9} {}",
+            change
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            change
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        );
+    }
+}
+
 /// Print an extractor error with the extractor subcommand prefix.
 #[expect(clippy::print_stderr, reason = "CLI output contract")]
 pub fn extract_error(error: &dyn std::error::Error) {

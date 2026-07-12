@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::config::TexoRootConfig;
 use crate::error::TexoError;
 use crate::host::TexoHost;
+use crate::install::ClientTarget;
 
 /// CLI render helpers.
 pub mod render;
@@ -147,6 +148,27 @@ enum Command {
     Ops {
         #[command(subcommand)]
         cmd: OpsCmd,
+    },
+    /// Install Texo's agent-facing workspace adapters.
+    Install {
+        /// Client adapters to manage; auto-detects when omitted.
+        #[arg(long, value_enum)]
+        client: Vec<ClientTarget>,
+        /// Preview the exact file changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove only Texo-managed workspace adapters and guidance.
+    Uninstall {
+        /// Preview the exact file changes without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -473,6 +495,31 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                         render::operations(&json!({"operations": [operation]}));
                     }
                 }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Install {
+            client,
+            dry_run,
+            json,
+        } => {
+            let workspace = cli.workspace.as_deref().unwrap_or("demo");
+            let report = crate::install::install(&cli.root, workspace, &client, dry_run)?;
+            let output = serde_json::to_value(report)?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::installation(&output);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Uninstall { dry_run, json } => {
+            let report = crate::install::uninstall(&cli.root, dry_run)?;
+            let output = serde_json::to_value(report)?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::installation(&output);
             }
             Ok(ExitCode::SUCCESS)
         }
