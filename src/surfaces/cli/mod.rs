@@ -143,6 +143,11 @@ enum Command {
         #[command(subcommand)]
         cmd: HostCmd,
     },
+    /// Discover the typed operation surface.
+    Ops {
+        #[command(subcommand)]
+        cmd: OpsCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +160,21 @@ enum SessionCmd {
 enum HostCmd {
     /// Print the host fingerprint.
     Fingerprint,
+}
+
+#[derive(Subcommand)]
+enum OpsCmd {
+    /// List registered operations and agent exposure.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Describe one registered operation.
+    Describe {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run the CLI and return the requested process exit code.
@@ -424,6 +444,38 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        Command::Ops { cmd } => {
+            let inventory = crate::agent_catalog::operation_inventory();
+            match cmd {
+                OpsCmd::List { json } => {
+                    if json {
+                        render::json(&inventory)?;
+                    } else {
+                        render::operations(&inventory);
+                    }
+                }
+                OpsCmd::Describe { name, json } => {
+                    let operation = inventory["operations"]
+                        .as_array()
+                        .and_then(|operations| {
+                            operations
+                                .iter()
+                                .find(|operation| operation["name"] == name)
+                        })
+                        .cloned()
+                        .ok_or_else(|| TexoError::OpInput {
+                            op: "texo ops describe".to_string(),
+                            detail: format!("unknown operation `{name}`"),
+                        })?;
+                    if json {
+                        render::json(&operation)?;
+                    } else {
+                        render::operations(&json!({"operations": [operation]}));
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

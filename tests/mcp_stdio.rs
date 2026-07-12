@@ -76,9 +76,13 @@ fn mcp_stdio_full_session() -> TestResult {
     let tool_list = tools["result"]["tools"]
         .as_array()
         .expect("tools/list returns an array");
-    assert_eq!(tool_list.len(), 4);
-    assert_eq!(tool_list[0]["name"], "check_staleness");
-    assert_eq!(tool_list[3]["name"], "explain_claim");
+    assert_eq!(tool_list.len(), 5);
+    assert_eq!(tool_list[0]["name"], "get_agent_context");
+    assert_eq!(tool_list[1]["name"], "search_claims");
+    assert_eq!(tool_list[4]["name"], "get_workspace_status");
+    assert!(tool_list
+        .iter()
+        .all(|tool| tool["annotations"]["readOnlyHint"] == true));
 
     send_json(
         &mut stdin,
@@ -87,21 +91,24 @@ fn mcp_stdio_full_session() -> TestResult {
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "get_current_claims",
-                "arguments": { "subject_hint": null }
+                "name": "search_claims",
+                "arguments": { "query": "deploy", "limit": 2 }
             }
         }),
     )?;
     let claims = read_json(&mut stdout)?;
-    let claims_text = claims["result"]["content"][0]["text"]
+    assert!(claims["result"]["content"][0]["text"]
         .as_str()
-        .expect("tool response has text content");
-    let claims_json: Value = serde_json::from_str(claims_text)?;
-    assert_eq!(claims_json["workspace_id"], "demo");
-    assert!(!claims_json["claims"]
+        .expect("tool response has text content")
+        .contains("matching claims"));
+    let claims_json = &claims["result"]["structuredContent"];
+    assert_eq!(claims_json["schema"], "texo.mcp.claim-search.v1");
+    assert_eq!(claims_json["meta"]["workspace_id"], "demo");
+    assert!(!claims_json["data"]["claims"]
         .as_array()
         .expect("claims output has claims array")
         .is_empty());
+    assert_eq!(claims_json["next_actions"][0]["tool"], "explain_claim");
 
     send_json(
         &mut stdin,

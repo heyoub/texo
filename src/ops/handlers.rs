@@ -338,6 +338,71 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 }
 
 #[syncbat::operation(
+    descriptor = CLAIMS_SEARCH,
+    register = register_claims_search,
+    register_item = claims_search_item,
+    name = "texo.claims.search",
+    effect = Inspect,
+    input_schema = "texo.claims.search.input.v1",
+    output_schema = "texo.claims.search.output.v1",
+    receipt_kind = "receipt.texo.claims.search.v1",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.claims.search", || {
+        let input: ClaimsSearchInput = parse_input("texo.claims.search", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.claims.search", error))?;
+        let view = assemble_current_view()?;
+        let query = input.query.unwrap_or_default();
+        if query.len() > 256 {
+            return Err(TexoError::OpInput {
+                op: "texo.claims.search".to_string(),
+                detail: "query exceeds 256 bytes".to_string(),
+            });
+        }
+        let limit = input.limit.unwrap_or(25);
+        if !(1..=100).contains(&limit) {
+            return Err(TexoError::OpInput {
+                op: "texo.claims.search".to_string(),
+                detail: "limit must be between 1 and 100".to_string(),
+            });
+        }
+        let offset = parse_claim_search_cursor(input.cursor.as_deref())?;
+        let query_terms = query
+            .split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        let rows = claim_list_rows(&view, input.subject.as_deref())?
+            .into_iter()
+            .filter(|row| input.status.is_none_or(|status| row.status == status))
+            .filter(|row| claim_matches_query(row, &query_terms))
+            .collect::<Vec<_>>();
+        let total = rows.len();
+        let page = rows
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let returned = page.len();
+        let next_offset = offset.saturating_add(returned);
+        let has_more = next_offset < total;
+        Ok(ClaimsSearchOutput {
+            workspace_id: view.workspace_id.clone(),
+            frontier: view.frontier,
+            freshness: view.freshness,
+            total,
+            returned,
+            has_more,
+            next_cursor: has_more.then(|| format!("texo-claims-v1:{next_offset}")),
+            claims: page,
+        })
+    })
+}
+
+#[syncbat::operation(
     descriptor = CLAIM_EXPLAIN,
     register = register_claim_explain,
     register_item = claim_explain_item,
@@ -954,6 +1019,40 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
+#[syncbat::operation(
+    descriptor = WORKSPACE_STATUS,
+    register = register_workspace_status,
+    register_item = workspace_status_item,
+    name = "texo.workspace.status",
+    effect = Inspect,
+    input_schema = "texo.workspace.status.input.v1",
+    output_schema = "texo.workspace.status.output.v1",
+    receipt_kind = "receipt.texo.workspace.status.v1",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.workspace.status", || {
+        let _input: WorkspaceStatusInput = parse_input("texo.workspace.status", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.workspace.status", error))?;
+        let view = assemble_current_view()?;
+        let settlement = authoritative_settlements()?;
+        let unresolved_pairs = settlement.unresolved_pairs;
+        Ok(WorkspaceStatusOutput {
+            workspace_id: view.workspace_id.clone(),
+            frontier: view.frontier,
+            freshness: view.freshness,
+            claims_total: view.claims.len(),
+            open_conflicts: view.conflicts.iter().filter(|card| card.phase == 1).count(),
+            settlement_complete: unresolved_pairs == 0,
+            unresolved_pairs,
+            authority_warnings: settlement.warnings.len(),
+        })
+    })
+}
+
 const DOMAIN_KINDS: [EventKind; 10] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
@@ -974,6 +1073,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         workspace_init_item(),
         ingest_run_item(),
         claims_list_item(),
+        claims_search_item(),
         claim_explain_item(),
         claim_supersede_item(),
         verify_run_item(),
@@ -986,6 +1086,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         relate_run_item(),
         host_fingerprint_item(),
         stats_read_item(),
+        workspace_status_item(),
     ]
 }
 
@@ -998,6 +1099,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_workspace_init(builder)?;
     register_ingest_run(builder)?;
     register_claims_list(builder)?;
+    register_claims_search(builder)?;
     register_claim_explain(builder)?;
     register_claim_supersede(builder)?;
     register_verify_run(builder)?;
@@ -1010,6 +1112,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_relate_run(builder)?;
     register_host_fingerprint(builder)?;
     register_stats_read(builder)?;
+    register_workspace_status(builder)?;
     Ok(())
 }
 
@@ -1021,6 +1124,9 @@ struct WorkspaceInitInput {
 #[derive(Debug, Deserialize)]
 struct StatsReadInput {}
 
+#[derive(Debug, Deserialize)]
+struct WorkspaceStatusInput {}
+
 #[derive(Debug, Serialize)]
 struct StatsReadOutput {
     claims_total: usize,
@@ -1029,6 +1135,18 @@ struct StatsReadOutput {
     projection_bytes: u64,
     agent_context_bytes: u64,
     frontier_sequence: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkspaceStatusOutput {
+    workspace_id: String,
+    frontier: u64,
+    freshness: crate::claims::workspace::ProjectionFreshness,
+    claims_total: usize,
+    open_conflicts: usize,
+    settlement_complete: bool,
+    unresolved_pairs: usize,
+    authority_warnings: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1101,10 +1219,31 @@ struct ClaimsListInput {
     subject: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClaimsSearchInput {
+    query: Option<String>,
+    subject: Option<String>,
+    status: Option<crate::claims::status::ClaimStatus>,
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct ClaimsListOutput {
     workspace_id: String,
     frontier: u64,
+    claims: Vec<AgentClaimRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClaimsSearchOutput {
+    workspace_id: String,
+    frontier: u64,
+    freshness: crate::claims::workspace::ProjectionFreshness,
+    total: usize,
+    returned: usize,
+    has_more: bool,
+    next_cursor: Option<String>,
     claims: Vec<AgentClaimRow>,
 }
 
@@ -2381,6 +2520,36 @@ fn claim_list_rows(
         });
     }
     Ok(rows)
+}
+
+fn parse_claim_search_cursor(cursor: Option<&str>) -> Result<usize, TexoError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let Some(offset) = cursor.strip_prefix("texo-claims-v1:") else {
+        return Err(TexoError::OpInput {
+            op: "texo.claims.search".to_string(),
+            detail: "cursor has an unsupported schema".to_string(),
+        });
+    };
+    offset.parse::<usize>().map_err(|_| TexoError::OpInput {
+        op: "texo.claims.search".to_string(),
+        detail: "cursor offset is invalid".to_string(),
+    })
+}
+
+fn claim_matches_query(row: &AgentClaimRow, terms: &[String]) -> bool {
+    if terms.is_empty() {
+        return true;
+    }
+    let mut searchable = row.text.to_ascii_lowercase();
+    searchable.push(' ');
+    searchable.push_str(&row.source.path.to_ascii_lowercase());
+    if let Some(subject) = &row.subject_hint {
+        searchable.push(' ');
+        searchable.push_str(&subject.to_ascii_lowercase());
+    }
+    terms.iter().all(|term| searchable.contains(term))
 }
 
 fn build_agent_context_from_view(

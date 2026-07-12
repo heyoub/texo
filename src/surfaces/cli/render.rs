@@ -37,6 +37,30 @@ pub fn json(value: &Value) -> Result<(), TexoError> {
     Ok(())
 }
 
+/// Print the operation catalog in one stable line per operation.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn operations(value: &Value) {
+    let operations = value
+        .get("operations")
+        .and_then(Value::as_array)
+        .map_or(&[] as &[Value], Vec::as_slice);
+    for operation in operations {
+        let name = operation
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let effect = operation
+            .get("effect")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let agent = operation
+            .get("agent_tool")
+            .and_then(Value::as_str)
+            .map_or("human", |tool| tool);
+        println!("{name}\t{effect}\t{agent}");
+    }
+}
+
 /// Print the init message.
 #[expect(clippy::print_stdout, reason = "CLI output contract")]
 pub fn init(root: &std::path::Path, value: &Value) {

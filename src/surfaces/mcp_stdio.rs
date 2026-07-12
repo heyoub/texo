@@ -84,56 +84,12 @@ fn initialize_result(value: &Value) -> Value {
             "name": "texo",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Read-only access to the local texo claim-chain. Prefer these tools over stale markdown."
+        "instructions": crate::agent_catalog::INSTRUCTIONS
     })
 }
 
 fn tools_list() -> Value {
-    json!({
-        "tools": [
-            {
-                "name": "check_staleness",
-                "description": "Check whether a markdown document contains claims that are stale, superseded, or contradicted by the local texo claim-chain. Use this before trusting project docs, onboarding notes, architecture notes, process docs, or AI-generated summaries. Returns diagnostics with source lines, superseding claims, receipts, and the local replay frontier. This tool is read-only.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": { "path": { "type": "string" } },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }
-            },
-            {
-                "name": "get_current_claims",
-                "description": "Return current non-superseded claims from the local texo claim-chain, optionally filtered by subject. Use this instead of reading raw prose when answering questions about team process, product direction, ownership, architecture, or decisions. Includes provenance, receipts, and local replay frontier. This tool is read-only.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": { "subject_hint": { "type": ["string", "null"] } },
-                    "additionalProperties": false
-                }
-            },
-            {
-                "name": "get_agent_context",
-                "description": "Return the structured context snapshot an agent should use for this workspace: current claims, stale claims, conflicts, provenance, receipts, and local replay frontier. Use this when preparing to answer questions from project knowledge or before generating onboarding, architecture, or process summaries. This tool is read-only.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "subject_hint": { "type": ["string", "null"] },
-                        "include_stale": { "type": "boolean", "default": false }
-                    },
-                    "additionalProperties": false
-                }
-            },
-            {
-                "name": "explain_claim",
-                "description": "Explain one claim from the texo claim-chain by returning its text, source, receipt, supersession trail, conflicts, and local replay frontier. Use this when you need to justify why a claim is current or stale. This tool is read-only.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": { "claim_id": { "type": "string" } },
-                    "required": ["claim_id"],
-                    "additionalProperties": false
-                }
-            }
-        ]
-    })
+    crate::agent_catalog::mcp_tools_list()
 }
 
 fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<&str>) -> Value {
@@ -159,21 +115,34 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
     };
     match host.invoke_json(mapped.op, &mapped.input) {
         Ok(output) => {
-            let text = match serde_json::to_string_pretty(&output) {
-                Ok(text) => text,
-                Err(error) => {
-                    return error_response(
-                        id,
-                        -32603,
-                        &error.to_string(),
-                        Some(json!({"code": "json"})),
-                    );
+            let status = if name == "get_workspace_status" {
+                output.clone()
+            } else {
+                match host.invoke_json("texo.workspace.status", &json!({})) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        return error_response(
+                            id,
+                            -32603,
+                            &error.to_string(),
+                            Some(failure_data(&error)),
+                        );
+                    }
                 }
+            };
+            let Some(spec) = crate::agent_catalog::find(name) else {
+                return error_response(id, -32602, "unknown tool", None);
             };
             success_response(
                 id,
                 &json!({
-                    "content": [{ "type": "text", "text": text }],
+                    "content": [{ "type": "text", "text": tool_summary(name, &output) }],
+                    "structuredContent": {
+                        "schema": spec.result_schema,
+                        "data": output,
+                        "meta": status,
+                        "next_actions": next_actions(name, &output)
+                    },
                     "isError": false
                 }),
             )
@@ -209,9 +178,15 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
                 input: json!({ "path": path }),
             })
         }
-        "get_current_claims" => Ok(MappedTool {
-            op: "texo.claims.list",
-            input: json!({ "subject": args.get("subject_hint").cloned().unwrap_or(Value::Null) }),
+        "search_claims" => Ok(MappedTool {
+            op: "texo.claims.search",
+            input: json!({
+                "query": args.get("query").cloned().unwrap_or(Value::Null),
+                "subject": args.get("subject_hint").cloned().unwrap_or(Value::Null),
+                "status": args.get("status").cloned().unwrap_or(Value::Null),
+                "limit": args.get("limit").cloned().unwrap_or(json!(25)),
+                "cursor": args.get("cursor").cloned().unwrap_or(Value::Null)
+            }),
         }),
         "get_agent_context" => Ok(MappedTool {
             op: "texo.context.agent",
@@ -230,7 +205,87 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
                 input: json!({ "claim_id": claim_id }),
             })
         }
+        "get_workspace_status" => Ok(MappedTool {
+            op: "texo.workspace.status",
+            input: json!({}),
+        }),
         _ => Err("unknown tool".to_string()),
+    }
+}
+
+fn tool_summary(name: &str, output: &Value) -> String {
+    match name {
+        "get_agent_context" => format!(
+            "Loaded {} current claims and {} open conflicts through frontier {}.",
+            array_len(output, "claims"),
+            array_len(output, "conflicts"),
+            output
+                .get("replayed_through_sequence")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        ),
+        "search_claims" => format!(
+            "Returned {} of {} matching claims{}.",
+            output.get("returned").and_then(Value::as_u64).unwrap_or(0),
+            output.get("total").and_then(Value::as_u64).unwrap_or(0),
+            if output.get("has_more").and_then(Value::as_bool) == Some(true) {
+                "; more results are available"
+            } else {
+                ""
+            }
+        ),
+        "explain_claim" => "Loaded the claim card and complete journal timeline.".to_string(),
+        "check_staleness" => format!(
+            "Checked the document and found {} staleness diagnostics.",
+            array_len(output, "diagnostics")
+        ),
+        "get_workspace_status" => format!(
+            "Workspace is at frontier {}; settlement complete: {}.",
+            output.get("frontier").and_then(Value::as_u64).unwrap_or(0),
+            output
+                .get("settlement_complete")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        ),
+        _ => "Texo operation completed.".to_string(),
+    }
+}
+
+fn array_len(value: &Value, key: &str) -> usize {
+    value.get(key).and_then(Value::as_array).map_or(0, Vec::len)
+}
+
+fn next_actions(name: &str, output: &Value) -> Value {
+    match name {
+        "get_agent_context" => json!([{
+            "tool": "search_claims",
+            "reason": "Narrow the workspace context to the task when needed.",
+            "arguments": {}
+        }]),
+        "search_claims" => {
+            let first_claim = output
+                .get("claims")
+                .and_then(Value::as_array)
+                .and_then(|claims| claims.first())
+                .and_then(|claim| claim.get("claim_id"))
+                .cloned();
+            first_claim.map_or_else(
+                || json!([]),
+                |claim_id| {
+                    json!([{
+                        "tool": "explain_claim",
+                        "reason": "Inspect provenance and authority for a matching claim.",
+                        "arguments": { "claim_id": claim_id }
+                    }])
+                },
+            )
+        }
+        "check_staleness" => json!([{
+            "tool": "get_agent_context",
+            "reason": "Load the current replacement claims before editing stale prose.",
+            "arguments": { "include_stale": true }
+        }]),
+        _ => json!([]),
     }
 }
 
@@ -299,8 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_four_tools() {
+    fn tools_list_has_five_tools() {
         let tools = tools_list();
-        assert_eq!(tools["tools"].as_array().expect("tools array").len(), 4);
+        assert_eq!(tools["tools"].as_array().expect("tools array").len(), 5);
     }
 }

@@ -1,5 +1,8 @@
 //! texo: claim-chain memory on the batpak family.
 
+/// Curated agent-facing tools and operation discovery.
+pub mod agent_catalog;
+
 /// Error types.
 pub mod error;
 
