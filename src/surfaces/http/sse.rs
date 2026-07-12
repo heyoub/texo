@@ -1,7 +1,7 @@
 //! Server-sent events over BatPak store notifications.
 
 use std::io::Write;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use batpak::coordinate::Region;
 use batpak::store::{Open, Store};
@@ -12,6 +12,7 @@ use crate::events::coordinate::scope_for_workspace;
 
 use super::request::{header, HttpRequest};
 use super::routes::{open_host, RouteState};
+use super::server::ShutdownHandle;
 
 /// Serve one SSE connection.
 ///
@@ -24,6 +25,7 @@ pub fn serve(
     state: &RouteState,
     keep_alive: Duration,
     resume_from: Option<u64>,
+    shutdown: &ShutdownHandle,
 ) -> Result<(), TexoError> {
     let host = open_host(state)?;
     let store = host.store();
@@ -49,14 +51,20 @@ pub fn serve(
         let _emitted = write_visible_since(stream, &store, &region, &mut last_sequence)?;
     }
 
-    // BatPak 0.9.0 APIs used here: Store::subscribe_lossy(&Region) creates a
+    // BatPak 0.10 APIs used here: Store::subscribe_lossy(&Region) creates a
     // Subscription, and Subscription::filtered_receiver() exposes the
     // writer-side region-filtered flume receiver for recv_timeout-driven SSE.
     let subscription = store.subscribe_lossy(&region);
     let rx = subscription.filtered_receiver();
+    let shutdown_poll = keep_alive.min(Duration::from_millis(100));
+    let mut last_activity = Instant::now();
     loop {
-        match rx.recv_timeout(keep_alive) {
+        if shutdown.is_shutdown() {
+            return Ok(());
+        }
+        match rx.recv_timeout(shutdown_poll) {
             Ok(notification) => {
+                last_activity = Instant::now();
                 last_sequence = last_sequence.max(notification.sequence);
                 write_signal(
                     stream,
@@ -69,12 +77,19 @@ pub fn serve(
                 )?;
             }
             Err(flume::RecvTimeoutError::Timeout) => {
+                if shutdown.is_shutdown() {
+                    return Ok(());
+                }
+                if last_activity.elapsed() < keep_alive {
+                    continue;
+                }
                 if !write_visible_since(stream, &store, &region, &mut last_sequence)? {
                     stream
                         .write_all(b": keep-alive\n\n")
                         .map_err(surface_error)?;
                     stream.flush().map_err(surface_error)?;
                 }
+                last_activity = Instant::now();
             }
             Err(flume::RecvTimeoutError::Disconnected) => return Ok(()),
         }

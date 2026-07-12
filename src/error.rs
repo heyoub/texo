@@ -3,6 +3,8 @@
 use std::error::Error;
 use std::fmt;
 
+use serde::Serialize;
+
 /// Render an error and every source in its causal chain.
 #[must_use]
 pub fn error_chain(error: &(dyn Error + 'static)) -> String {
@@ -25,6 +27,42 @@ pub enum SurfaceKind {
     Mcp,
     /// CLI surface.
     Cli,
+}
+
+/// Whether durable work was committed before a failure surfaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Committed {
+    /// No durable work was committed.
+    No,
+    /// Some durable work was committed.
+    Partial,
+    /// The requested durable fact was committed.
+    Yes,
+    /// The boundary cannot prove commit state.
+    Unknown,
+}
+
+impl fmt::Display for Committed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::No => "no",
+            Self::Partial => "partial",
+            Self::Yes => "yes",
+            Self::Unknown => "unknown",
+        })
+    }
+}
+
+/// Machine-readable recovery facts shared by every surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FailureFacts {
+    /// Commit state at the failure boundary.
+    pub committed: Committed,
+    /// Whether replaying the identical request is safe.
+    pub retry_safe: bool,
+    /// Stable recovery instruction when one exists.
+    pub resume: Option<&'static str>,
 }
 
 impl SurfaceKind {
@@ -107,7 +145,7 @@ pub enum TexoError {
         value: String,
     },
     /// Illegal domain transition request.
-    #[error("domain transition {machine}: {from} -> {to}")]
+    #[error("domain transition {machine}: {from} -> {to}{context_suffix}", context_suffix = context.as_deref().map(|value| format!(" ({value})")).unwrap_or_default())]
     Transition {
         /// State machine identifier.
         machine: String,
@@ -115,6 +153,8 @@ pub enum TexoError {
         from: u64,
         /// Destination state.
         to: u64,
+        /// Typed entity/state context.
+        context: Option<String>,
     },
     /// Required domain entity is absent.
     #[error("domain missing: {entity}")]
@@ -231,6 +271,83 @@ impl TexoError {
             Self::Session { .. } => "agent.session",
         }
     }
+
+    /// Recovery facts for this failure.
+    #[must_use]
+    pub fn facts(&self) -> FailureFacts {
+        use Committed::{No, Unknown, Yes};
+        match self {
+            Self::Config { .. }
+            | Self::Json(_)
+            | Self::Coordinate { .. }
+            | Self::Registry { .. }
+            | Self::IdParse(_)
+            | Self::StatusParse { .. }
+            | Self::Transition { .. }
+            | Self::MissingEntity { .. }
+            | Self::Source { .. }
+            | Self::Extract { .. }
+            | Self::Verify { .. }
+            | Self::OpInput { .. }
+            | Self::OpRuntime { denied: true, .. } => FailureFacts {
+                committed: No,
+                retry_safe: false,
+                resume: None,
+            },
+            Self::Semantics { .. } => FailureFacts {
+                committed: No,
+                retry_safe: true,
+                resume: Some("run `texo relate` to resume unresolved pairs"),
+            },
+            Self::Model { .. } => FailureFacts {
+                committed: Yes,
+                retry_safe: false,
+                resume: Some("user turn already recorded; re-sending duplicates it"),
+            },
+            Self::OpRuntime { op, detail, .. }
+                if op == "texo.agent.chat" && detail.contains("agent.model") =>
+            {
+                FailureFacts {
+                    committed: Yes,
+                    retry_safe: false,
+                    resume: Some("user turn already recorded; re-sending duplicates it"),
+                }
+            }
+            Self::OpRuntime { op, detail, .. }
+                if op == "texo.ingest.run" && detail.contains("source") =>
+            {
+                FailureFacts {
+                    committed: No,
+                    retry_safe: false,
+                    resume: None,
+                }
+            }
+            Self::OpRuntime { op, detail, .. }
+                if matches!(
+                    op.as_str(),
+                    "texo.claim.supersede" | "texo.conflict.resolve"
+                ) && detail.contains("domain.transition") =>
+            {
+                FailureFacts {
+                    committed: No,
+                    retry_safe: false,
+                    resume: None,
+                }
+            }
+            Self::Io(_)
+            | Self::Store(_)
+            | Self::Decode { .. }
+            | Self::ReceiptInvalid { .. }
+            | Self::OpRuntime { .. }
+            | Self::Host { .. }
+            | Self::Surface { .. }
+            | Self::Session { .. } => FailureFacts {
+                committed: Unknown,
+                retry_safe: false,
+                resume: Some("inspect receipts and run `texo verify` before retrying"),
+            },
+        }
+    }
 }
 
 impl From<TexoError> for syncbat::HandlerError {
@@ -321,6 +438,7 @@ mod tests {
                     machine: "m".to_string(),
                     from: 2,
                     to: 1,
+                    context: None,
                 },
                 "domain.transition",
             ),
@@ -443,5 +561,22 @@ mod tests {
         .into();
         assert_eq!(runtime.class(), "failed");
         assert!(runtime.message().starts_with("op.runtime: "));
+    }
+
+    #[test]
+    fn chat_model_failure_discloses_committed_turn() {
+        let error = TexoError::OpRuntime {
+            op: "texo.agent.chat".to_string(),
+            detail: "failed: agent.model: provider timeout".to_string(),
+            denied: false,
+        };
+        assert_eq!(
+            error.facts(),
+            FailureFacts {
+                committed: Committed::Yes,
+                retry_safe: false,
+                resume: Some("user turn already recorded; re-sending duplicates it"),
+            }
+        );
     }
 }

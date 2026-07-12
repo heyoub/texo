@@ -154,12 +154,7 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
     let mut host = match open_host(root, workspace) {
         Ok(host) => host,
         Err(error) => {
-            return error_response(
-                id,
-                -32603,
-                &error.to_string(),
-                Some(json!({ "code": error.code() })),
-            );
+            return error_response(id, -32603, &error.to_string(), Some(failure_data(&error)));
         }
     };
     match host.invoke_json(mapped.op, &mapped.input) {
@@ -183,13 +178,18 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
                 }),
             )
         }
-        Err(error) => error_response(
-            id,
-            -32603,
-            &error.to_string(),
-            Some(json!({ "code": error.code() })),
-        ),
+        Err(error) => error_response(id, -32603, &error.to_string(), Some(failure_data(&error))),
     }
+}
+
+fn failure_data(error: &TexoError) -> Value {
+    let facts = error.facts();
+    json!({
+        "code": error.code(),
+        "committed": facts.committed,
+        "retry_safe": facts.retry_safe,
+        "resume": facts.resume,
+    })
 }
 
 struct MappedTool {

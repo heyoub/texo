@@ -4,6 +4,28 @@ use serde_json::Value;
 
 use crate::error::TexoError;
 
+/// Render one typed CLI failure with its causal chain and recovery facts.
+#[expect(clippy::print_stderr, reason = "CLI error contract")]
+pub fn cli_error(error: &TexoError) {
+    use std::error::Error as _;
+
+    eprintln!("error[{}]: {error}", error.code());
+    let mut source = error.source();
+    while let Some(cause) = source {
+        eprintln!("caused by: {cause}");
+        source = cause.source();
+    }
+    let facts = error.facts();
+    eprintln!("committed: {}", facts.committed);
+    eprintln!(
+        "retry: {}",
+        if facts.retry_safe { "safe" } else { "unsafe" }
+    );
+    if let Some(resume) = facts.resume {
+        eprintln!("resume: {resume}");
+    }
+}
+
 /// Print a JSON value unchanged except for pretty formatting.
 ///
 /// # Errors
@@ -134,6 +156,14 @@ fn status_label(value: &str) -> &'static str {
 /// Print supersession summary.
 #[expect(clippy::print_stdout, reason = "CLI output contract")]
 pub fn supersede(value: &Value) {
+    if value.get("already_applied").and_then(Value::as_bool) == Some(true) {
+        println!(
+            "claim {} already superseded by {} (no-op)",
+            value.get("old").and_then(Value::as_str).unwrap_or_default(),
+            value.get("new").and_then(Value::as_str).unwrap_or_default()
+        );
+        return;
+    }
     println!(
         "superseded {} with {} at local seq {}",
         value.get("old").and_then(Value::as_str).unwrap_or_default(),

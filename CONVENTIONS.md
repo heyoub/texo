@@ -13,6 +13,8 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 - Every public `Result` function documents `# Errors`.
 - Transport boundaries map failures into typed `TexoError` variants with stable
   `.code()` tokens.
+- CLI exit status is tristate: `0` complete, `1` failed or findings-only, and
+  `2` partial with committed usable work. `check-staleness` findings remain `1`.
 - CLI/stdio/HTTP surface prints are explicit output contracts and carry local
   `#[expect(clippy::print_stdout|print_stderr, reason = "...")]` annotations.
 - BatPak appends go through `TexoEffectBackend`; receipts verify before being

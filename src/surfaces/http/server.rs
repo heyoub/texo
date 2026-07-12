@@ -66,6 +66,32 @@ impl ShutdownHandle {
     pub fn is_shutdown(&self) -> bool {
         self.inner.load(Ordering::Acquire)
     }
+
+    /// Register first-signal graceful shutdown and second-signal default
+    /// termination for SIGTERM and SIGINT.
+    ///
+    /// # Errors
+    /// Returns a surface error when the OS signal handlers cannot be installed.
+    #[cfg(unix)]
+    pub fn register_termination_signals(&self) -> Result<(), TexoError> {
+        use signal_hook::consts::signal::{SIGINT, SIGTERM};
+
+        for signal in [SIGTERM, SIGINT] {
+            signal_hook::flag::register_conditional_default(signal, Arc::clone(&self.inner))
+                .map_err(surface_error)?;
+            signal_hook::flag::register(signal, Arc::clone(&self.inner)).map_err(surface_error)?;
+        }
+        Ok(())
+    }
+
+    /// Non-Unix platforms retain programmatic shutdown only.
+    ///
+    /// # Errors
+    /// This implementation cannot fail.
+    #[cfg(not(unix))]
+    pub const fn register_termination_signals(&self) -> Result<(), TexoError> {
+        Ok(())
+    }
 }
 
 /// Server counters.
@@ -223,7 +249,7 @@ fn serve_connection(
             return;
         };
         let resume_from = super::sse::resume_cursor(&request);
-        match super::sse::serve(&mut stream, route_state, keep_alive, resume_from) {
+        match super::sse::serve(&mut stream, route_state, keep_alive, resume_from, shutdown) {
             Ok(()) => counters.served.fetch_add(1, Ordering::AcqRel),
             Err(_) => counters.failed_requests.fetch_add(1, Ordering::AcqRel),
         };

@@ -2,9 +2,10 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use batpak::store::{Open, Store};
 use serde_json::{json, Value};
@@ -128,6 +129,9 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
     )?;
     assert!(missing.contains("HTTP/1.1 404 Not Found"));
     assert!(missing.contains("unknown or empty session: unknown"));
+    assert!(missing.contains("\"code\":\"domain.missing\""));
+    assert!(missing.contains("\"committed\":\"no\""));
+    assert!(missing.contains("\"retry_safe\":false"));
 
     let stats = stop_server(&shutdown, handle)?;
     assert!(stats.accepted >= 7);
@@ -348,4 +352,61 @@ fn sse_data(frame: &str) -> TestResult<Value> {
         .find_map(|line| line.strip_prefix("data: "))
         .ok_or_else(|| "SSE frame did not include a data line".to_string())?;
     Ok(serde_json::from_str(data)?)
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_drains_open_sse_within_bound() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let bin = env!("CARGO_BIN_EXE_texo");
+    let root_arg = root.path().to_string_lossy().to_string();
+    let init = Command::new(bin)
+        .args(["--root", root_arg.as_str(), "init"])
+        .output()?;
+    assert!(init.status.success());
+    let mut child = Command::new(bin)
+        .args([
+            "--root",
+            root_arg.as_str(),
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--workspace",
+            "demo",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or("missing serve stdout")?;
+    let mut stdout = BufReader::new(stdout);
+    let mut listening = String::new();
+    stdout.read_line(&mut listening)?;
+    let addr: SocketAddr = listening
+        .trim()
+        .strip_prefix("texo-agent listening on http://")
+        .ok_or("missing listen prefix")?
+        .parse()?;
+    let mut stream = TcpStream::connect(addr)?;
+    stream.write_all(b"GET /api/stream HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+    let mut reader = BufReader::new(stream);
+    let _hello = read_sse_frame(&mut reader)?;
+
+    let pid = child.id().to_string();
+    let signal = Command::new("kill")
+        .args(["-TERM", pid.as_str()])
+        .status()?;
+    assert!(signal.success());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err("server did not drain SSE within two seconds".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
 }

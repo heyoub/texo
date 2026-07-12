@@ -20,7 +20,7 @@ fn main() -> ExitCode {
     match texo::surfaces::cli::run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("error[{}]: {error}", error.code());
+            texo::surfaces::cli::render::cli_error(&error);
             ExitCode::FAILURE
         }
     }

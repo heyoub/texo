@@ -121,6 +121,9 @@ fn mcp_stdio_full_session() -> TestResult {
         .as_str()
         .expect("op error carries a code token")
         .contains('.'));
+    assert!(explain_error["error"]["data"]["committed"].is_string());
+    assert!(explain_error["error"]["data"]["retry_safe"].is_boolean());
+    assert!(explain_error["error"]["data"].get("resume").is_some());
 
     stdin.write_all(b"{not json\n")?;
     stdin.flush()?;

@@ -396,11 +396,28 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let _new_card = new_card.ok_or_else(|| TexoError::MissingEntity {
             entity: new_entity.clone(),
         })?;
+        if old_card.phase == 2 && old_card.superseded_by.as_deref() == Some(input.new.as_str()) {
+            return Ok(ClaimSupersedeOutput {
+                old: input.old,
+                new: input.new,
+                already_applied: true,
+                receipt: None,
+            });
+        }
         if old_card.phase != 1 {
             return Err(TexoError::Transition {
                 machine: CLAIM_MACHINE.to_string(),
                 from: old_card.phase,
                 to: 2,
+                context: Some(format!(
+                    "claim {} is already {}{}",
+                    input.old,
+                    claim_phase_name(old_card.phase),
+                    old_card
+                        .superseded_by
+                        .as_deref()
+                        .map_or_else(String::new, |successor| format!(" by {successor}"))
+                )),
             });
         }
 
@@ -432,7 +449,8 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         Ok(ClaimSupersedeOutput {
             old: input.old,
             new: input.new,
-            receipt: take_one_receipt("texo.claim.supersede")?,
+            already_applied: false,
+            receipt: Some(take_one_receipt("texo.claim.supersede")?),
         })
     })
 }
@@ -770,11 +788,25 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let card = card.ok_or_else(|| TexoError::MissingEntity {
             entity: entity.clone(),
         })?;
+        let target_phase = if input.resolution == "resolved" { 2 } else { 3 };
+        if card.phase == target_phase {
+            return Ok(ConflictResolveOutput {
+                conflict_id: input.conflict_id,
+                resolution: input.resolution,
+                already_applied: true,
+                receipt: None,
+            });
+        }
         if card.phase != 1 {
             return Err(TexoError::Transition {
                 machine: CONFLICT_MACHINE.to_string(),
                 from: card.phase,
-                to: if input.resolution == "resolved" { 2 } else { 3 },
+                to: target_phase,
+                context: Some(format!(
+                    "conflict {} is already {}",
+                    input.conflict_id,
+                    conflict_phase_name(card.phase)
+                )),
             });
         }
         append_json(
@@ -791,7 +823,7 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     CONFLICT_MACHINE,
                     &entity,
                     1,
-                    if input.resolution == "resolved" { 2 } else { 3 },
+                    target_phase,
                     vec![TransitionCauseV1 {
                         lane: 0,
                         key: format!("conflict:{}", input.conflict_id),
@@ -803,7 +835,8 @@ fn conflict_resolve(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         Ok(ConflictResolveOutput {
             conflict_id: input.conflict_id,
             resolution: input.resolution,
-            receipt: take_one_receipt("texo.conflict.resolve")?,
+            already_applied: false,
+            receipt: Some(take_one_receipt("texo.conflict.resolve")?),
         })
     })
 }
@@ -1009,7 +1042,8 @@ struct ClaimSupersedeInput {
 struct ClaimSupersedeOutput {
     old: String,
     new: String,
-    receipt: ReceiptNote,
+    already_applied: bool,
+    receipt: Option<ReceiptNote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1168,7 +1202,8 @@ struct ConflictResolveInput {
 struct ConflictResolveOutput {
     conflict_id: String,
     resolution: String,
-    receipt: ReceiptNote,
+    already_applied: bool,
+    receipt: Option<ReceiptNote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2606,6 +2641,25 @@ fn conflict_status(conflict: &ConflictCard) -> crate::claims::status::ConflictSt
         2 => crate::claims::status::ConflictStatus::Resolved,
         3 => crate::claims::status::ConflictStatus::Ignored,
         _ => crate::claims::status::ConflictStatus::Open,
+    }
+}
+
+fn claim_phase_name(phase: u64) -> &'static str {
+    match phase {
+        0 => "unrecorded",
+        1 => "current",
+        2 => "superseded",
+        _ => "invalid",
+    }
+}
+
+fn conflict_phase_name(phase: u64) -> &'static str {
+    match phase {
+        0 => "unopened",
+        1 => "open",
+        2 => "resolved",
+        3 => "ignored",
+        _ => "invalid",
     }
 }
 

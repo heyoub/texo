@@ -89,9 +89,7 @@ fn api_memory(state: &RouteState) -> Result<HttpResponse, TexoError> {
     let mut host = open_host(state)?;
     match host.invoke_json("texo.agent.memory", &json!({})) {
         Ok(value) => HttpResponse::json(200, &value).map_err(TexoError::Json),
-        Err(error) => {
-            HttpResponse::json(500, &json!({ "error": error.to_string() })).map_err(TexoError::Json)
-        }
+        Err(error) => json_failure(500, &error),
     }
 }
 
@@ -125,15 +123,18 @@ fn api_chat(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, T
         }),
     ) {
         Ok(value) => HttpResponse::json(200, &value).map_err(TexoError::Json),
-        Err(TexoError::OpRuntime { denied: true, .. }) => Ok(HttpResponse::json_error(
-            503,
-            "chat is disabled: TEXO_LLM_API_KEY is not set",
-        )),
-        Err(TexoError::Model { detail }) => Ok(HttpResponse::json_error(
-            502,
-            &format!("model failure: {detail}"),
-        )),
-        Err(error) => Ok(HttpResponse::json_error(500, &error.to_string())),
+        Err(error @ TexoError::OpRuntime { denied: true, .. }) => json_failure(503, &error),
+        Err(error @ TexoError::Model { .. }) => json_failure(502, &error),
+        Err(error)
+            if matches!(
+                &error,
+                TexoError::OpRuntime { op, detail, .. }
+                    if op == "texo.agent.chat" && detail.contains("agent.model")
+            ) =>
+        {
+            json_failure(502, &error)
+        }
+        Err(error) => json_failure(500, &error),
     }
 }
 
@@ -154,21 +155,46 @@ fn api_session_end(request: &HttpRequest, state: &RouteState) -> Result<HttpResp
         &json!({"session_id": input.session_id, "observed_at_ms": now_ms()}),
     ) {
         Ok(value) => HttpResponse::json(200, &value).map_err(TexoError::Json),
-        Err(TexoError::MissingEntity { entity }) => Ok(HttpResponse::json_error(
+        Err(TexoError::MissingEntity { entity }) => json_failure(
             404,
-            &format!(
-                "unknown or empty session: {}",
-                entity.trim_start_matches("session:")
-            ),
-        )),
-        Err(TexoError::OpRuntime { detail, .. }) if detail.contains("domain.missing") => {
-            Ok(HttpResponse::json_error(
+            &TexoError::MissingEntity {
+                entity: format!(
+                    "unknown or empty session: {}",
+                    entity.trim_start_matches("session:")
+                ),
+            },
+        ),
+        Err(error)
+            if matches!(
+                &error,
+                TexoError::OpRuntime { detail, .. } if detail.contains("domain.missing")
+            ) =>
+        {
+            json_failure(
                 404,
-                &format!("unknown or empty session: {}", input.session_id),
-            ))
+                &TexoError::MissingEntity {
+                    entity: format!("unknown or empty session: {}", input.session_id),
+                },
+            )
         }
-        Err(error) => Ok(HttpResponse::json_error(500, &error.to_string())),
+        Err(error) => json_failure(500, &error),
     }
+}
+
+/// Serialize one typed failure consistently for HTTP clients.
+fn json_failure(status: u16, error: &TexoError) -> Result<HttpResponse, TexoError> {
+    let facts = error.facts();
+    HttpResponse::json(
+        status,
+        &json!({
+            "error": error.to_string(),
+            "code": error.code(),
+            "committed": facts.committed,
+            "retry_safe": facts.retry_safe,
+            "resume": facts.resume,
+        }),
+    )
+    .map_err(TexoError::Json)
 }
 
 fn static_file(path: &str) -> Result<HttpResponse, TexoError> {

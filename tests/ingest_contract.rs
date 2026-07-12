@@ -117,5 +117,14 @@ fn cli_uses_tristate_exit_for_tolerant_partial() -> TestResult {
     assert_eq!(tolerant.status.code(), Some(2));
     let output: serde_json::Value = serde_json::from_slice(&tolerant.stdout)?;
     assert_eq!(output["outcome"], "partial");
+
+    let missing = Command::new(bin)
+        .args(["--root", root_arg.as_str(), "ingest", "missing"])
+        .output()?;
+    assert_eq!(missing.status.code(), Some(1));
+    let stderr = String::from_utf8(missing.stderr)?;
+    assert!(stderr.contains("error[op.runtime]"));
+    assert!(stderr.contains("committed: no"));
+    assert!(stderr.contains("retry: unsafe"));
     Ok(())
 }

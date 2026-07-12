@@ -472,6 +472,7 @@ fn serve(
     };
     let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);
     let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
+    shutdown.register_termination_signals()?;
     let _stats = crate::surfaces::http::server::serve_listener(listener, config, &shutdown)?;
     Ok(ExitCode::SUCCESS)
 }

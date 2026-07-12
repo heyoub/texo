@@ -81,7 +81,11 @@ demo-helios:
     echo "==> ingest (LLM extraction via texo-extract; first run hits OpenRouter, then cached)"
     "$TEXO" ingest examples/helios/docs
     echo "==> relate (semantic supersession + conflict pass; cached + resumable)"
+    set +e
     "$TEXO" relate
+    RELATE_STATUS=$?
+    set -e
+    if [[ "$RELATE_STATUS" -ne 0 && "$RELATE_STATUS" -ne 2 ]]; then exit "$RELATE_STATUS"; fi
     echo "==> compile onboarding -> public/helios/onboarding.generated.md"
     "$TEXO" compile --out public/helios
     echo
