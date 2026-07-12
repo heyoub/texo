@@ -99,3 +99,39 @@ fn run(root: &std::path::Path, args: &[&str]) -> std::io::Result<std::process::O
         .args(args)
         .output()
 }
+
+#[test]
+fn uninstall_fails_closed_on_unrecoverable_workspace_manifest() -> TestResult {
+    // A managed manifest with the correct schema but an args shape that does
+    // not carry a recoverable `--workspace <id>` pair must NOT be silently
+    // rewritten to point clients at the `demo` workspace — it must fail closed.
+    let root = TempDir::new()?;
+    run(
+        root.path(),
+        &["--workspace", "real-ws", "install", "--client", "cursor"],
+    )?;
+
+    let manifest_path = root.path().join(".texo/mcp.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    // Valid schema, but the args no longer contain a --workspace flag pair.
+    manifest["server"]["args"] = serde_json::json!(["mcp"]);
+    let before = serde_json::to_vec_pretty(&manifest)?;
+    std::fs::write(&manifest_path, &before)?;
+
+    let removed = run(root.path(), &["uninstall", "--client", "cursor", "--json"])?;
+    assert!(
+        !removed.status.success(),
+        "uninstall must fail closed on an unrecoverable managed manifest"
+    );
+
+    // The manifest must be untouched — no silent rewrite to `demo`.
+    let after = std::fs::read(&manifest_path)?;
+    assert_eq!(after, before, "manifest was mutated despite failing closed");
+    let reparsed: Value = serde_json::from_slice(&after)?;
+    assert_ne!(
+        reparsed["server"]["args"],
+        serde_json::json!(["--root", ".", "--workspace", "demo", "mcp"]),
+        "manifest was rewritten to the demo fallback"
+    );
+    Ok(())
+}

@@ -280,7 +280,12 @@ pub fn uninstall(
             }
         }
         if root.join(MCP_MANIFEST_PATH).exists() {
-            let workspace_id = managed_workspace_id(root)?.unwrap_or_else(|| "demo".to_string());
+            let Some(workspace_id) = managed_workspace_id(root)? else {
+                return Err(config_error(
+                    MCP_MANIFEST_PATH,
+                    "managed manifest exists but its workspace id could not be recovered",
+                ));
+            };
             let canonical = with_newline(serde_json::to_vec_pretty(&canonical_manifest(
                 &workspace_id,
                 &remaining,
@@ -501,13 +506,29 @@ fn managed_workspace_id(root: &Path) -> Result<Option<String>, TexoError> {
     let Some(document) = managed_manifest(root)? else {
         return Ok(None);
     };
-    Ok(document
+    // Recover the workspace from the `--workspace <id>` flag pair, not a fixed
+    // positional index. A managed manifest with a valid schema but an
+    // unexpected args shape must fail closed rather than silently rewrite the
+    // manifest to point future MCP clients at the `demo` workspace.
+    let args = document
         .get("server")
         .and_then(|server| server.get("args"))
         .and_then(Value::as_array)
-        .and_then(|args| args.get(3))
-        .and_then(Value::as_str)
-        .map(str::to_string))
+        .ok_or_else(|| config_error(MCP_MANIFEST_PATH, "managed manifest has no server args"))?;
+    let workspace = args.windows(2).find_map(|pair| {
+        if pair[0].as_str() == Some("--workspace") {
+            pair[1].as_str()
+        } else {
+            None
+        }
+    });
+    match workspace {
+        Some(id) => Ok(Some(id.to_string())),
+        None => Err(config_error(
+            MCP_MANIFEST_PATH,
+            "managed manifest args carry no recoverable --workspace id; refusing to rewrite",
+        )),
+    }
 }
 
 fn preflight_remove_client(
