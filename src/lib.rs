@@ -18,6 +18,8 @@ pub mod gateway;
 pub mod hooks;
 /// Idempotent agent-appliance installation.
 pub mod install;
+/// Snapshot-consistent evidence and code-knowledge contracts.
+pub mod knowledge;
 /// Configuration loading and defaults.
 pub mod config;
 /// Event identifiers and schema surfaces.

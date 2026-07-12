@@ -3,8 +3,9 @@
 Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 
 ```txt
-markdown / session transcript
+markdown / Git snapshot / code index / session transcript
   -> extractor: heuristic or LLM record-once cache
+  -> bounded evidence occurrence + analysis quality
   -> syncbat op
   -> TexoEffectBackend
   -> BatPak Store<Open>
@@ -38,6 +39,11 @@ checks. texo owns domain schema, projections, and user surfaces.
   read hooks.
 - `doctor` and `backup`: composed operator diagnostics and an evidence-backed
   journal/config portability boundary.
+- `knowledge`: snapshot tokens, Git object identities, evidence occurrences,
+  temporal partial-order results, coverage gaps, and code-analysis quality.
+
+The evidence, structural, and belief planes and their replay boundary are
+frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 
 ## Operation Catalog
 
