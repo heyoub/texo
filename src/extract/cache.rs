@@ -43,18 +43,23 @@ fn write_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     }
     let bytes = serde_json::to_vec(value).map_err(std::io::Error::other)?;
     let tmp = unique_tmp_path(path);
-    // Best-effort durability: flush the staging file before the rename so a
-    // crash cannot expose a half-written record under the final key.
-    let file = std::fs::File::create(&tmp)?;
-    {
-        use std::io::Write as _;
-        let mut writer = std::io::BufWriter::new(&file);
-        writer.write_all(&bytes)?;
-        writer.flush()?;
+    let result = (|| {
+        // Best-effort durability: flush the staging file before the rename so
+        // a crash cannot expose a half-written record under the final key.
+        let file = std::fs::File::create(&tmp)?;
+        {
+            use std::io::Write as _;
+            let mut writer = std::io::BufWriter::new(&file);
+            writer.write_all(&bytes)?;
+            writer.flush()?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _removed = std::fs::remove_file(&tmp);
     }
-    file.sync_all()?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    result
 }
 
 /// Wraps a [`Proposer`] with an on-disk content-addressed cache.
@@ -356,5 +361,27 @@ mod tests {
             .collect();
         assert!(leaked.is_empty(), "staging files leaked: {leaked:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_atomic_write_removes_its_private_staging_file() {
+        let dir = tmp_dir().join("failed-write-cleanup");
+        let _removed = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let destination = dir.join("destination-is-a-directory.json");
+        std::fs::create_dir(&destination).expect("conflicting destination directory");
+        let verdict = RelationVerdict {
+            relation: ClaimRelation::Unrelated,
+            score: 1.0,
+        };
+
+        write_atomic(&destination, &verdict).expect_err("rename over directory must fail");
+
+        let leaked = std::fs::read_dir(&dir)
+            .expect("readdir")
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp."));
+        assert!(!leaked, "failed write leaked its staging file");
+        let _removed = std::fs::remove_dir_all(&dir);
     }
 }

@@ -692,7 +692,12 @@ pub fn relate_claims_settled_parallel(
         );
         groups.entry(texts).or_default().push(idx);
     }
-    let representatives: Vec<usize> = groups.values().map(|members| members[0]).collect();
+    let mut representatives: Vec<usize> = groups.values().map(|members| members[0]).collect();
+    // `BTreeMap` orders groups by text, but budget priority is part of the
+    // deterministic pair-enumeration contract. Restore pending-pair order
+    // after coalescing so a tight wall budget considers the same earliest
+    // logical pairs as the sequential path.
+    representatives.sort_unstable();
 
     let mut rep_outcomes: BTreeMap<usize, PairOutcome> = std::thread::scope(|scope| {
         let (job_tx, job_rx) = flume::bounded::<usize>(concurrency);
@@ -1754,28 +1759,68 @@ mod tests {
         );
     }
 
-    /// A relater that answers in REVERSE completion order relative to dispatch:
-    /// the first pair dispatched blocks until the last has answered. If the
-    /// reduction depended on worker completion order the output would flip;
-    /// proving byte-identity to the sequential run under this adversarial
-    /// schedule is the determinism guarantee the fan-out claims.
+    /// A relater that forces calls to complete in reverse dispatch order. If
+    /// reduction depended on completion order the output would flip; proving
+    /// byte-identity under this adversarial schedule witnesses the fan-out's
+    /// deterministic reassembly contract.
     struct ReverseOrderRelater {
         gate: std::sync::Barrier,
+        ranks: BTreeMap<(String, String), usize>,
+        state: std::sync::Mutex<ReverseOrderState>,
+        ready: std::sync::Condvar,
+    }
+
+    struct ReverseOrderState {
+        next_rank: Option<usize>,
+        completed: Vec<usize>,
     }
 
     impl ReverseOrderRelater {
-        fn new(total: usize) -> Self {
+        fn new(ordered_pairs: Vec<(String, String)>) -> Self {
+            let total = ordered_pairs.len();
+            let ranks = ordered_pairs
+                .into_iter()
+                .enumerate()
+                .map(|(rank, pair)| (pair, rank))
+                .collect();
             Self {
                 gate: std::sync::Barrier::new(total),
+                ranks,
+                state: std::sync::Mutex::new(ReverseOrderState {
+                    next_rank: total.checked_sub(1),
+                    completed: Vec::with_capacity(total),
+                }),
+                ready: std::sync::Condvar::new(),
             }
+        }
+
+        fn completed(&self) -> Vec<usize> {
+            self.state
+                .lock()
+                .expect("reverse-order state lock")
+                .completed
+                .clone()
         }
     }
 
     impl ClaimRelater for ReverseOrderRelater {
-        fn relate(&self, _older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
-            // Every worker waits at the barrier, so all calls are in flight at
-            // once and complete in scheduler order, not dispatch order.
+        fn relate(&self, older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            let rank = *self
+                .ranks
+                .get(&(older.to_string(), newer.to_string()))
+                .expect("pair has a dispatch rank");
+            // All representatives must be in flight before the highest rank is
+            // released. Each completion then unlocks exactly the preceding
+            // rank, forcing N-1..0 without sleeps or scheduler assumptions.
             self.gate.wait();
+            let mut state = self.state.lock().expect("reverse-order state lock");
+            while state.next_rank != Some(rank) {
+                state = self.ready.wait(state).expect("reverse-order wait");
+            }
+            state.completed.push(rank);
+            state.next_rank = rank.checked_sub(1);
+            self.ready.notify_all();
+            drop(state);
             let relation = if newer.contains("moved") {
                 ClaimRelation::Supersedes
             } else {
@@ -1794,9 +1839,6 @@ mod tests {
     #[test]
     fn parallel_reassembly_is_independent_of_completion_order() {
         let (claims, embedder) = parallel_fanout_corpus();
-        // Establish the distinct-text-pair count so the barrier width matches
-        // the number of representative calls (coalescing means one call per
-        // distinct surviving text pair).
         let seq = relate_claims_with_settled(
             &claims,
             &embedder,
@@ -1807,24 +1849,27 @@ mod tests {
         )
         .expect("sequential");
 
-        let counter = TextKeyedCountingRelater::new();
-        let _ = relate_claims_settled_parallel(
-            &claims,
-            &embedder,
-            &counter,
-            th(0.9, 0.6),
-            &BTreeMap::new(),
-            Duration::MAX,
-            8,
-        )
-        .expect("count");
-        let representative_calls = counter.count();
+        let pending = prepare_pairs(&claims, &embedder, th(0.9, 0.6))
+            .expect("prepare")
+            .expect("non-empty candidates");
+        let mut seen = BTreeSet::new();
+        let ordered_pairs = pending
+            .iter()
+            .filter_map(|pair| {
+                let texts = (
+                    claims[pair.old_idx].1.text.clone(),
+                    claims[pair.new_idx].1.text.clone(),
+                );
+                seen.insert(texts.clone()).then_some(texts)
+            })
+            .collect::<Vec<_>>();
+        let representative_calls = ordered_pairs.len();
         assert!(
             representative_calls >= 2,
             "need real fan-out to test ordering"
         );
 
-        let relater = ReverseOrderRelater::new(representative_calls);
+        let relater = ReverseOrderRelater::new(ordered_pairs);
         let par = relate_claims_settled_parallel(
             &claims,
             &embedder,
@@ -1839,6 +1884,11 @@ mod tests {
             format!("{seq:?}"),
             format!("{par:?}"),
             "reassembly must not depend on worker completion order"
+        );
+        assert_eq!(
+            relater.completed(),
+            (0..representative_calls).rev().collect::<Vec<_>>(),
+            "test harness must actually force reverse completion order"
         );
     }
 }
