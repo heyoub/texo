@@ -26,7 +26,10 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
   workspace configuration never supplies executable hook commands.
 - Backups carry journal authority and config only. Caches, warm projections,
   generated views, and client adapters are rebuilt rather than restored as
-  source truth.
+  source truth. Restore accepts only a fresh root, stages privately beside it,
+  rechecks every copied digest and the BatPak chain, then atomically publishes.
 - Backup evidence is self-consistency evidence unless its printed manifest
   hash is pinned outside the backup and supplied during verification; it is
   never described as a signature or independent proof of authenticity.
+  Supply the out-of-band hash to restore when authenticity, rather than backup
+  self-consistency, is required.

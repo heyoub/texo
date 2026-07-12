@@ -56,7 +56,10 @@ Multi-workspace scopes live in `.texo/config.toml` under
 - `texo doctor [--deep] [--fix]` composes config, store, projection, gateway,
   and agent-install diagnostics. `--fix` touches only Texo-managed files.
 - `texo backup create <dest>` creates a fresh journal/config backup with
-  BatPak snapshot evidence; `texo backup verify <dest>` checks it offline.
+  BatPak snapshot evidence; `texo backup verify <dest>` checks it offline;
+  `texo --root <fresh-root> backup restore <source>` verifies, copies, verifies
+  the restored chain, and atomically publishes a new workspace without caches
+  or agent-client configuration. Restore refuses an existing root.
   Creation prints `manifest_hash_hex`: store that value outside the backup and
   pass `--expect-manifest-hash <hex>` to detect coordinated rewrites. Without
   a separately trusted pin, verification detects corruption and incomplete

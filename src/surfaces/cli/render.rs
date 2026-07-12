@@ -405,6 +405,26 @@ pub fn backup(value: &Value) {
                     .unwrap_or_default()
             );
         }
+    } else if value
+        .get("chain_verified")
+        .and_then(Value::as_bool)
+        .is_some()
+    {
+        println!(
+            "backup restored: {} ({} files, {} bytes; chain verified)",
+            value
+                .get("dest")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("store_file_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            value
+                .get("store_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        );
     } else {
         println!(
             "backup created: {} ({} files, {} bytes)",

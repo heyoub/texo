@@ -148,6 +148,35 @@ fn run_reconcile(root: &Path, cache: &Path) -> TestResult<Output> {
         .output()?)
 }
 
+fn assert_backup_restore_preserves_explanation(root: &Path, claim_id: &ClaimId) -> TestResult {
+    let outside = TempDir::new()?;
+    let backup = outside.path().join("backup");
+    let restored = outside.path().join("restored");
+    let backup_text = backup.to_str().ok_or("backup path")?;
+    let created = texo(root, &["backup", "create", backup_text, "--json"])?;
+    assert!(created.status.success());
+    let restored_output = texo(&restored, &["backup", "restore", backup_text, "--json"])?;
+    assert!(
+        restored_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored_output.stderr)
+    );
+    assert!(!restored.join(".texo/cache").exists());
+    let mut host = texo::host::TexoHost::open(&restored, "demo", 1_700_000_000_102)?;
+    let explained = host.invoke_json(
+        "texo.claim.explain",
+        &json!({"claim_id": claim_id, "snapshot": null}),
+    )?;
+    assert!(explained["evidence"].as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row["method"] == "semantic_policy"
+                && row["occurrence"]["path"] == "src/config.rs"
+                && row["reconciliation"]["policy_version"] == "evidence-reconcile-v1"
+        })
+    }));
+    Ok(())
+}
+
 #[test]
 fn cached_proposal_is_policy_accepted_once_and_survives_artifact_deletion() -> TestResult {
     let PreparedWorkspace {
@@ -245,6 +274,8 @@ fn cached_proposal_is_policy_accepted_once_and_survives_artifact_deletion() -> T
     assert!(explained["evidence"]
         .as_array()
         .is_some_and(|rows| { rows.iter().any(|row| row["method"] == "semantic_policy") }));
+    drop(reopened);
+    assert_backup_restore_preserves_explanation(root.path(), &claim_id)?;
     Ok(())
 }
 

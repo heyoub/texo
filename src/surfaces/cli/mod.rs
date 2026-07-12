@@ -295,6 +295,15 @@ enum BackupCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Restore a verified backup into the fresh `--root` workspace.
+    Restore {
+        source: PathBuf,
+        /// Out-of-band manifest hash printed when the backup was created.
+        #[arg(long)]
+        expect_manifest_hash: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run the CLI and return the requested process exit code.
@@ -801,6 +810,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 } else {
                     ExitCode::FAILURE
                 })
+            }
+            BackupCmd::Restore {
+                source,
+                expect_manifest_hash,
+                json,
+            } => {
+                let report =
+                    crate::backup::restore(&source, &cli.root, expect_manifest_hash.as_deref())?;
+                let output = serde_json::to_value(report)?;
+                if json {
+                    render::json(&output)?;
+                } else {
+                    render::backup(&output);
+                }
+                Ok(ExitCode::SUCCESS)
             }
         },
     }
