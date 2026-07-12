@@ -51,6 +51,12 @@ pub struct SemanticsConfig {
     /// source for the measured rationale).
     #[serde(default = "default_cosine_threshold")]
     pub cosine_threshold: f32,
+    /// Within-cluster pair prefilter: pairs below this cosine are never sent
+    /// to the judge. Defaults to the compiled 0.60; lower it (with
+    /// `cosine_threshold`) on recall-critical corpora — the judge remains the
+    /// correctness gate, so the only cost of a lower floor is judge calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relate_prefilter: Option<f32>,
     /// Optional override for the semantic extractor model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extractor_model: Option<String>,
@@ -63,6 +69,7 @@ impl Default for SemanticsConfig {
             embed_model_revision: String::new(),
             nli_model_revision: String::new(),
             cosine_threshold: DEFAULT_COSINE_THRESHOLD,
+            relate_prefilter: None,
             extractor_model: None,
         }
     }

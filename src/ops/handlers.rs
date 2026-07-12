@@ -1738,12 +1738,18 @@ pub(crate) fn run_relate_pass(
             receipts: Vec::new(),
         });
     }
-    let (root, cluster, gateway) = env::with(|op_env| {
+    let (root, cluster, prefilter, gateway) = env::with(|op_env| {
         let cluster = op_env.config.semantics.as_ref().map_or_else(
             || crate::config::SemanticsConfig::default().cosine_threshold,
             |semantics| semantics.cosine_threshold,
         );
-        (op_env.root.clone(), cluster, op_env.config.gateway.clone())
+        let prefilter = op_env
+            .config
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.relate_prefilter)
+            .unwrap_or(RELATE_PREFILTER);
+        (op_env.root.clone(), cluster, prefilter, op_env.config.gateway.clone())
     })?;
     let authority = authoritative_settlements()?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
@@ -1755,10 +1761,7 @@ pub(crate) fn run_relate_pass(
         &root,
         gateway.as_ref(),
         &claims,
-        RelateThresholds {
-            cluster,
-            prefilter: RELATE_PREFILTER,
-        },
+        RelateThresholds { cluster, prefilter },
         &authority.verdicts,
         std::time::Duration::from_secs(budget_secs),
     )?;
@@ -2477,18 +2480,33 @@ fn check_staleness_from_view(
             detail: error.to_string(),
         })?;
         let source_id = SourceId::try_from(doc.source_id.as_str())?;
-        for line in &doc.lines {
-            let normalized = normalize_line(&line.text);
-            if normalized.is_empty() {
+        // Match superseded claims of THIS doc by normalized-text containment in
+        // the doc's current lines. Reconstructing claim ids from whole lines
+        // only matches heuristic whole-line claims; LLM extraction proposes
+        // sub-sentence claims whose identity a line-level rebuild never hits.
+        for claim in &view.claims {
+            if claim.card.phase != 2 || claim.card.source_id != source_id.as_str() {
                 continue;
             }
-            let claim_id = claim_id_from_parts(&source_id, line.number, &normalized).to_string();
-            let Some(claim) = by_id.get(&claim_id) else {
+            let needle = claim.card.normalized_text.as_str();
+            if needle.is_empty() {
                 continue;
+            }
+            let line = doc
+                .lines
+                .iter()
+                .find(|line| {
+                    line.number == claim.card.line_start
+                        && normalize_line(&line.text).contains(needle)
+                })
+                .or_else(|| {
+                    doc.lines
+                        .iter()
+                        .find(|line| normalize_line(&line.text).contains(needle))
+                });
+            let Some(line) = line else {
+                continue; // the stale text no longer appears in the doc
             };
-            if claim.card.phase != 2 {
-                continue;
-            }
             let superseded_by = claim.card.superseded_by.clone();
             let source = superseded_by
                 .as_ref()
@@ -2515,7 +2533,7 @@ fn check_staleness_from_view(
                 line_end: line.number,
                 severity: DiagnosticSeverity::Warning,
                 message,
-                claim_id,
+                claim_id: claim.card.claim_id.clone(),
                 superseded_by,
                 source,
                 receipt,

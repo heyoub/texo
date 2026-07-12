@@ -30,7 +30,11 @@ source = "05_meeting_dump.md"
 
 [[current_claim]]
 subject = "storage-engine"
-text_contains = "uses BatPak"
+# Semantic pin, not a sentence pin: the ADR contains two BatPak-affirming
+# claims ("uses BatPak ... now" and "replaced with BatPak's content-addressed
+# log"); a judge may legitimately chain one behind the other. The product
+# requirement is that SOME BatPak-affirming storage claim is current.
+text_contains = "BatPak"
 source = "07_storage_adr.md"
 
 # ─── Claims that MUST be SUPERSEDED (older, replaced by a newer claim) ───

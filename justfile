@@ -77,6 +77,10 @@ demo-helios:
 
     [workspaces.helios.semantics]
     enabled = true
+    # Recall-favoring candidate thresholds: the judge is the correctness gate,
+    # so a lower floor only costs judge calls (bounded by cluster sizes).
+    cosine_threshold = 0.5
+    relate_prefilter = 0.5
     TOML
     echo "==> ingest (LLM extraction via texo-extract; first run hits OpenRouter, then cached)"
     "$TEXO" ingest examples/helios/docs
