@@ -41,6 +41,9 @@ checks. texo owns domain schema, projections, and user surfaces.
   journal/config portability boundary.
 - `knowledge`: snapshot tokens, Git object identities, evidence occurrences,
   temporal partial-order results, coverage gaps, and code-analysis quality.
+- `code_index`: bounded SCIP import, a pinned Rust tree-sitter tags analyzer,
+  the universal lexical floor, and authenticated disposable normalized
+  artifacts.
 - `claims::evidence`: a replay-only projection that joins exact occurrence
   events to claim links at a requested frontier; missing disposable indexes do
   not alter this view.
@@ -51,11 +54,11 @@ frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 ## Operation Catalog
 
 The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 23 operations:
+contains 25 operations:
 
 `texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
-`texo.knowledge.index`, `texo.knowledge.triangulate`,
-`texo.claims.list`, `texo.claims.search`,
+`texo.knowledge.index`, `texo.code.index.build`, `texo.knowledge.triangulate`,
+`texo.claims.list`, `texo.claims.search`, `texo.knowledge.search`,
 `texo.claim.explain`, `texo.claim.supersede`, `texo.staleness.check`,
 `texo.context.agent`, `texo.compile.run`, `texo.conflicts.list`,
 `texo.conflicts.commit`, `texo.conflict.resolve`, `texo.verify.run`,

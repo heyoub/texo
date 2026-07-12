@@ -10,7 +10,8 @@ use crate::events::coordinate::{
     coordinate_for_claim, coordinate_for_code_index, coordinate_for_conflict,
     coordinate_for_evidence, coordinate_for_onboarding_projection, coordinate_for_relation_pair,
     coordinate_for_session, coordinate_for_source, coordinate_for_source_snapshot,
-    coordinate_for_workspace_meta, entity_for_session, scope_for_workspace, session_lane,
+    coordinate_for_workspace_meta, entity_for_session, entity_for_source_snapshot,
+    scope_for_workspace, session_lane,
 };
 use crate::events::ids::relation_pair_id;
 use crate::events::machines::{
@@ -283,11 +284,7 @@ fn append_domain_event(
             "texo.code.index.recorded.v1",
             &[payload.workspace_id.as_str(), payload.index_id.as_str()],
         );
-        let options = knowledge_append_options(
-            op_env,
-            key,
-            <SourceSnapshotRecordedV1 as EventPayload>::KIND,
-        );
+        let options = code_index_append_options(op_env, key, payload.snapshot_id.as_str());
         let receipt = op_env
             .store
             .append_typed_with_options(&coordinate, &payload, options)?;
@@ -359,6 +356,26 @@ fn knowledge_append_options(
     }
     if let Some(cause) = cause {
         options = options.with_causation(CausationId::from(cause));
+    }
+    options
+}
+
+fn code_index_append_options(
+    op_env: &OpEnv,
+    key: IdempotencyKey,
+    snapshot_id: &str,
+) -> AppendOptions {
+    let root = op_env
+        .store
+        .by_entity(&entity_for_source_snapshot(snapshot_id))
+        .into_iter()
+        .find(|entry| entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND)
+        .map(|entry| entry.event_id().as_u128());
+    let mut options = AppendOptions::new().with_idempotency(key);
+    if let Some(root) = root {
+        options = options
+            .with_correlation(CorrelationId::from(root))
+            .with_causation(CausationId::from(root));
     }
     options
 }

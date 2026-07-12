@@ -49,6 +49,8 @@ deterministic blake3 transition id and explicit causes.
   `agent-context`, `index`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
   `extract`, `session export`, `host fingerprint`, `ops`, `install`,
   `uninstall`, `hook`, `doctor`, `backup`, and `mcp`.
+  `index` freezes Git source and builds code intelligence in one invocation;
+  `--scip` supplies an optional workspace-local precise index.
 - HTTP: `GET /`, `GET /api/host`, `POST /api/chat`, `GET /api/memory`,
   `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
   8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
@@ -65,6 +67,9 @@ deterministic blake3 transition id and explicit causes.
   `stale`, `unverified`, or `incomparable`), exact bounded evidence when
   journaled, typed uncertainty, and coverage. Search hits alone are never
   promoted to evidence.
+- `search_knowledge` returns one bounded, snapshot-bound union of semantic
+  claims and code occurrences. Claim filters exclude code rows by construction;
+  opaque cursors are bound to the query, filters, and snapshot.
 - Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
 ## Semantic Pipeline

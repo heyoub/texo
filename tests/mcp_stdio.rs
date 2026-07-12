@@ -151,11 +151,11 @@ fn mcp_stdio_full_session() -> TestResult {
         .expect("tool response has text content")
         .contains("matching claims"));
     let claims_json = &claims["result"]["structuredContent"];
-    assert_eq!(claims_json["schema"], "texo.mcp.knowledge-search.v2");
+    assert_eq!(claims_json["schema"], "texo.mcp.knowledge-search.v3");
     assert_eq!(claims_json["meta"]["workspace_id"], "demo");
-    assert!(!claims_json["data"]["claims"]
+    assert!(!claims_json["data"]["results"]
         .as_array()
-        .expect("claims output has claims array")
+        .expect("knowledge output has results array")
         .is_empty());
     assert_eq!(claims_json["next_actions"][0]["tool"], "explain_knowledge");
     let snapshot_token = claims_json["meta"]["snapshot"]["token"]

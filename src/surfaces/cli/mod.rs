@@ -121,6 +121,10 @@ enum Command {
     },
     /// Freeze the current Git commit and worktree as evidence.
     Index {
+        /// Optional workspace-local SCIP protobuf index; built-in analyzers
+        /// cover sources absent from it.
+        #[arg(long)]
+        scip: Option<PathBuf>,
         /// Maximum source files captured.
         #[arg(long)]
         max_files: Option<usize>,
@@ -495,21 +499,36 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Index {
+            scip,
             max_files,
             max_file_bytes,
             max_total_bytes,
             json: _,
         } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
-            let output = host.invoke_json(
+            let observed_at_ms = observed_at_ms();
+            let source = host.invoke_json(
                 "texo.knowledge.index",
                 &json!({
-                    "observed_at_ms": observed_at_ms(),
+                    "observed_at_ms": observed_at_ms,
                     "max_files": max_files,
                     "max_file_bytes": max_file_bytes,
                     "max_total_bytes": max_total_bytes
                 }),
             )?;
+            let code = host.invoke_json(
+                "texo.code.index.build",
+                &json!({
+                    "snapshot_id": source.get("snapshot_id").cloned(),
+                    "scip_path": scip,
+                    "observed_at_ms": observed_at_ms
+                }),
+            )?;
+            let output = json!({
+                "schema": "texo.index.v2",
+                "source": source,
+                "code": code
+            });
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }

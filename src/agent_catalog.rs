@@ -31,9 +31,9 @@ pub fn tools() -> Vec<AgentToolSpec> {
         },
         AgentToolSpec {
             name: "search_knowledge",
-            operation: "texo.claims.search",
-            description: "Search bounded workspace knowledge with explicit analysis quality and coverage. Use explain_knowledge on a returned id when provenance or authority matters. Pass snapshot_token from prior results to keep a multi-call investigation consistent. This tool is read-only.",
-            result_schema: "texo.mcp.knowledge-search.v2",
+            operation: "texo.knowledge.search",
+            description: "Search bounded semantic claims and code occurrences with explicit analysis quality and coverage. Explain a returned claim or triangulate a returned symbol before relying on it. Pass snapshot_token from prior results to keep a multi-call investigation consistent. This tool is read-only.",
+            result_schema: "texo.mcp.knowledge-search.v3",
         },
         AgentToolSpec {
             name: "explain_knowledge",
@@ -225,6 +225,7 @@ fn output_schema(result_schema: &str) -> Value {
                     "workspace_id": { "type": "string" },
                     "frontier": { "type": "integer", "minimum": 0 },
                     "settlement_complete": { "type": "boolean" },
+                    "code_index_available": { "type": "boolean" },
                     "snapshot": {
                         "type": "object",
                         "properties": {
@@ -248,7 +249,7 @@ fn output_schema(result_schema: &str) -> Value {
                         "required": ["analysis_quality", "sources_examined", "occurrences", "truncated", "gaps"]
                     }
                 },
-                "required": ["workspace_id", "frontier", "settlement_complete", "snapshot", "coverage"]
+                "required": ["workspace_id", "frontier", "settlement_complete", "code_index_available", "snapshot", "coverage"]
             },
             "next_actions": { "type": "array" }
         },

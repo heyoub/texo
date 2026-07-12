@@ -503,12 +503,84 @@ pub enum CodeIndexFormat {
     Lexical,
 }
 
+/// Closed role of one code-symbol occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeOccurrenceRole {
+    /// Symbol definition.
+    Definition,
+    /// Ordinary symbol reference.
+    Reference,
+    /// Import occurrence.
+    Import,
+    /// Write access.
+    Write,
+    /// Read access.
+    Read,
+    /// Generated source.
+    Generated,
+    /// Test source.
+    Test,
+    /// Forward definition.
+    ForwardDefinition,
+    /// Implementation relationship or declaration.
+    Implementation,
+}
+
+/// One exact code-symbol occurrence from a disposable code index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeOccurrence {
+    /// Analyzer-stable symbol identity.
+    pub symbol: String,
+    /// Human-readable unqualified spelling.
+    pub display_name: String,
+    /// Closed occurrence roles.
+    pub roles: Vec<CodeOccurrenceRole>,
+    /// Repository-relative source path.
+    pub path: String,
+    /// Exact half-open byte range in the frozen source.
+    pub byte_range: ByteRange,
+    /// Exact one-based source line range.
+    pub line_range: LineRange,
+    /// Digest of the complete frozen source bytes.
+    pub source_digest_hex: String,
+    /// Exact bounded source text at the occurrence.
+    pub excerpt: String,
+    /// Analyzer implementation and version.
+    pub analyzer_fingerprint: String,
+    /// Precision tier of this occurrence.
+    pub analysis_quality: AnalysisQuality,
+}
+
+/// Content-addressed disposable code-index artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeIndexArtifact {
+    /// Artifact format version.
+    pub schema: String,
+    /// Frozen source snapshot indexed.
+    pub snapshot_id: SourceSnapshotId,
+    /// Content-addressed index identity.
+    pub index_id: CodeIndexId,
+    /// Strongest analyzer format included.
+    pub format: CodeIndexFormat,
+    /// Analyzer identity and version.
+    pub analyzer_fingerprint: String,
+    /// Sorted deterministic occurrences.
+    pub occurrences: Vec<CodeOccurrence>,
+    /// Honest coverage and omissions.
+    pub coverage: KnowledgeCoverage,
+}
+
 /// Closed explanation for a coverage gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageGapKind {
     /// No durable Git/worktree source snapshot has been indexed yet.
     SourceSnapshotUnavailable,
+    /// No authenticated code-index artifact is available at this snapshot.
+    CodeIndexUnavailable,
     /// Configured byte or item budget was reached.
     BudgetExceeded,
     /// Git history is shallow.

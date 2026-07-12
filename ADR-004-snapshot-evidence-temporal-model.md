@@ -102,6 +102,17 @@ by accepting a claim, path, span, or code symbol target.
 - Prefer imported SCIP indexes for precise definitions/references. Syntactic
   results advertise parser recovery and grammar fingerprints. Lexical results
   never masquerade as structural certainty.
+- `texo index --scip <workspace-relative-index.scip>` consumes official SCIP
+  typed ranges first and legacy packed ranges only as an input format. Only
+  explicitly declared UTF-8 position encoding is accepted; UTF-16/32
+  documents remain typed coverage gaps until conversion is independently
+  proven. Sources absent from SCIP fall through to the pinned Rust tags query
+  and then bounded lexical occurrences.
+- Normalized code indexes live under `.texo/cache/code-index/`, are
+  content-addressed and digest-checked, and remain disposable. Their journal
+  registration is causally linked to the source-snapshot event. Missing
+  artifacts produce `code_index_unavailable`; they never erase beliefs or
+  silently become empty search results.
 - Analyzer or model calls never occur during replay or verify.
 
 ## Additive schema plan

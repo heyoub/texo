@@ -10,7 +10,8 @@ use serde_json::json;
 use tempfile::TempDir;
 use texo::events::coordinate::scope_for_workspace;
 use texo::events::payloads::{
-    ClaimEvidenceLinkedV1, EvidenceOccurrenceRecordedV1, SourceSnapshotRecordedV1,
+    ClaimEvidenceLinkedV1, CodeIndexRecordedV1, EvidenceOccurrenceRecordedV1,
+    SourceSnapshotRecordedV1,
 };
 use texo::host::TexoHost;
 
@@ -42,11 +43,16 @@ fn initialized_repository() -> TestResult<(TempDir, TexoHost)> {
         &["config", "user.email", "texo@example.invalid"],
     )?;
     std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::create_dir_all(root.path().join("src"))?;
     std::fs::write(
         root.path().join("docs/decision.md"),
         "Decision: deploys happen on Friday.\n",
     )?;
-    git(root.path(), &["add", "docs/decision.md"])?;
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn deploy() { helper(); }\nfn helper() {}\n",
+    )?;
+    git(root.path(), &["add", "."])?;
     git(root.path(), &["commit", "-qm", "initial"])?;
 
     let mut host = TexoHost::open(root.path(), "demo", 1_700_000_000_000)?;
@@ -229,5 +235,124 @@ fn symbol_and_unsafe_path_targets_fail_honestly() -> TestResult {
         )
         .expect_err("parent traversal must fail closed");
     assert_eq!(error.code(), "op.input");
+    Ok(())
+}
+
+fn assert_code_search(host: &mut TexoHost) -> TestResult {
+    let search = host.invoke_json(
+        "texo.knowledge.search",
+        &json!({
+            "query": "deploy",
+            "subject": null,
+            "status": null,
+            "limit": 25,
+            "cursor": null,
+            "snapshot": null
+        }),
+    )?;
+    assert_eq!(search["code_index_available"], true);
+    assert!(search["results"].as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|row| row["kind"] == "code" && row["occurrence"]["display_name"] == "deploy")
+    }));
+    let first_page = host.invoke_json(
+        "texo.knowledge.search",
+        &json!({
+            "query": "deploy",
+            "subject": null,
+            "status": null,
+            "limit": 1,
+            "cursor": null,
+            "snapshot": null
+        }),
+    )?;
+    if let Some(cursor) = first_page["next_cursor"].as_str() {
+        let error = host
+            .invoke_json(
+                "texo.knowledge.search",
+                &json!({
+                    "query": "helper",
+                    "subject": null,
+                    "status": null,
+                    "limit": 1,
+                    "cursor": cursor,
+                    "snapshot": null
+                }),
+            )
+            .expect_err("cursor must be bound to its original query and snapshot");
+        assert_eq!(error.code(), "op.input");
+    }
+    Ok(())
+}
+
+#[test]
+fn code_index_is_causally_bound_and_symbol_triangulation_degrades_on_deletion() -> TestResult {
+    let (root, mut host) = initialized_repository()?;
+    let source = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_002_u64}),
+    )?;
+    let code = host.invoke_json(
+        "texo.code.index.build",
+        &json!({
+            "snapshot_id": source["snapshot_id"],
+            "scip_path": null,
+            "observed_at_ms": 1_700_000_000_003_u64
+        }),
+    )?;
+    assert_eq!(code["format"], "syntax");
+    assert_eq!(code["coverage"]["analysis_quality"], "syntactic");
+    assert_code_search(&mut host)?;
+
+    let region = Region::scope(scope_for_workspace("demo"));
+    let entries = host.store().query_entries_after(&region, None, 256);
+    let snapshot = entries
+        .iter()
+        .find(|entry| entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND)
+        .ok_or("source snapshot event")?;
+    let code_event = entries
+        .iter()
+        .find(|entry| entry.event_kind() == <CodeIndexRecordedV1 as EventPayload>::KIND)
+        .ok_or("code index event")?;
+    assert_eq!(code_event.correlation_id(), snapshot.event_id().as_u128());
+    assert_eq!(
+        code_event.causation_id(),
+        Some(snapshot.event_id().as_u128())
+    );
+
+    let triangulated = host.invoke_json(
+        "texo.knowledge.triangulate",
+        &json!({
+            "target": {"kind": "symbol", "symbol": "deploy"},
+            "snapshot": null
+        }),
+    )?;
+    assert_eq!(triangulated["answer_state"], "supported");
+    assert!(triangulated["structural_evidence"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| {
+            row["display_name"] == "deploy" && row["analysis_quality"] == "syntactic"
+        })));
+
+    std::fs::remove_file(
+        root.path()
+            .join(code["artifact_path"].as_str().ok_or("artifact")?),
+    )?;
+    let degraded = host.invoke_json(
+        "texo.knowledge.triangulate",
+        &json!({
+            "target": {"kind": "symbol", "symbol": "deploy"},
+            "snapshot": null
+        }),
+    )?;
+    assert_eq!(degraded["answer_state"], "unverified");
+    assert!(degraded["uncertainty"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row == "code_index_unavailable")));
+    assert!(degraded["coverage"]["gaps"]
+        .as_array()
+        .is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["kind"] == "code_index_unavailable")));
     Ok(())
 }

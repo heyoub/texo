@@ -198,7 +198,7 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
             })
         }
         "search_knowledge" => Ok(MappedTool {
-            op: "texo.claims.search",
+            op: "texo.knowledge.search",
             input: json!({
                 "query": args.get("query").cloned().unwrap_or(Value::Null),
                 "subject": args.get("subject_hint").cloned().unwrap_or(Value::Null),
@@ -259,13 +259,14 @@ fn tool_summary(name: &str, output: &Value) -> String {
             "Loaded the claim card and snapshot-bounded journal timeline.".to_string()
         }
         "triangulate" => format!(
-            "Triangulation state is {}; found {} assertions and {} exact evidence occurrences.",
+            "Triangulation state is {}; found {} assertions, {} exact claim-evidence occurrences, and {} code occurrences.",
             output
                 .get("answer_state")
                 .and_then(Value::as_str)
                 .unwrap_or("unverified"),
             array_len(output, "assertions"),
-            array_len(output, "evidence")
+            array_len(output, "evidence"),
+            array_len(output, "structural_evidence")
         ),
         "get_workspace_status" => format!(
             "Workspace is at frontier {}; settlement complete: {}.",
@@ -291,15 +292,22 @@ fn next_actions(name: &str, output: &Value) -> Value {
             "arguments": { "snapshot_token": output_snapshot_token(output) }
         }]),
         "search_knowledge" => {
-            let first_claim = output
-                .get("claims")
+            let first = output
+                .get("results")
                 .and_then(Value::as_array)
-                .and_then(|claims| claims.first())
-                .and_then(|claim| claim.get("claim_id"))
-                .cloned();
-            first_claim.map_or_else(
-                || json!([]),
-                |claim_id| {
+                .and_then(|results| results.first());
+            match first.and_then(|result| {
+                result
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(|kind| (kind, result))
+            }) {
+                Some(("claim", result)) => {
+                    let claim_id = result
+                        .get("claim")
+                        .and_then(|claim| claim.get("claim_id"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     json!([{
                         "tool": "explain_knowledge",
                         "reason": "Inspect provenance and authority for a matching claim.",
@@ -308,8 +316,24 @@ fn next_actions(name: &str, output: &Value) -> Value {
                             "snapshot_token": output_snapshot_token(output)
                         }
                     }])
-                },
-            )
+                }
+                Some(("code", result)) => {
+                    let symbol = result
+                        .get("occurrence")
+                        .and_then(|occurrence| occurrence.get("symbol"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    json!([{
+                        "tool": "triangulate",
+                        "reason": "Inspect exact code occurrences and coverage for the matching symbol.",
+                        "arguments": {
+                            "target": { "kind": "symbol", "symbol": symbol },
+                            "snapshot_token": output_snapshot_token(output)
+                        }
+                    }])
+                }
+                _ => json!([]),
+            }
         }
         "triangulate" => json!([{
             "tool": "get_agent_context",
@@ -402,5 +426,27 @@ mod tests {
     fn tools_list_has_five_tools() {
         let tools = tools_list();
         assert_eq!(tools["tools"].as_array().expect("tools array").len(), 5);
+    }
+
+    #[test]
+    fn code_search_result_routes_to_snapshot_bound_symbol_triangulation() {
+        let output = json!({
+            "results": [{
+                "kind": "code",
+                "occurrence": { "symbol": "rust-analyzer cargo demo 0.1.0 lib/deploy()." }
+            }],
+            "snapshot": { "token": "texo_snap_v1.example" }
+        });
+        let actions = next_actions("search_knowledge", &output);
+        assert_eq!(actions[0]["tool"], "triangulate");
+        assert_eq!(actions[0]["arguments"]["target"]["kind"], "symbol");
+        assert_eq!(
+            actions[0]["arguments"]["target"]["symbol"],
+            "rust-analyzer cargo demo 0.1.0 lib/deploy()."
+        );
+        assert_eq!(
+            actions[0]["arguments"]["snapshot_token"],
+            "texo_snap_v1.example"
+        );
     }
 }
