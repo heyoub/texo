@@ -381,41 +381,37 @@ pub fn relate_claims(
     )
 }
 
-/// Relate claims while reusing journal-authoritative verdicts and enforcing a
-/// global wall-clock budget.
-///
-/// # Errors
-/// Embedding failures remain fatal because no candidate substrate exists.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pair enumeration, holdback, and deterministic decision reduction form one state-machine fold"
-)]
-pub fn relate_claims_with_settled(
+/// A candidate pair that survived clustering, the prefilter, and the
+/// duplicate-text check, ordered oldest -> newest.
+struct PendingPair {
+    old_idx: usize,
+    new_idx: usize,
+    older: ClaimId,
+    newer: ClaimId,
+}
+
+/// Verdict-acquisition result for one pending pair.
+enum PairOutcome {
+    Judged(crate::semantics::RelationVerdict, bool),
+    Failed(PairFailureView),
+}
+
+/// Embed, cluster, and enumerate surviving candidate pairs in deterministic
+/// order. Returns `None` when fewer than two claims exist.
+fn prepare_pairs(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
-    relater: &dyn ClaimRelater,
     thresholds: RelateThresholds,
-    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
-    budget: Duration,
-) -> Result<RelateOutcome, PipelineError> {
-    let started = Instant::now();
-    let n = claims.len();
-    if n < 2 {
-        return Ok(RelateOutcome::default());
+) -> Result<Option<Vec<PendingPair>>, PipelineError> {
+    if claims.len() < 2 {
+        return Ok(None);
     }
-
     let texts: Vec<&str> = claims.iter().map(|(_, v)| embedding_text(v)).collect();
     let embeddings = embedder.embed_batch(&texts)?;
 
     // Cluster first: the judge only ever sees within-cluster pairs.
     let clusters = similarity_components(&embeddings, thresholds.cluster);
-
-    // old_idx -> newest superseding new_idx; conflict pairs as (min_idx, max_idx).
-    let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
-    let mut judgments = Vec::new();
-    let mut unresolved = Vec::new();
-
+    let mut pending = Vec::new();
     for cluster in &clusters {
         for (pos, &i) in cluster.iter().enumerate() {
             for &j in &cluster[pos + 1..] {
@@ -430,76 +426,110 @@ pub fn relate_claims_with_settled(
                     } else {
                         (j, i)
                     };
-                let old_view = &claims[old_idx].1;
-                let new_view = &claims[new_idx].1;
-                if old_view.normalized_text == new_view.normalized_text {
+                if claims[old_idx].1.normalized_text == claims[new_idx].1.normalized_text {
                     continue;
                 }
+                pending.push(PendingPair {
+                    old_idx,
+                    new_idx,
+                    older: claims[old_idx].0.clone(),
+                    newer: claims[new_idx].0.clone(),
+                });
+            }
+        }
+    }
+    Ok(Some(pending))
+}
 
-                let older_claim = claims[old_idx].0.clone();
-                let newer_claim = claims[new_idx].0.clone();
-                let pair = (older_claim.clone(), newer_claim.clone());
-                let (verdict, reused_authority) = if let Some(verdict) = settled.get(&pair) {
-                    // DECISION(campaign): any journaled judgment settles the
-                    // logical pair. Explicit authority supersession is the
-                    // future hook; model/config changes never re-judge here.
-                    (*verdict, true)
-                } else if started.elapsed() >= budget {
-                    unresolved.push(unresolved_pair(
-                        older_claim,
-                        newer_claim,
-                        old_view,
-                        new_view,
-                        PairFailureView {
-                            class: RelationFailureClass::BudgetExhausted,
-                            endpoint: None,
-                            status: None,
-                            attempts: 0,
-                        },
-                    ));
-                    continue;
-                } else {
-                    // Feed raw claim text: case and update wording carry the
-                    // intent signal that normalized embedding text discards.
-                    match relater.relate(&old_view.text, &new_view.text) {
-                        Ok(verdict) => (verdict, false),
-                        Err(error) => {
-                            unresolved.push(unresolved_pair(
-                                older_claim,
-                                newer_claim,
-                                old_view,
-                                new_view,
-                                classify_pair_failure(&error),
-                            ));
-                            continue;
-                        }
+/// Acquire one pair's verdict on the calling thread: journal authority first,
+/// then the wall budget, then a live judge call.
+fn acquire_sequential(
+    claims: &[(ClaimId, ClaimView)],
+    pair: &PendingPair,
+    relater: &dyn ClaimRelater,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    started: Instant,
+    budget: Duration,
+) -> PairOutcome {
+    let key = (pair.older.clone(), pair.newer.clone());
+    if let Some(verdict) = settled.get(&key) {
+        // DECISION(campaign): any journaled judgment settles the logical pair.
+        // Explicit authority supersession is the future hook; model/config
+        // changes never re-judge here.
+        return PairOutcome::Judged(*verdict, true);
+    }
+    if started.elapsed() >= budget {
+        return PairOutcome::Failed(PairFailureView {
+            class: RelationFailureClass::BudgetExhausted,
+            endpoint: None,
+            status: None,
+            attempts: 0,
+        });
+    }
+    // Feed raw claim text: case and update wording carry the intent signal
+    // that normalized embedding text discards.
+    let old_view = &claims[pair.old_idx].1;
+    let new_view = &claims[pair.new_idx].1;
+    match relater.relate(&old_view.text, &new_view.text) {
+        Ok(verdict) => PairOutcome::Judged(verdict, false),
+        Err(error) => PairOutcome::Failed(classify_pair_failure(&error)),
+    }
+}
+
+/// Fold acquired outcomes into the deterministic decision reduction. Outcome
+/// order equals pending order, so judgments/unresolved vectors — and therefore
+/// journal append order — are byte-identical to the sequential path.
+#[expect(
+    clippy::too_many_lines,
+    reason = "holdback and deterministic decision reduction form one state-machine fold"
+)]
+fn reduce_outcomes(
+    claims: &[(ClaimId, ClaimView)],
+    pending: Vec<PendingPair>,
+    outcomes: Vec<PairOutcome>,
+) -> RelateOutcome {
+    let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
+    let mut judgments = Vec::new();
+    let mut unresolved = Vec::new();
+    for (pair, outcome) in pending.into_iter().zip(outcomes) {
+        let old_view = &claims[pair.old_idx].1;
+        let new_view = &claims[pair.new_idx].1;
+        let (verdict, reused_authority) = match outcome {
+            PairOutcome::Failed(failure) => {
+                unresolved.push(unresolved_pair(
+                    pair.older, pair.newer, old_view, new_view, failure,
+                ));
+                continue;
+            }
+            PairOutcome::Judged(verdict, reused) => (verdict, reused),
+        };
+        judgments.push(PairJudgment {
+            older_claim: pair.older,
+            newer_claim: pair.newer,
+            verdict,
+            reused_authority,
+        });
+        match verdict.relation {
+            ClaimRelation::Supersedes => {
+                let better = match winners.get(&pair.old_idx) {
+                    None => true,
+                    Some(&cur) => {
+                        (sequence_rank(&claims[pair.new_idx].1), pair.new_idx)
+                            > (sequence_rank(&claims[cur].1), cur)
                     }
                 };
-                judgments.push(PairJudgment {
-                    older_claim,
-                    newer_claim,
-                    verdict,
-                    reused_authority,
-                });
-                match verdict.relation {
-                    ClaimRelation::Supersedes => {
-                        let better = match winners.get(&old_idx) {
-                            None => true,
-                            Some(&cur) => {
-                                (sequence_rank(&claims[new_idx].1), new_idx)
-                                    > (sequence_rank(&claims[cur].1), cur)
-                            }
-                        };
-                        if better {
-                            winners.insert(old_idx, new_idx);
-                        }
-                    }
-                    ClaimRelation::Conflict => {
-                        conflict_pairs.push((old_idx.min(new_idx), old_idx.max(new_idx)));
-                    }
-                    ClaimRelation::Duplicate | ClaimRelation::Unrelated => {}
+                if better {
+                    winners.insert(pair.old_idx, pair.new_idx);
                 }
             }
+            ClaimRelation::Conflict => {
+                conflict_pairs.push((
+                    pair.old_idx.min(pair.new_idx),
+                    pair.old_idx.max(pair.new_idx),
+                ));
+            }
+            ClaimRelation::Duplicate | ClaimRelation::Unrelated => {}
         }
     }
 
@@ -567,7 +597,7 @@ pub fn relate_claims_with_settled(
     }
     conflicts.sort_by(|x, y| x.conflict_id.as_str().cmp(y.conflict_id.as_str()));
 
-    Ok(RelateOutcome {
+    RelateOutcome {
         related: RelatedClaims {
             supersessions,
             conflicts,
@@ -575,7 +605,132 @@ pub fn relate_claims_with_settled(
         },
         unresolved,
         held,
-    })
+    }
+}
+
+/// Relate claims while reusing journal-authoritative verdicts and enforcing a
+/// global wall-clock budget. Verdicts are acquired sequentially in pair order.
+///
+/// # Errors
+/// Embedding failures remain fatal because no candidate substrate exists.
+pub fn relate_claims_with_settled(
+    claims: &[(ClaimId, ClaimView)],
+    embedder: &dyn Embedder,
+    relater: &dyn ClaimRelater,
+    thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    budget: Duration,
+) -> Result<RelateOutcome, PipelineError> {
+    let started = Instant::now();
+    let Some(pending) = prepare_pairs(claims, embedder, thresholds)? else {
+        return Ok(RelateOutcome::default());
+    };
+    let outcomes = pending
+        .iter()
+        .map(|pair| acquire_sequential(claims, pair, relater, settled, started, budget))
+        .collect::<Vec<_>>();
+    Ok(reduce_outcomes(claims, pending, outcomes))
+}
+
+/// Like [`relate_claims_with_settled`], but live judge calls fan out across
+/// `concurrency` worker threads. Journal-authoritative verdicts resolve on the
+/// calling thread; workers receive only genuinely unjudged pairs; results are
+/// reassembled in pending order, so decision reduction and journal append
+/// order are byte-identical to the sequential path for the same verdict set.
+/// Under a wall budget, WHICH pairs get cut off is timing-dependent (as it
+/// already is sequentially); a completed pass is fully deterministic.
+///
+/// # Errors
+/// Embedding failures remain fatal because no candidate substrate exists.
+pub fn relate_claims_settled_parallel(
+    claims: &[(ClaimId, ClaimView)],
+    embedder: &dyn Embedder,
+    relater: &(dyn ClaimRelater + Sync),
+    thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    budget: Duration,
+    concurrency: usize,
+) -> Result<RelateOutcome, PipelineError> {
+    let started = Instant::now();
+    let Some(pending) = prepare_pairs(claims, embedder, thresholds)? else {
+        return Ok(RelateOutcome::default());
+    };
+    if concurrency <= 1 {
+        let outcomes = pending
+            .iter()
+            .map(|pair| acquire_sequential(claims, pair, relater, settled, started, budget))
+            .collect::<Vec<_>>();
+        return Ok(reduce_outcomes(claims, pending, outcomes));
+    }
+
+    let mut outcomes: Vec<Option<PairOutcome>> = Vec::with_capacity(pending.len());
+    outcomes.resize_with(pending.len(), || None);
+    let mut jobs = Vec::new();
+    for (idx, pair) in pending.iter().enumerate() {
+        let key = (pair.older.clone(), pair.newer.clone());
+        if let Some(verdict) = settled.get(&key) {
+            outcomes[idx] = Some(PairOutcome::Judged(*verdict, true));
+        } else {
+            jobs.push(idx);
+        }
+    }
+
+    std::thread::scope(|scope| {
+        let (job_tx, job_rx) = flume::bounded::<usize>(concurrency);
+        let (result_tx, result_rx) = flume::unbounded::<(usize, PairOutcome)>();
+        for _ in 0..concurrency {
+            let job_rx = job_rx.clone();
+            let result_tx = result_tx.clone();
+            let pending = &pending;
+            scope.spawn(move || {
+                while let Ok(idx) = job_rx.recv() {
+                    let pair = &pending[idx];
+                    let outcome = if started.elapsed() >= budget {
+                        PairOutcome::Failed(PairFailureView {
+                            class: RelationFailureClass::BudgetExhausted,
+                            endpoint: None,
+                            status: None,
+                            attempts: 0,
+                        })
+                    } else {
+                        let old_view = &claims[pair.old_idx].1;
+                        let new_view = &claims[pair.new_idx].1;
+                        match relater.relate(&old_view.text, &new_view.text) {
+                            Ok(verdict) => PairOutcome::Judged(verdict, false),
+                            Err(error) => PairOutcome::Failed(classify_pair_failure(&error)),
+                        }
+                    };
+                    if result_tx.send((idx, outcome)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(job_rx);
+        drop(result_tx);
+        for idx in &jobs {
+            if job_tx.send(*idx).is_err() {
+                break;
+            }
+        }
+        drop(job_tx);
+        for (idx, outcome) in &result_rx {
+            outcomes[idx] = Some(outcome);
+        }
+    });
+
+    let outcomes = outcomes
+        .into_iter()
+        .map(|slot| {
+            slot.unwrap_or(PairOutcome::Failed(PairFailureView {
+                class: RelationFailureClass::BudgetExhausted,
+                endpoint: None,
+                status: None,
+                attempts: 0,
+            }))
+        })
+        .collect::<Vec<_>>();
+    Ok(reduce_outcomes(claims, pending, outcomes))
 }
 
 fn unresolved_pair(

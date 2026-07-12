@@ -1987,7 +1987,7 @@ fn relate_with_backends(
 ) -> Result<SemanticRelateOutput, TexoError> {
     use crate::extract::cache::CachingRelater;
     use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
-    use crate::semantics::pipeline::relate_claims_with_settled;
+    use crate::semantics::pipeline::relate_claims_settled_parallel;
     use crate::semantics::ClaimRelater as _;
 
     let embedder = OpenRouterEmbedder::new(None, gateway).map_err(semantic_error)?;
@@ -1998,13 +1998,22 @@ fn relate_with_backends(
         cache_dir,
     );
     let judge_fingerprint = caching_relater.fingerprint();
-    let relation_output = relate_claims_with_settled(
+    // Judge calls are independent network waits; fan out across workers and
+    // reassemble in pair order so settlement stays byte-identical. 4 default
+    // workers keeps provider pressure polite; clamp guards misconfiguration.
+    let concurrency = std::env::var("TEXO_RELATE_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    let relation_output = relate_claims_settled_parallel(
         claims,
         &embedder,
         &caching_relater,
         thresholds,
         settled,
         budget,
+        concurrency,
     )
     .map_err(semantic_error)?;
     let cache_keys = relate_cache_keys(&caching_relater, claims, &relation_output);
