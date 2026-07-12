@@ -84,6 +84,7 @@ fn built_in_index_is_deterministic_syntactic_then_lexical() -> TestResult {
             && occurrence.display_name == "deploy"
             && occurrence.roles.contains(&CodeOccurrenceRole::Definition)
             && occurrence.analysis_quality == AnalysisQuality::Syntactic
+            && occurrence.context.contains("pub fn deploy() { helper(); }")
     }));
     assert!(first.artifact.occurrences.iter().any(|occurrence| {
         occurrence.path == "script.py"
@@ -154,6 +155,29 @@ fn normalized_artifact_authenticates_and_tampering_fails_closed() -> TestResult 
         &prepared.artifact_digest_hex
     )
     .is_err());
+    Ok(())
+}
+
+#[test]
+fn prior_schema_artifact_is_a_rebuildable_cache_miss() -> TestResult {
+    let root = repository()?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("old-code-index-schema"),
+        CaptureLimits::default(),
+    )?;
+    let mut prepared = build(&capture, None, CodeIndexLimits::default())?;
+    prepared.artifact.schema = "texo.code-index.v1".to_string();
+    let bytes = batpak::encoding::to_bytes(&prepared.artifact)?;
+    let digest = texo::events::ids::blake3_bytes_hex(&bytes);
+    let directory = root.path().join(".texo/cache/code-index");
+    std::fs::create_dir_all(&directory)?;
+    std::fs::write(
+        directory.join(format!("{}.bin", prepared.artifact.index_id.as_str())),
+        bytes,
+    )?;
+
+    assert!(load(root.path(), &prepared.artifact.index_id, &digest)?.is_none());
     Ok(())
 }
 

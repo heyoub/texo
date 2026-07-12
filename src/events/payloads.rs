@@ -325,6 +325,31 @@ pub struct SourceSnapshotRelationV1 {
     pub observed_at_ms: u64,
 }
 
+/// Deterministic policy acceptance of one cached model proposal linking code
+/// evidence to a semantic claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 16, version = 1)]
+pub struct EvidenceReconciliationAcceptedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Existing semantic claim identity.
+    pub claim_id: ClaimId,
+    /// Exact durable code evidence accepted by policy.
+    pub occurrence_id: EvidenceOccurrenceId,
+    /// Proposed stance accepted by deterministic policy.
+    pub stance: EvidenceStance,
+    /// Model score converted to integer parts per million.
+    pub score_ppm: u32,
+    /// Provider/model/prompt identity of the cached proposal.
+    pub judge_fingerprint: String,
+    /// Content-addressed paid-result cache key.
+    pub cache_key_hex: String,
+    /// Closed policy implementation version.
+    pub policy_version: String,
+    /// Observation wall-clock time in milliseconds; never an ordering input.
+    pub observed_at_ms: u64,
+}
+
 struct SourceObservedV1ToV2;
 struct ClaimRecordedV1ToV2;
 struct ClaimSupersededV1ToV2;
@@ -711,6 +736,17 @@ mod tests {
             relation: TemporalRelation::Before,
             observed_at_ms: 19,
         })?;
+        assert_round_trip(&EvidenceReconciliationAcceptedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from("claim_aaaaaaaaaaaa")?,
+            occurrence_id: EvidenceOccurrenceId::derive("code-occurrence"),
+            stance: EvidenceStance::Contradicts,
+            score_ppm: 910_000,
+            judge_fingerprint: "openrouter:model|relation-v2".to_string(),
+            cache_key_hex: "1".repeat(64),
+            policy_version: "evidence-reconcile-v1".to_string(),
+            observed_at_ms: 20,
+        })?;
         assert_round_trip(&CodeIndexRecordedV1 {
             workspace_id,
             snapshot_id,
@@ -719,7 +755,7 @@ mod tests {
             analyzer_fingerprint: "tree-sitter-rust:1".to_string(),
             artifact_digest_hex: "f".repeat(64),
             coverage,
-            observed_at_ms: 20,
+            observed_at_ms: 21,
         })
     }
 }

@@ -113,6 +113,12 @@ by accepting a claim, path, span, or code symbol target.
   registration is causally linked to the source-snapshot event. Missing
   artifacts produce `code_index_unavailable`; they never erase beliefs or
   silently become empty search results.
+- Code occurrences retain both the exact symbol span and a bounded,
+  digest-bound source context. `texo reconcile` considers code/config paths
+  only, so lexical prose occurrences cannot self-cite a claim.
+- Claim↔code model results use the relation cache as proposals. A closed
+  score/relation policy maps only confident duplicate/support or
+  conflict/update/contradiction proposals into durable evidence.
 - Analyzer or model calls never occur during replay or verify.
 
 ## Additive schema plan
@@ -124,10 +130,15 @@ lands through additive event kinds and projections:
 - `EvidenceOccurrenceRecordedV1`
 - `ClaimEvidenceLinkedV1`
 - `CodeIndexRecordedV1`
+- `SourceSnapshotRelationV1`
+- `EvidenceReconciliationAcceptedV1`
 
 Detailed code indexes remain derived artifacts. `ClaimEvidenceLinkedV1` records
 only the bounded evidence that affected a belief. Existing claims receive a
 deterministic legacy occurrence projection; old stores require no rewrite.
+Semantic links additionally carry an acceptance fact with model fingerprint,
+score, cache identity, and policy version; the model proposal itself remains a
+disposable paid-result cache entry.
 
 ## Laws
 

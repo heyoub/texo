@@ -30,6 +30,7 @@ All domain events are BatPak payloads in category `0xE`.
 | 13 | 1 | `ClaimEvidenceLinkedV1` | `claim:{claim_id}` |
 | 14 | 1 | `CodeIndexRecordedV1` | `code-index:{index_id}` |
 | 15 | 1 | `SourceSnapshotRelationV1` | directed source-snapshot pair |
+| 16 | 1 | `EvidenceReconciliationAcceptedV1` | `claim:{claim_id}` |
 
 Claim and conflict state changes carry `TransitionRecordV1` evidence with a
 deterministic blake3 transition id and explicit causes.
@@ -49,7 +50,7 @@ deterministic blake3 transition id and explicit causes.
 - CLI: `init`, `ingest`, `claims`, `supersede`, `check-staleness`,
   `agent-context`, `index`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
   `extract`, `session export`, `host fingerprint`, `ops`, `install`,
-  `uninstall`, `hook`, `doctor`, `backup`, and `mcp`.
+  `uninstall`, `hook`, `doctor`, `backup`, `reconcile`, and `mcp`.
   `index` freezes Git source and builds code intelligence in one invocation;
   `--scip` supplies an optional workspace-local precise index.
 - HTTP: `GET /`, `GET /api/host`, `POST /api/chat`, `GET /api/memory`,
@@ -79,7 +80,11 @@ The default extractor is heuristic. When configured, `texo extract` runs an
 OpenAI-compatible proposer, faithfulness gate, and record-once cache. `texo
 relate` embeds current claims, clusters related claims, and asks the relation
 judge for supersession/conflict verdicts. Model outputs are cached by content
-identity before becoming journal events.
+identity before becoming journal events. `texo reconcile` generates a bounded
+lexical candidate set over code paths, obtains cached claim↔code proposals,
+and applies a closed deterministic score/relation policy. Accepted exact code
+context, model fingerprint, score, cache key, and policy version are journaled;
+rejected proposals and missing candidates never become negative facts.
 
 ## Non-Goals
 

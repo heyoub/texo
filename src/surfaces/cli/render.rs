@@ -462,3 +462,28 @@ pub fn relate(value: &Value) {
             .map_or(0, Vec::len)
     );
 }
+
+/// Print semantic claim↔code reconciliation summary.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn reconcile(value: &Value) {
+    println!(
+        "reconciliation {}: {} accepted, {} rejected, {} unresolved, {} already linked",
+        value
+            .get("outcome")
+            .and_then(Value::as_str)
+            .unwrap_or("partial"),
+        value
+            .get("accepted")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value.get("rejected").and_then(Value::as_u64).unwrap_or(0),
+        value
+            .get("unresolved")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value
+            .get("already_linked")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    );
+}

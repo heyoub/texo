@@ -547,10 +547,27 @@ pub struct CodeOccurrence {
     pub source_digest_hex: String,
     /// Exact bounded source text at the occurrence.
     pub excerpt: String,
+    /// Bounded surrounding source context used for evidence reconciliation.
+    #[serde(default)]
+    pub context: String,
+    /// Exact byte range of `context` in the frozen source.
+    #[serde(default = "empty_byte_range")]
+    pub context_byte_range: ByteRange,
+    /// Exact line range of `context` in the frozen source.
+    #[serde(default = "first_line_range")]
+    pub context_line_range: LineRange,
     /// Analyzer implementation and version.
     pub analyzer_fingerprint: String,
     /// Precision tier of this occurrence.
     pub analysis_quality: AnalysisQuality,
+}
+
+const fn empty_byte_range() -> ByteRange {
+    ByteRange { start: 0, end: 0 }
+}
+
+const fn first_line_range() -> LineRange {
+    LineRange { start: 1, end: 1 }
 }
 
 /// Content-addressed disposable code-index artifact.
@@ -675,6 +692,27 @@ pub struct ClaimEvidence {
     pub occurrence_sequence: u64,
     /// Journal sequence of the link event.
     pub link_sequence: u64,
+    /// Accepted model/policy provenance for semantic links.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<ReconciliationProvenance>,
+}
+
+/// Durable provenance explaining one policy-accepted semantic evidence link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReconciliationProvenance {
+    /// Model score in integer parts per million.
+    pub score_ppm: u32,
+    /// Provider/model/prompt identity.
+    pub judge_fingerprint: String,
+    /// Content-addressed paid-result cache key.
+    pub cache_key_hex: String,
+    /// Deterministic acceptance policy version.
+    pub policy_version: String,
+    /// Observation time retained as provenance, never ordering.
+    pub observed_at_ms: u64,
+    /// Journal sequence of the acceptance fact.
+    pub acceptance_sequence: u64,
 }
 
 impl EvidenceOccurrence {

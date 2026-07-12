@@ -19,7 +19,7 @@ use crate::knowledge::{
 };
 
 /// Normalized artifact schema.
-pub const ARTIFACT_SCHEMA: &str = "texo.code-index.v1";
+pub const ARTIFACT_SCHEMA: &str = "texo.code-index.v2";
 const SCIP_DEFINITION: i32 = 0x1;
 const SCIP_IMPORT: i32 = 0x2;
 const SCIP_WRITE: i32 = 0x4;
@@ -215,7 +215,10 @@ pub fn load(
             detail: error.to_string(),
         }
     })?;
-    if artifact.index_id != *index_id || artifact.schema != ARTIFACT_SCHEMA {
+    if artifact.schema != ARTIFACT_SCHEMA {
+        return Ok(None);
+    }
+    if artifact.index_id != *index_id {
         return Err(source_error(&path, "code-index artifact identity mismatch"));
     }
     Ok(Some(artifact))
@@ -385,6 +388,15 @@ fn import_scip_document(
         } else {
             excerpt.to_string()
         };
+        let Some((context, context_byte_range, context_line_range)) =
+            source_context(&source.bytes, start, end)
+        else {
+            builder.gap(
+                Some(document.relative_path.clone()),
+                CoverageGapKind::UnsupportedEncoding,
+            );
+            continue;
+        };
         if !builder.push(CodeOccurrence {
             symbol: occurrence.symbol.clone(),
             display_name,
@@ -394,6 +406,9 @@ fn import_scip_document(
             line_range,
             source_digest_hex: source_digest_hex.clone(),
             excerpt: excerpt.to_string(),
+            context,
+            context_byte_range,
+            context_line_range,
             analyzer_fingerprint: analyzer.to_string(),
             analysis_quality: AnalysisQuality::Precise,
         }) {
@@ -652,6 +667,15 @@ fn collect_rust_tags(
             display_name,
             node.start_byte()
         );
+        let Some((context, context_byte_range, context_line_range)) =
+            source_context(&source.bytes, node.start_byte(), node.end_byte())
+        else {
+            builder.gap(
+                Some(source.path.clone()),
+                CoverageGapKind::UnsupportedEncoding,
+            );
+            continue;
+        };
         let occurrence = CodeOccurrence {
             symbol,
             display_name: display_name.to_string(),
@@ -669,6 +693,9 @@ fn collect_rust_tags(
             .map_err(|error| source_error(Path::new(&source.path), &error.to_string()))?,
             source_digest_hex: source_digest_hex.clone(),
             excerpt: display_name.to_string(),
+            context,
+            context_byte_range,
+            context_line_range,
             analyzer_fingerprint: analyzer.clone(),
             analysis_quality: AnalysisQuality::Syntactic,
         };
@@ -714,6 +741,15 @@ fn analyze_lexical(source: &CapturedSource, builder: &mut ArtifactBuilder) {
             continue;
         }
         let (start_line, end_line) = byte_line_range(&source.bytes, start, offset);
+        let Some((context, context_byte_range, context_line_range)) =
+            source_context(&source.bytes, start, offset)
+        else {
+            builder.gap(
+                Some(source.path.clone()),
+                CoverageGapKind::UnsupportedEncoding,
+            );
+            continue;
+        };
         let occurrence = CodeOccurrence {
             symbol: format!("lexical {}#{}@{start}", source.path, name),
             display_name: name.to_string(),
@@ -729,6 +765,9 @@ fn analyze_lexical(source: &CapturedSource, builder: &mut ArtifactBuilder) {
             },
             source_digest_hex: source_digest_hex.clone(),
             excerpt: name.to_string(),
+            context,
+            context_byte_range,
+            context_line_range,
             analyzer_fingerprint: "texo-lexical:v1".to_string(),
             analysis_quality: AnalysisQuality::Lexical,
         };
@@ -744,6 +783,60 @@ fn identifier_start(byte: u8) -> bool {
 
 fn identifier_continue(byte: u8) -> bool {
     identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn source_context(
+    bytes: &[u8],
+    occurrence_start: usize,
+    occurrence_end: usize,
+) -> Option<(String, ByteRange, LineRange)> {
+    if occurrence_start > occurrence_end || occurrence_end > bytes.len() {
+        return None;
+    }
+    let line_start = bytes[..occurrence_start]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position.saturating_add(1));
+    let line_end = bytes[occurrence_end..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(bytes.len(), |position| {
+            occurrence_end.saturating_add(position)
+        });
+    let occurrence_len = occurrence_end.saturating_sub(occurrence_start);
+    if occurrence_len > MAX_EVIDENCE_EXCERPT_BYTES {
+        return None;
+    }
+    let available = MAX_EVIDENCE_EXCERPT_BYTES.saturating_sub(occurrence_len);
+    let before = available / 2;
+    let mut start = occurrence_start.saturating_sub(before).max(line_start);
+    let mut end = occurrence_end
+        .saturating_add(available.saturating_sub(occurrence_start.saturating_sub(start)))
+        .min(line_end);
+    if end.saturating_sub(start) < MAX_EVIDENCE_EXCERPT_BYTES {
+        start = end
+            .saturating_sub(MAX_EVIDENCE_EXCERPT_BYTES)
+            .max(line_start);
+    }
+    while start < occurrence_start && bytes.get(start).is_some_and(|byte| byte & 0xc0 == 0x80) {
+        start = start.saturating_add(1);
+    }
+    while end > occurrence_end && bytes.get(end).is_some_and(|byte| byte & 0xc0 == 0x80) {
+        end = end.saturating_sub(1);
+    }
+    let context = std::str::from_utf8(&bytes[start..end]).ok()?.to_string();
+    let (start_line, end_line) = byte_line_range(bytes, start, end);
+    Some((
+        context,
+        ByteRange {
+            start: u64::try_from(start).unwrap_or(u64::MAX),
+            end: u64::try_from(end).unwrap_or(u64::MAX),
+        },
+        LineRange {
+            start: start_line,
+            end: end_line,
+        },
+    ))
 }
 
 fn byte_line_range(bytes: &[u8], start: usize, end: usize) -> (u32, u32) {

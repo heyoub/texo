@@ -43,6 +43,9 @@ Multi-workspace scopes live in `.texo/config.toml` under
   `texo conflicts`, and `texo verify` are replayed read surfaces.
 - `texo relate` runs the semantic relation pass when `TEXO_LLM_API_KEY` is
   present.
+- `texo index` freezes Git source and builds a bounded code index; `texo
+  reconcile` then evaluates cached, bounded claim↔code proposals and journals
+  only policy-accepted exact evidence.
 - `texo compile --out public` writes the static onboarding trophy.
 - `texo serve` runs the sync HTTP memory-agent server.
 - `texo extract <doc.md>` runs the LLM extractor and writes NDJSON.
@@ -80,6 +83,7 @@ commands—never workspace-supplied shell commands.
 - `src/claims/` - per-entity projections and deterministic workspace views.
 - `src/extract/` - markdown heuristics, LLM extraction, record-once caches.
 - `src/semantics/` - OpenAI-compatible semantic backends and chat builders.
+- `src/reconcile.rs` - bounded doc↔code candidates and proposal-only policy.
 - `src/ops/` - syncbat operation handlers and the Texo effect backend.
 - `src/host/` - store opening, op composition, canonical fingerprints.
 - `src/surfaces/cli/` - CLI parsing and renderers.

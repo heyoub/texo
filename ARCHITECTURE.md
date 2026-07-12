@@ -44,6 +44,8 @@ checks. texo owns domain schema, projections, and user surfaces.
 - `code_index`: bounded SCIP import, a pinned Rust tree-sitter tags analyzer,
   the universal lexical floor, and authenticated disposable normalized
   artifacts.
+- `reconcile`: bounded code-only candidate generation, concurrent cached model
+  proposals, and deterministic evidence-acceptance policy.
 - `claims::evidence`: a replay-only projection that joins exact occurrence
   events to claim links at a requested frontier; missing disposable indexes do
   not alter this view.
@@ -54,10 +56,11 @@ frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 ## Operation Catalog
 
 The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 25 operations:
+contains 26 operations:
 
 `texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
 `texo.knowledge.index`, `texo.code.index.build`, `texo.knowledge.triangulate`,
+`texo.knowledge.reconcile`,
 `texo.claims.list`, `texo.claims.search`, `texo.knowledge.search`,
 `texo.claim.explain`, `texo.claim.supersede`, `texo.staleness.check`,
 `texo.context.agent`, `texo.compile.run`, `texo.conflicts.list`,

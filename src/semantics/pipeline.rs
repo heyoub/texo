@@ -1011,7 +1011,7 @@ fn unresolved_pair(
 }
 
 #[cfg(feature = "openrouter")]
-fn classify_pair_failure(error: &SemanticsError) -> PairFailureView {
+pub(crate) fn classify_pair_failure(error: &SemanticsError) -> PairFailureView {
     use crate::semantics::openrouter::BackendError;
     use crate::surfaces::openai::ApiFailureKind;
 
@@ -1050,7 +1050,7 @@ fn classify_pair_failure(error: &SemanticsError) -> PairFailureView {
 }
 
 #[cfg(not(feature = "openrouter"))]
-fn classify_pair_failure(_error: &SemanticsError) -> PairFailureView {
+pub(crate) fn classify_pair_failure(_error: &SemanticsError) -> PairFailureView {
     generic_pair_failure()
 }
 

@@ -10,8 +10,8 @@ use crate::events::coordinate::{
     coordinate_for_claim, coordinate_for_code_index, coordinate_for_conflict,
     coordinate_for_evidence, coordinate_for_onboarding_projection, coordinate_for_relation_pair,
     coordinate_for_session, coordinate_for_source, coordinate_for_source_relation,
-    coordinate_for_source_snapshot, coordinate_for_workspace_meta, entity_for_session,
-    entity_for_source_snapshot, scope_for_workspace, session_lane,
+    coordinate_for_source_snapshot, coordinate_for_workspace_meta, entity_for_evidence,
+    entity_for_session, entity_for_source_snapshot, scope_for_workspace, session_lane,
 };
 use crate::events::ids::relation_pair_id;
 use crate::events::machines::{
@@ -19,9 +19,10 @@ use crate::events::machines::{
 };
 use crate::events::payloads::{
     ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
-    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2,
-    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2,
-    SourceSnapshotRecordedV1, SourceSnapshotRelationV1, WorkspaceInitializedV2,
+    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1,
+    EvidenceReconciliationAcceptedV1, OnboardingCompiledV2, RelationDeferredV1, RelationJudgedV1,
+    SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
+    WorkspaceInitializedV2,
 };
 use crate::ops::env::{self, OpEnv, ReceiptNote};
 
@@ -246,11 +247,32 @@ fn append_domain_event(
                 payload.occurrence.occurrence_id.as_str(),
             ],
         );
-        let options = knowledge_append_options(
+        let options =
+            code_index_append_options(op_env, key, payload.occurrence.snapshot_id.as_str());
+        let receipt = op_env
+            .store
+            .append_typed_with_options(&coordinate, &payload, options)?;
+        verify_and_note(op_env, kind, &receipt)
+    } else if kind == <EvidenceReconciliationAcceptedV1 as EventPayload>::KIND {
+        let payload = decode::<EvidenceReconciliationAcceptedV1>(payload_bytes)?;
+        let coordinate =
+            coordinate_for_claim(payload.workspace_id.as_str(), payload.claim_id.as_str())?;
+        let key = IdempotencyKey::for_operation(
+            "texo.evidence.reconciliation.accepted.v1",
+            &[
+                payload.workspace_id.as_str(),
+                payload.claim_id.as_str(),
+                payload.occurrence_id.as_str(),
+                &payload.judge_fingerprint,
+                &payload.policy_version,
+            ],
+        );
+        let options = evidence_chain_options(
             op_env,
             key,
-            <SourceSnapshotRecordedV1 as EventPayload>::KIND,
-        );
+            payload.occurrence_id.as_str(),
+            <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+        )?;
         let receipt = op_env
             .store
             .append_typed_with_options(&coordinate, &payload, options)?;
@@ -267,11 +289,12 @@ fn append_domain_event(
                 payload.occurrence_id.as_str(),
             ],
         );
-        let options = knowledge_append_options(
+        let options = evidence_chain_options(
             op_env,
             key,
-            <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
-        );
+            payload.occurrence_id.as_str(),
+            <EvidenceReconciliationAcceptedV1 as EventPayload>::KIND,
+        )?;
         let receipt = op_env
             .store
             .append_typed_with_options(&coordinate, &payload, options)?;
@@ -353,31 +376,49 @@ fn append_domain_event(
     }
 }
 
-fn knowledge_append_options(
+fn evidence_chain_options(
     op_env: &OpEnv,
     key: IdempotencyKey,
-    cause_kind: EventKind,
-) -> AppendOptions {
+    occurrence_id: &str,
+    preferred_cause_kind: EventKind,
+) -> Result<AppendOptions, TexoError> {
+    let occurrence_entry = op_env
+        .store
+        .by_entity(&entity_for_evidence(occurrence_id))
+        .into_iter()
+        .find(|entry| entry.event_kind() == <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND)
+        .ok_or_else(|| TexoError::MissingEntity {
+            entity: entity_for_evidence(occurrence_id),
+        })?;
+    let raw = op_env.store.read_raw(occurrence_entry.event_id())?;
+    let occurrence = batpak::encoding::from_bytes::<EvidenceOccurrenceRecordedV1>(
+        &raw.event.payload,
+    )
+    .map_err(|error| TexoError::Decode {
+        entity: entity_for_evidence(occurrence_id),
+        detail: error.to_string(),
+    })?;
+    let root = op_env
+        .store
+        .by_entity(&entity_for_source_snapshot(
+            occurrence.occurrence.snapshot_id.as_str(),
+        ))
+        .into_iter()
+        .find(|entry| entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND)
+        .map(|entry| entry.event_id().as_u128());
     let receipts = op_env.receipts.borrow();
-    let root = receipts
-        .iter()
-        .find(|receipt| {
-            receipt.kind_bits == <SourceSnapshotRecordedV1 as EventPayload>::KIND.as_raw_u16()
-        })
-        .and_then(|receipt| u128::from_str_radix(&receipt.event_id_hex, 16).ok());
     let cause = receipts
         .iter()
         .rev()
-        .find(|receipt| receipt.kind_bits == cause_kind.as_raw_u16())
-        .and_then(|receipt| u128::from_str_radix(&receipt.event_id_hex, 16).ok());
+        .find(|receipt| receipt.kind_bits == preferred_cause_kind.as_raw_u16())
+        .and_then(|receipt| u128::from_str_radix(&receipt.event_id_hex, 16).ok())
+        .unwrap_or_else(|| occurrence_entry.event_id().as_u128());
     let mut options = AppendOptions::new().with_idempotency(key);
     if let Some(root) = root {
         options = options.with_correlation(CorrelationId::from(root));
     }
-    if let Some(cause) = cause {
-        options = options.with_causation(CausationId::from(cause));
-    }
-    options
+    options = options.with_causation(CausationId::from(cause));
+    Ok(options)
 }
 
 fn code_index_append_options(

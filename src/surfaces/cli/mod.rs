@@ -138,6 +138,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Reconcile current semantic claims against the frozen code index.
+    Reconcile {
+        /// Maximum code candidates considered for each claim.
+        #[arg(long)]
+        max_per_claim: Option<usize>,
+        /// Maximum paid proposal candidates for the complete run.
+        #[arg(long)]
+        max_candidates: Option<usize>,
+        /// Minimum policy acceptance score in parts per million.
+        #[arg(long)]
+        min_score_ppm: Option<u32>,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
@@ -531,6 +546,37 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             });
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Reconcile {
+            max_per_claim,
+            max_candidates,
+            min_score_ppm,
+            json,
+        } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let output = host.invoke_json(
+                "texo.knowledge.reconcile",
+                &json!({
+                    "observed_at_ms": observed_at_ms(),
+                    "max_per_claim": max_per_claim,
+                    "max_candidates": max_candidates,
+                    "min_score_ppm": min_score_ppm,
+                    "budget_secs": null,
+                    "concurrency": null
+                }),
+            )?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::reconcile(&output);
+            }
+            Ok(
+                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                },
+            )
         }
         Command::Host {
             cmd: HostCmd::Fingerprint,

@@ -37,6 +37,8 @@ pub mod extract;
 pub mod semantics;
 /// Relation orchestration scaffolding.
 pub mod relate;
+/// Proposal-only semantic reconciliation between claims and code evidence.
+pub mod reconcile;
 /// Operation scaffolding.
 pub mod ops;
 /// Host integration scaffolding.

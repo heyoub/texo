@@ -38,9 +38,10 @@ use crate::events::machines::{
 };
 use crate::events::payloads::{
     ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
-    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2,
-    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2,
-    SourceSnapshotRecordedV1, SourceSnapshotRelationV1, WorkspaceInitializedV2,
+    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1,
+    EvidenceReconciliationAcceptedV1, OnboardingCompiledV2, RelationDeferredV1, RelationJudgedV1,
+    SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
+    WorkspaceInitializedV2,
 };
 use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
@@ -56,6 +57,12 @@ use crate::knowledge::{
     TriangulationTarget, UncertaintyReason, MAX_EVIDENCE_EXCERPT_BYTES,
 };
 use crate::ops::env::{self, ReceiptNote};
+use crate::ops::reconcile::append_proposals as append_reconciliation_proposals;
+use crate::reconcile::{
+    claims_from_view as reconcile_claims, evaluate_with_backends, plan_candidates,
+    unresolved_row as reconcile_unresolved_row, KnowledgeReconcileInput, KnowledgeReconcileOutput,
+    ReconcileBackendOutput, ReconcileCompletion,
+};
 use crate::relate::heuristic;
 use crate::semantics::pipeline::{
     receipt_view, ClaimStatus as SemanticClaimStatus, ClaimView as SemanticClaimView,
@@ -633,7 +640,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.verify.run.input.v2",
     output_schema = "texo.verify.run.output.v2",
     receipt_kind = "receipt.texo.verify.run.v2",
-    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e", "evt.e00f"],
+    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e", "evt.e00f", "evt.e010"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -1268,6 +1275,119 @@ fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 }
 
 #[syncbat::operation(
+    descriptor = KNOWLEDGE_RECONCILE,
+    register = register_knowledge_reconcile,
+    register_item = knowledge_reconcile_item,
+    name = "texo.knowledge.reconcile",
+    effect = Persist,
+    input_schema = "texo.knowledge.reconcile.input.v1",
+    output_schema = "texo.knowledge.reconcile.output.v1",
+    receipt_kind = "receipt.texo.knowledge.reconcile.v1",
+    appends_events = ["evt.e00c", "evt.e00d", "evt.e010"],
+    reads_events = ["evt.e002", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
+    queries_projections = ["texo.workspace.view.v2", "texo.code.index.v1"],
+    requires_capabilities = ["texo.cap.model"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_reconcile(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.reconcile", || {
+        let input: KnowledgeReconcileInput = parse_input("texo.knowledge.reconcile", input)?;
+        let (limits, budget_secs, concurrency) = input.validated()?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.reconcile", error))?;
+        let view = assemble_current_view()?;
+        let snapshot =
+            latest_source_snapshot(Some(view.frontier))?.ok_or_else(|| TexoError::OpInput {
+                op: "texo.knowledge.reconcile".to_string(),
+                detail: "no source snapshot exists; run `texo index` first".to_string(),
+            })?;
+        let loaded = load_code_artifact_at(view.frontier, &snapshot.snapshot_id)?;
+        let artifact = loaded.artifact.ok_or_else(|| TexoError::OpInput {
+            op: "texo.knowledge.reconcile".to_string(),
+            detail: "the current source snapshot has no available code index; run `texo index`"
+                .to_string(),
+        })?;
+        let claims = reconcile_claims(&view)?;
+        let plan = plan_candidates(&claims, &artifact, limits);
+        let candidates_considered = plan.candidates.len();
+        let evidence = evidence_projection_through(view.frontier)?;
+        let mut already_linked = 0;
+        let candidates = plan
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                let linked = evidence
+                    .for_claim(candidate.claim_id.as_str())
+                    .iter()
+                    .any(|item| {
+                        item.occurrence.occurrence_id == candidate.occurrence.occurrence_id
+                    });
+                already_linked += usize::from(linked);
+                !linked
+            })
+            .collect::<Vec<_>>();
+        let (root, gateway) =
+            env::with(|op_env| (op_env.root.clone(), op_env.config.gateway.clone()))?;
+        let backend = evaluate_with_backends(
+            &root,
+            gateway.as_ref(),
+            &candidates,
+            std::time::Duration::from_secs(budget_secs),
+            concurrency,
+        )?;
+        let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+        let ReconcileBackendOutput {
+            proposals,
+            unresolved: backend_unresolved,
+            judge_fingerprint,
+        } = backend;
+        let (accepted, rejected) = append_reconciliation_proposals(
+            cx,
+            &workspace_id,
+            input.observed_at_ms,
+            limits.min_score_ppm,
+            &judge_fingerprint,
+            proposals,
+        )?;
+        let unresolved = backend_unresolved
+            .iter()
+            .map(reconcile_unresolved_row)
+            .collect::<Vec<_>>();
+        let mut coverage = artifact.coverage;
+        if plan.truncated {
+            coverage.truncated = true;
+            if !coverage
+                .gaps
+                .iter()
+                .any(|gap| gap.kind == CoverageGapKind::BudgetExceeded)
+            {
+                coverage.gaps.push(CoverageGap {
+                    path: None,
+                    kind: CoverageGapKind::BudgetExceeded,
+                });
+            }
+        }
+        let partial = coverage.truncated || !coverage.gaps.is_empty() || !unresolved.is_empty();
+        Ok(KnowledgeReconcileOutput {
+            outcome: if partial {
+                ReconcileCompletion::Partial
+            } else {
+                ReconcileCompletion::Complete
+            },
+            snapshot_id: snapshot.snapshot_id,
+            candidates_considered,
+            already_linked,
+            accepted,
+            rejected,
+            unresolved,
+            coverage,
+            receipts: take_receipts()?,
+        })
+    })
+}
+
+#[syncbat::operation(
     descriptor = STATS_READ,
     register = register_stats_read,
     register_item = stats_read_item,
@@ -1342,7 +1462,7 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
-const DOMAIN_KINDS: [EventKind; 15] = [
+const DOMAIN_KINDS: [EventKind; 16] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
     <ClaimSupersededV2 as EventPayload>::KIND,
@@ -1358,6 +1478,7 @@ const DOMAIN_KINDS: [EventKind; 15] = [
     <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
     <crate::events::payloads::CodeIndexRecordedV1 as EventPayload>::KIND,
     <SourceSnapshotRelationV1 as EventPayload>::KIND,
+    <EvidenceReconciliationAcceptedV1 as EventPayload>::KIND,
 ];
 
 /// Return the operation registration items.
@@ -1383,6 +1504,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         stats_read_item(),
         knowledge_index_item(),
         code_index_build_item(),
+        knowledge_reconcile_item(),
         knowledge_triangulate_item(),
         workspace_status_item(),
     ]
@@ -1413,6 +1535,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_stats_read(builder)?;
     register_knowledge_index(builder)?;
     register_code_index_build(builder)?;
+    register_knowledge_reconcile(builder)?;
     register_knowledge_triangulate(builder)?;
     register_workspace_status(builder)?;
     Ok(())
@@ -2422,6 +2545,10 @@ fn semantic_temporal_policy(
         if let Some(latest) = evidence
             .for_claim(claim_id.as_str())
             .iter()
+            .filter(|item| {
+                item.method == EvidenceLinkMethod::Deterministic
+                    && item.stance == EvidenceStance::Supports
+            })
             .max_by_key(|item| item.link_sequence)
         {
             policy.bind_claim(claim_id, &latest.occurrence.snapshot_id);
