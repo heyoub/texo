@@ -10,7 +10,8 @@ use crate::error::TexoError;
 use crate::host::TexoHost;
 
 const LINE_CAP: usize = 1024 * 1024;
-const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 
 /// Run the MCP stdio server over locked standard streams.
 ///
@@ -72,10 +73,14 @@ fn handle_line(line: &str, root: &Path, workspace: Option<&str>) -> Option<Value
 }
 
 fn initialize_result(value: &Value) -> Value {
-    let protocol = value
+    let requested = value
         .get("params")
         .and_then(|params| params.get("protocolVersion"))
         .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_PROTOCOL_VERSION);
+    let protocol = SUPPORTED_PROTOCOL_VERSIONS
+        .into_iter()
+        .find(|supported| *supported == requested)
         .unwrap_or(DEFAULT_PROTOCOL_VERSION);
     json!({
         "protocolVersion": protocol,
@@ -103,7 +108,7 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let mapped = match map_tool_input(name, &args) {
+    let mut mapped = match map_tool_input(name, &args) {
         Ok(mapped) => mapped,
         Err(message) => return error_response(id, -32602, &message, None),
     };
@@ -113,23 +118,31 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
             return error_response(id, -32603, &error.to_string(), Some(failure_data(&error)));
         }
     };
-    match host.invoke_json(mapped.op, &mapped.input) {
+    let requested_snapshot = args.get("snapshot_token").cloned().unwrap_or(Value::Null);
+    let status = match host.invoke_json(
+        "texo.workspace.status",
+        &json!({ "snapshot": requested_snapshot }),
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            return error_response(id, -32603, &error.to_string(), Some(failure_data(&error)));
+        }
+    };
+    let Some(snapshot_token) = status
+        .get("snapshot")
+        .and_then(|snapshot| snapshot.get("token"))
+        .and_then(Value::as_str)
+    else {
+        return error_response(id, -32603, "workspace status omitted snapshot token", None);
+    };
+    set_snapshot_token(&mut mapped.input, snapshot_token);
+    let operation_result = if name == "get_workspace_status" {
+        Ok(status.clone())
+    } else {
+        host.invoke_json(mapped.op, &mapped.input)
+    };
+    match operation_result {
         Ok(output) => {
-            let status = if name == "get_workspace_status" {
-                output.clone()
-            } else {
-                match host.invoke_json("texo.workspace.status", &json!({})) {
-                    Ok(status) => status,
-                    Err(error) => {
-                        return error_response(
-                            id,
-                            -32603,
-                            &error.to_string(),
-                            Some(failure_data(&error)),
-                        );
-                    }
-                }
-            };
             let Some(spec) = crate::agent_catalog::find(name) else {
                 return error_response(id, -32602, "unknown tool", None);
             };
@@ -151,6 +164,12 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
     }
 }
 
+fn set_snapshot_token(input: &mut Value, snapshot_token: &str) {
+    if let Some(fields) = input.as_object_mut() {
+        fields.insert("snapshot".to_string(), Value::from(snapshot_token));
+    }
+}
+
 fn failure_data(error: &TexoError) -> Value {
     let facts = error.facts();
     json!({
@@ -168,7 +187,7 @@ struct MappedTool {
 
 fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
     match name {
-        "check_staleness" => {
+        "triangulate" => {
             let path = args
                 .get("path")
                 .and_then(Value::as_str)
@@ -178,7 +197,7 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
                 input: json!({ "path": path }),
             })
         }
-        "search_claims" => Ok(MappedTool {
+        "search_knowledge" => Ok(MappedTool {
             op: "texo.claims.search",
             input: json!({
                 "query": args.get("query").cloned().unwrap_or(Value::Null),
@@ -195,7 +214,7 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
                 "include_stale": args.get("include_stale").and_then(Value::as_bool).unwrap_or(false)
             }),
         }),
-        "explain_claim" => {
+        "explain_knowledge" => {
             let claim_id = args
                 .get("claim_id")
                 .and_then(Value::as_str)
@@ -207,7 +226,9 @@ fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
         }
         "get_workspace_status" => Ok(MappedTool {
             op: "texo.workspace.status",
-            input: json!({}),
+            input: json!({
+                "snapshot": args.get("snapshot_token").cloned().unwrap_or(Value::Null)
+            }),
         }),
         _ => Err("unknown tool".to_string()),
     }
@@ -224,7 +245,7 @@ fn tool_summary(name: &str, output: &Value) -> String {
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
         ),
-        "search_claims" => format!(
+        "search_knowledge" => format!(
             "Returned {} of {} matching claims{}.",
             output.get("returned").and_then(Value::as_u64).unwrap_or(0),
             output.get("total").and_then(Value::as_u64).unwrap_or(0),
@@ -234,8 +255,10 @@ fn tool_summary(name: &str, output: &Value) -> String {
                 ""
             }
         ),
-        "explain_claim" => "Loaded the claim card and complete journal timeline.".to_string(),
-        "check_staleness" => format!(
+        "explain_knowledge" => {
+            "Loaded the claim card and snapshot-bounded journal timeline.".to_string()
+        }
+        "triangulate" => format!(
             "Checked the document and found {} staleness diagnostics.",
             array_len(output, "diagnostics")
         ),
@@ -258,11 +281,11 @@ fn array_len(value: &Value, key: &str) -> usize {
 fn next_actions(name: &str, output: &Value) -> Value {
     match name {
         "get_agent_context" => json!([{
-            "tool": "search_claims",
+            "tool": "search_knowledge",
             "reason": "Narrow the workspace context to the task when needed.",
-            "arguments": {}
+            "arguments": { "snapshot_token": output_snapshot_token(output) }
         }]),
-        "search_claims" => {
+        "search_knowledge" => {
             let first_claim = output
                 .get("claims")
                 .and_then(Value::as_array)
@@ -273,20 +296,34 @@ fn next_actions(name: &str, output: &Value) -> Value {
                 || json!([]),
                 |claim_id| {
                     json!([{
-                        "tool": "explain_claim",
+                        "tool": "explain_knowledge",
                         "reason": "Inspect provenance and authority for a matching claim.",
-                        "arguments": { "claim_id": claim_id }
+                        "arguments": {
+                            "claim_id": claim_id,
+                            "snapshot_token": output_snapshot_token(output)
+                        }
                     }])
                 },
             )
         }
-        "check_staleness" => json!([{
+        "triangulate" => json!([{
             "tool": "get_agent_context",
             "reason": "Load the current replacement claims before editing stale prose.",
-            "arguments": { "include_stale": true }
+            "arguments": {
+                "include_stale": true,
+                "snapshot_token": output_snapshot_token(output)
+            }
         }]),
         _ => json!([]),
     }
+}
+
+fn output_snapshot_token(output: &Value) -> Value {
+    output
+        .get("snapshot")
+        .and_then(|snapshot| snapshot.get("token"))
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError> {
@@ -334,7 +371,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initialize_echoes_protocol_and_server_name_is_compactable() {
+    fn initialize_negotiates_supported_protocol_and_server_name_is_compactable() {
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -342,7 +379,10 @@ mod tests {
             "params": { "protocolVersion": "test-version" }
         });
         let response = handle_line(&request.to_string(), Path::new("."), None).expect("response");
-        assert_eq!(response["result"]["protocolVersion"], "test-version");
+        assert_eq!(
+            response["result"]["protocolVersion"],
+            DEFAULT_PROTOCOL_VERSION
+        );
         let compact = serde_json::to_string(&response).expect("serialize response");
         assert!(compact.contains("\"name\":\"texo\""));
     }

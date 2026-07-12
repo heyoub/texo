@@ -13,6 +13,12 @@ pub const MAX_EVIDENCE_EXCERPT_BYTES: usize = 4 * 1024;
 /// Failure to construct a knowledge contract value.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum KnowledgeContractError {
+    /// A branded knowledge identifier was malformed.
+    #[error("invalid {kind} identifier")]
+    InvalidIdentifier {
+        /// Identifier class being validated.
+        kind: &'static str,
+    },
     /// A digest was not lowercase hexadecimal with the required length.
     #[error("{field} must be exactly {length} lowercase hexadecimal characters")]
     InvalidDigest {
@@ -59,6 +65,25 @@ macro_rules! knowledge_id {
             pub fn as_str(&self) -> &str {
                 &self.0
             }
+
+            /// Parse a previously emitted identifier.
+            ///
+            /// # Errors
+            /// Returns [`KnowledgeContractError::InvalidIdentifier`] when the
+            /// prefix or character set is invalid.
+            pub fn parse(value: &str) -> Result<Self, KnowledgeContractError> {
+                if !value.starts_with($prefix)
+                    || value.len() <= $prefix.len()
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                {
+                    return Err(KnowledgeContractError::InvalidIdentifier {
+                        kind: stringify!($name),
+                    });
+                }
+                Ok(Self(value.to_string()))
+            }
         }
 
         impl fmt::Display for $name {
@@ -103,12 +128,24 @@ impl SnapshotToken {
             .source_snapshot_id
             .as_ref()
             .map_or("none", SourceSnapshotId::as_str);
-        let material = format!(
-            "texo.snapshot-token.v1\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{source}",
-            descriptor.workspace_id, descriptor.frontier, descriptor.anchor_event_id_hex
+        let anchor = if descriptor.anchor_event_id_hex.is_empty() {
+            "-"
+        } else {
+            descriptor.anchor_event_id_hex.as_str()
+        };
+        let digest = snapshot_token_digest(
+            &descriptor.workspace_id,
+            descriptor.frontier,
+            anchor,
+            source,
         );
-        let digest = blake3_hash_hex(&material);
-        Self(format!("texo_snap_{}", &digest[..32]))
+        Self(format!(
+            "texo_snap_v1.{}.{}.{}.{}",
+            descriptor.frontier,
+            anchor,
+            source,
+            &digest[..32]
+        ))
     }
 
     /// Borrow the opaque token.
@@ -116,12 +153,78 @@ impl SnapshotToken {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Parse an untrusted token and recover its bound descriptor.
+    ///
+    /// The workspace is external to the token so copying a token between
+    /// workspaces fails checksum validation without exposing a secret.
+    ///
+    /// # Errors
+    /// Returns [`KnowledgeContractError::InvalidIdentifier`] for an invalid
+    /// shape, field, or checksum.
+    pub fn resolve_for_workspace(
+        value: &str,
+        workspace_id: &WorkspaceId,
+    ) -> Result<SnapshotDescriptor, KnowledgeContractError> {
+        let invalid = || KnowledgeContractError::InvalidIdentifier {
+            kind: "SnapshotToken",
+        };
+        let mut fields = value.split('.');
+        if fields.next() != Some("texo_snap_v1") {
+            return Err(invalid());
+        }
+        let frontier = fields
+            .next()
+            .ok_or_else(&invalid)?
+            .parse::<u64>()
+            .map_err(|_| invalid())?;
+        let anchor = fields.next().ok_or_else(&invalid)?;
+        if anchor != "-" {
+            validate_lower_hex("snapshot anchor", anchor, 32)?;
+        }
+        let source = fields.next().ok_or_else(&invalid)?;
+        let checksum = fields.next().ok_or_else(&invalid)?;
+        if fields.next().is_some() {
+            return Err(invalid());
+        }
+        validate_lower_hex("snapshot token checksum", checksum, 32)?;
+        let expected = snapshot_token_digest(workspace_id, frontier, anchor, source);
+        if checksum != &expected[..32] {
+            return Err(invalid());
+        }
+        let source_snapshot_id = if source == "none" {
+            None
+        } else {
+            Some(SourceSnapshotId::parse(source)?)
+        };
+        Ok(SnapshotDescriptor {
+            workspace_id: workspace_id.clone(),
+            frontier,
+            anchor_event_id_hex: if anchor == "-" {
+                String::new()
+            } else {
+                anchor.to_string()
+            },
+            source_snapshot_id,
+        })
+    }
 }
 
 impl fmt::Display for SnapshotToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+fn snapshot_token_digest(
+    workspace_id: &WorkspaceId,
+    frontier: u64,
+    anchor: &str,
+    source: &str,
+) -> String {
+    blake3_hash_hex(&format!(
+        "texo.snapshot-token.v1\u{1f}{workspace_id}\u{1f}{frontier}\u{1f}{anchor}\u{1f}{source}"
+    ))
 }
 
 /// Descriptor bound by a [`SnapshotToken`].
@@ -136,6 +239,25 @@ pub struct SnapshotDescriptor {
     pub anchor_event_id_hex: String,
     /// Optional frozen Git/worktree evidence snapshot.
     pub source_snapshot_id: Option<SourceSnapshotId>,
+}
+
+/// Snapshot identity returned by every agent-facing read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotRead {
+    /// Opaque token to pass to subsequent reads.
+    pub token: SnapshotToken,
+    /// Coordinates bound by the token.
+    pub descriptor: SnapshotDescriptor,
+}
+
+impl SnapshotRead {
+    /// Construct a read identity from its descriptor.
+    #[must_use]
+    pub fn new(descriptor: SnapshotDescriptor) -> Self {
+        let token = SnapshotToken::for_descriptor(&descriptor);
+        Self { token, descriptor }
+    }
 }
 
 /// Git object-hash algorithm.
@@ -275,6 +397,8 @@ pub enum EvidenceSourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageGapKind {
+    /// No durable Git/worktree source snapshot has been indexed yet.
+    SourceSnapshotUnavailable,
     /// Configured byte or item budget was reached.
     BudgetExceeded,
     /// Git history is shallow.
@@ -409,6 +533,24 @@ mod tests {
             SnapshotToken::for_descriptor(&first),
             SnapshotToken::for_descriptor(&changed)
         );
+        let token = SnapshotToken::for_descriptor(&first);
+        assert_eq!(
+            SnapshotToken::resolve_for_workspace(token.as_str(), &first.workspace_id),
+            Ok(first)
+        );
+    }
+
+    #[test]
+    fn snapshot_token_rejects_tampering_and_cross_workspace_reuse() {
+        let descriptor = descriptor();
+        let token = SnapshotToken::for_descriptor(&descriptor);
+        let changed = token.as_str().replacen(".42.", ".41.", 1);
+        assert!(SnapshotToken::resolve_for_workspace(&changed, &descriptor.workspace_id).is_err());
+        assert!(SnapshotToken::resolve_for_workspace(
+            token.as_str(),
+            &WorkspaceId::new("other").expect("workspace")
+        )
+        .is_err());
     }
 
     #[test]

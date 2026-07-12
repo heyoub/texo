@@ -27,31 +27,31 @@ pub fn tools() -> Vec<AgentToolSpec> {
             name: "get_agent_context",
             operation: "texo.context.agent",
             description: "Start here when answering from workspace knowledge. Returns current claims, conflicts, freshness, provenance, and settlement warnings. Search claims next when the snapshot is broader than the task. This tool is read-only.",
-            result_schema: "texo.mcp.agent-context.v1",
+            result_schema: "texo.mcp.agent-context.v2",
         },
         AgentToolSpec {
-            name: "search_claims",
+            name: "search_knowledge",
             operation: "texo.claims.search",
-            description: "Search the local claim-chain lexically with bounded pagination and optional subject/status filters. Use explain_claim on a returned claim id when provenance or authority matters. This tool is read-only.",
-            result_schema: "texo.mcp.claim-search.v1",
+            description: "Search bounded workspace knowledge with explicit analysis quality and coverage. Use explain_knowledge on a returned id when provenance or authority matters. Pass snapshot_token from prior results to keep a multi-call investigation consistent. This tool is read-only.",
+            result_schema: "texo.mcp.knowledge-search.v2",
         },
         AgentToolSpec {
-            name: "explain_claim",
+            name: "explain_knowledge",
             operation: "texo.claim.explain",
-            description: "Explain one claim's source, receipt, timeline, supersession trail, and conflicts. Use this after get_agent_context or search_claims when you need to justify why a claim is current or stale. This tool is read-only.",
-            result_schema: "texo.mcp.claim-explain.v1",
+            description: "Explain one knowledge item's source, receipt, timeline, and exact snapshot identity. Use this after context or search when you need evidence for why an assertion is current or stale. This tool is read-only.",
+            result_schema: "texo.mcp.knowledge-explain.v2",
         },
         AgentToolSpec {
-            name: "check_staleness",
+            name: "triangulate",
             operation: "texo.staleness.check",
-            description: "Check a markdown file before trusting, editing, or summarizing it. Returns line-level stale/superseded diagnostics and evidence. This tool is read-only.",
-            result_schema: "texo.mcp.staleness.v1",
+            description: "Triangulate a path against current assertions at one frozen snapshot. Returns exact stale/superseded diagnostics now and expands to Git/code evidence as indexed. Absence outside declared coverage is never a negative fact. This tool is read-only.",
+            result_schema: "texo.mcp.triangulation.v2",
         },
         AgentToolSpec {
             name: "get_workspace_status",
             operation: "texo.workspace.status",
             description: "Inspect projection freshness, frontier, claim/conflict counts, and semantic settlement completeness. Use this when another tool reports incomplete or stale evidence. This tool is read-only.",
-            result_schema: "texo.mcp.workspace-status.v1",
+            result_schema: "texo.mcp.workspace-status.v2",
         },
     ]
 }
@@ -72,6 +72,7 @@ pub fn mcp_tools_list() -> Value {
                 "name": tool.name,
                 "description": tool.description,
                 "inputSchema": input_schema(tool.name),
+                "outputSchema": output_schema(tool.result_schema),
                 "annotations": {
                     "readOnlyHint": true,
                     "destructiveHint": false,
@@ -122,11 +123,12 @@ pub fn input_schema(name: &str) -> Value {
             "type": "object",
             "properties": {
                 "subject_hint": { "type": ["string", "null"] },
-                "include_stale": { "type": "boolean", "default": false }
+                "include_stale": { "type": "boolean", "default": false },
+                "snapshot_token": snapshot_token_schema()
             },
             "additionalProperties": false
         }),
-        "search_claims" => json!({
+        "search_knowledge" => json!({
             "type": "object",
             "properties": {
                 "query": { "type": ["string", "null"], "maxLength": 256 },
@@ -136,20 +138,32 @@ pub fn input_schema(name: &str) -> Value {
                     "enum": ["current", "superseded", "conflicting", null]
                 },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
-                "cursor": { "type": ["string", "null"] }
+                "cursor": { "type": ["string", "null"] },
+                "snapshot_token": snapshot_token_schema()
             },
             "additionalProperties": false
         }),
-        "explain_claim" => json!({
+        "explain_knowledge" => json!({
             "type": "object",
-            "properties": { "claim_id": { "type": "string" } },
+            "properties": {
+                "claim_id": { "type": "string" },
+                "snapshot_token": snapshot_token_schema()
+            },
             "required": ["claim_id"],
             "additionalProperties": false
         }),
-        "check_staleness" => json!({
+        "triangulate" => json!({
             "type": "object",
-            "properties": { "path": { "type": "string" } },
+            "properties": {
+                "path": { "type": "string" },
+                "snapshot_token": snapshot_token_schema()
+            },
             "required": ["path"],
+            "additionalProperties": false
+        }),
+        "get_workspace_status" => json!({
+            "type": "object",
+            "properties": { "snapshot_token": snapshot_token_schema() },
             "additionalProperties": false
         }),
         _ => json!({
@@ -159,8 +173,59 @@ pub fn input_schema(name: &str) -> Value {
     }
 }
 
+fn snapshot_token_schema() -> Value {
+    json!({
+        "type": ["string", "null"],
+        "maxLength": 256,
+        "description": "Opaque token from a prior Texo result; omit to capture the latest durable snapshot."
+    })
+}
+
+fn output_schema(result_schema: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "schema": { "type": "string", "const": result_schema },
+            "data": { "type": "object" },
+            "meta": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string" },
+                    "frontier": { "type": "integer", "minimum": 0 },
+                    "settlement_complete": { "type": "boolean" },
+                    "snapshot": {
+                        "type": "object",
+                        "properties": {
+                            "token": { "type": "string" },
+                            "descriptor": { "type": "object" }
+                        },
+                        "required": ["token", "descriptor"]
+                    },
+                    "coverage": {
+                        "type": "object",
+                        "properties": {
+                            "analysis_quality": {
+                                "type": "string",
+                                "enum": ["precise", "syntactic", "lexical", "unavailable"]
+                            },
+                            "sources_examined": { "type": "integer", "minimum": 0 },
+                            "occurrences": { "type": "integer", "minimum": 0 },
+                            "truncated": { "type": "boolean" },
+                            "gaps": { "type": "array" }
+                        },
+                        "required": ["analysis_quality", "sources_examined", "occurrences", "truncated", "gaps"]
+                    }
+                },
+                "required": ["workspace_id", "frontier", "settlement_complete", "snapshot", "coverage"]
+            },
+            "next_actions": { "type": "array" }
+        },
+        "required": ["schema", "data", "meta", "next_actions"]
+    })
+}
+
 /// Recommended agent workflow emitted during MCP initialization and install.
-pub const INSTRUCTIONS: &str = "Start with get_agent_context before answering from project knowledge. Use search_claims for bounded discovery, explain_claim for provenance, check_staleness before trusting or editing documentation, and get_workspace_status when evidence is stale or incomplete. All tools are local and read-only; absence of a verdict never means unrelated.";
+pub const INSTRUCTIONS: &str = "Start with get_agent_context before answering from project knowledge. Reuse its snapshot_token across search_knowledge, explain_knowledge, and triangulate so one investigation cannot mix repository or journal states. Inspect coverage before treating absence as evidence. Use get_workspace_status when evidence is stale or incomplete. All tools are local and read-only; absence of a verdict never means unrelated.";
 
 #[cfg(test)]
 mod tests {

@@ -64,9 +64,9 @@ Multi-workspace scopes live in `.texo/config.toml` under
 The MCP catalog stays deliberately small and progressively discloses detail:
 
 1. `get_agent_context` returns bounded current context and freshness evidence.
-2. `search_claims` performs bounded, cursor-based claim discovery.
-3. `explain_claim` expands one claim into provenance and transition evidence.
-4. `check_staleness` checks a workspace-relative document before it is trusted.
+2. `search_knowledge` performs bounded, cursor-based discovery at one snapshot.
+3. `explain_knowledge` expands one item into provenance and transition evidence.
+4. `triangulate` checks a workspace-relative target before it is trusted.
 5. `get_workspace_status` reports frontier, freshness, and settlement state.
 
 All five tools are read-only. Successful calls include concise text plus

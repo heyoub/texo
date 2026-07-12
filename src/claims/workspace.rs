@@ -270,6 +270,41 @@ pub fn assemble(
         }
     }
 
+    Ok(build_view(workspace_id, cache))
+}
+
+/// Assemble a historical deterministic view through one exact workspace
+/// frontier without mutating the warm latest-view cache.
+///
+/// This is intentionally a full bounded replay: historical reads are expected
+/// to be uncommon, while silently substituting the latest view would violate
+/// snapshot consistency.
+///
+/// # Errors
+/// Returns [`TexoError::Store`] when a journal event cannot be read, or
+/// [`TexoError::Decode`] when `frontier` is not an exact workspace frontier.
+pub fn assemble_through(
+    store: &Store<Open>,
+    workspace_id: &str,
+    frontier: u64,
+) -> Result<Arc<WorkspaceView>, TexoError> {
+    let scope = scope_for_workspace(workspace_id);
+    let region = Region::scope(&scope);
+    let mut cache = WorkspaceCache {
+        freshness: ProjectionFreshness::Rebuilding,
+        ..WorkspaceCache::default()
+    };
+    fold_through(store, &region, frontier, &mut cache)?;
+    if cache.frontier != frontier {
+        return Err(TexoError::Decode {
+            entity: format!("workspace-snapshot:{workspace_id}"),
+            detail: format!("requested frontier {frontier} is not an exact workspace frontier"),
+        });
+    }
+    Ok(build_view(workspace_id, &mut cache))
+}
+
+fn build_view(workspace_id: &str, cache: &mut WorkspaceCache) -> Arc<WorkspaceView> {
     // One pass over the card map instead of three full walks. The map is
     // keyed by entity string, so each family arrives already id-ordered; the
     // sorts below are near-no-ops kept as the explicit determinism proof.
@@ -334,7 +369,46 @@ pub fn assemble(
     cache.freshness = ProjectionFreshness::Fresh;
     cache.counters.view_rebuilds = cache.counters.view_rebuilds.saturating_add(1);
     trace_assemble(cache);
-    Ok(view)
+    view
+}
+
+fn fold_through(
+    store: &Store<Open>,
+    region: &Region,
+    frontier: u64,
+    cache: &mut WorkspaceCache,
+) -> Result<(), TexoError> {
+    if frontier == 0 {
+        cache.freshness = ProjectionFreshness::Stale;
+        return Ok(());
+    }
+    let mut after = None;
+    'pages: loop {
+        let page = store.query_entries_after(region, after, PAGE_LIMIT);
+        if page.is_empty() {
+            break;
+        }
+        for entry in &page {
+            if entry.global_sequence() > frontier {
+                break 'pages;
+            }
+            if let Some(family) = CardFamily::of(entry.coord().entity()) {
+                let raw = store.read_raw(entry.event_id())?;
+                fold_event(
+                    cache,
+                    entry.coord().entity(),
+                    family,
+                    entry.event_kind(),
+                    &raw.event,
+                );
+            }
+            cache.frontier = entry.global_sequence();
+            cache.anchor_event_id_hex = format!("{:032x}", entry.event_id().as_u128());
+        }
+        after = page.last().map(batpak::store::IndexEntry::global_sequence);
+    }
+    cache.freshness = ProjectionFreshness::Stale;
+    Ok(())
 }
 
 fn trace_assemble(cache: &WorkspaceCache) {

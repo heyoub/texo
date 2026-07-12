@@ -450,7 +450,7 @@ fn upsert_agent_guide(
     let existing = read_optional_string(&path)?;
     let (without, _) = strip_marked_block(&existing, AGENT_MARKER_START, AGENT_MARKER_END)?;
     let block = format!(
-        "{AGENT_MARKER_START}\n## Texo agent context\n\nWorkspace: `{workspace_id}`. Start with the `get_agent_context` MCP tool before answering from project knowledge. Use `search_claims` for bounded discovery, `explain_claim` for provenance, and `check_staleness` before trusting or editing documentation. Absence of a relation verdict never means unrelated. Texo MCP tools are local and read-only.\n{AGENT_MARKER_END}"
+        "{AGENT_MARKER_START}\n## Texo agent context\n\nWorkspace: `{workspace_id}`. Start with the `get_agent_context` MCP tool before answering from project knowledge. Reuse its snapshot token with `search_knowledge`, `explain_knowledge`, and `triangulate` so one investigation stays on one frontier. Inspect coverage before treating absence as evidence. Absence of a relation verdict never means unrelated. Texo MCP tools are local and read-only.\n{AGENT_MARKER_END}"
     );
     let bytes = append_block(&without, &block).into_bytes();
     let action = classify_bytes(&path, &bytes)?;

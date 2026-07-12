@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use batpak::coordinate::Region;
-use batpak::event::{EventKind, EventPayload};
+use batpak::event::{EventKind, EventPayload, EventSourced};
 use batpak::id::EntityIdType;
 use batpak::store::Freshness;
 use serde::{Deserialize, Serialize};
@@ -19,9 +19,9 @@ use syncbat::{CoreBuilder, HandlerError, HandlerResult, OperationRegisterItem};
 use crate::claims::card::ClaimCard;
 use crate::claims::conflict::ConflictCard;
 use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
-use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
+use crate::claims::workspace::{assemble, assemble_through, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
-use crate::error::TexoError;
+use crate::error::{SnapshotFailureKind, TexoError};
 use crate::events::coordinate::{
     entity_for_claim, entity_for_conflict, entity_for_workspace_meta, scope_for_workspace,
 };
@@ -37,6 +37,10 @@ use crate::events::payloads::{
 use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
+use crate::knowledge::{
+    AnalysisQuality, CoverageGap, CoverageGapKind, KnowledgeCoverage, SnapshotDescriptor,
+    SnapshotRead, SnapshotToken,
+};
 use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
 use crate::semantics::pipeline::{
@@ -315,9 +319,9 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claims_list_item,
     name = "texo.claims.list",
     effect = Inspect,
-    input_schema = "texo.claims.list.input.v2",
-    output_schema = "texo.claims.list.output.v2",
-    receipt_kind = "receipt.texo.claims.list.v2",
+    input_schema = "texo.claims.list.input.v3",
+    output_schema = "texo.claims.list.output.v3",
+    receipt_kind = "receipt.texo.claims.list.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -327,12 +331,13 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.claims.list", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let claims = claim_list_rows(&view, input.subject.as_deref())?;
         Ok(ClaimsListOutput {
             workspace_id: view.workspace_id.clone(),
             frontier: view.frontier,
             claims,
+            snapshot,
         })
     })
 }
@@ -343,9 +348,9 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claims_search_item,
     name = "texo.claims.search",
     effect = Inspect,
-    input_schema = "texo.claims.search.input.v1",
-    output_schema = "texo.claims.search.output.v1",
-    receipt_kind = "receipt.texo.claims.search.v1",
+    input_schema = "texo.claims.search.input.v2",
+    output_schema = "texo.claims.search.output.v2",
+    receipt_kind = "receipt.texo.claims.search.v2",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -355,7 +360,7 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.claims.search", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let query = input.query.unwrap_or_default();
         if query.len() > 256 {
             return Err(TexoError::OpInput {
@@ -398,6 +403,7 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             has_more,
             next_cursor: has_more.then(|| format!("texo-claims-v1:{next_offset}")),
             claims: page,
+            snapshot,
         })
     })
 }
@@ -408,9 +414,9 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claim_explain_item,
     name = "texo.claim.explain",
     effect = Inspect,
-    input_schema = "texo.claim.explain.input.v2",
-    output_schema = "texo.claim.explain.output.v2",
-    receipt_kind = "receipt.texo.claim.explain.v2",
+    input_schema = "texo.claim.explain.input.v3",
+    output_schema = "texo.claim.explain.output.v3",
+    receipt_kind = "receipt.texo.claim.explain.v3",
     queries_projections = ["texo.claim.explain.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -421,23 +427,21 @@ fn claim_explain(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .query_projection(CLAIM_EXPLAIN_PROJECTION)
             .map_err(|error| op_runtime("texo.claim.explain", error))?;
         let entity = entity_for_claim(&input.claim_id);
-        env::with(|op_env| {
-            if op_env.store.by_entity(&entity).is_empty() {
-                return Err(TexoError::MissingEntity {
-                    entity: entity.clone(),
-                });
-            }
-            let (card, timeline) = op_env
-                .store
-                .project_fused2::<ClaimCard, ClaimTimeline>(&entity)?;
-            let card = card.ok_or_else(|| TexoError::MissingEntity {
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        let card = view
+            .claims
+            .iter()
+            .find(|claim| claim.card.claim_id == input.claim_id)
+            .map(|claim| claim.card.as_ref().clone())
+            .ok_or_else(|| TexoError::MissingEntity {
                 entity: entity.clone(),
             })?;
-            Ok(ClaimExplainOutput {
-                card,
-                timeline: timeline.map_or_else(Vec::new, |timeline| timeline.entries),
-            })
-        })?
+        let timeline = claim_timeline_through(&entity, view.frontier)?;
+        Ok(ClaimExplainOutput {
+            card,
+            timeline: timeline.entries,
+            snapshot,
+        })
     })
 }
 
@@ -640,9 +644,9 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = staleness_check_item,
     name = "texo.staleness.check",
     effect = Inspect,
-    input_schema = "texo.staleness.check.input.v2",
-    output_schema = "texo.staleness.check.output.v2",
-    receipt_kind = "receipt.texo.staleness.check.v2",
+    input_schema = "texo.staleness.check.input.v3",
+    output_schema = "texo.staleness.check.output.v3",
+    receipt_kind = "receipt.texo.staleness.check.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -652,11 +656,11 @@ fn staleness_check(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.staleness.check", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
         let path = resolve_path(&root, &input.path);
-        check_staleness_from_view(&view, &workspace_id, &root, &path)
+        check_staleness_from_view(&view, &workspace_id, &root, &path, snapshot)
     })
 }
 
@@ -666,9 +670,9 @@ fn staleness_check(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = context_agent_item,
     name = "texo.context.agent",
     effect = Inspect,
-    input_schema = "texo.context.agent.input.v2",
-    output_schema = "texo.context.agent.output.v2",
-    receipt_kind = "receipt.texo.context.agent.v2",
+    input_schema = "texo.context.agent.input.v3",
+    output_schema = "texo.context.agent.output.v3",
+    receipt_kind = "receipt.texo.context.agent.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -681,8 +685,13 @@ fn context_agent(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         if input.strict_settlement {
             require_complete_settlement()?;
         }
-        let view = assemble_current_view()?;
-        build_agent_context_from_view(&view, input.subject.as_deref(), input.include_stale)
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        build_agent_context_from_view(
+            &view,
+            input.subject.as_deref(),
+            input.include_stale,
+            snapshot,
+        )
     })
 }
 
@@ -709,7 +718,8 @@ fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             require_complete_settlement()?;
         }
         let view = assemble_current_view()?;
-        let context = build_agent_context_from_view(&view, None, true)?;
+        let snapshot = snapshot_for_view(&view)?;
+        let context = build_agent_context_from_view(&view, None, true, snapshot.clone())?;
         let conflict_report = heuristic::detect_conflicts(&view)?;
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
@@ -719,6 +729,7 @@ fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             checked_path: ".".to_string(),
             replayed_through_sequence: view.frontier,
             diagnostics: Vec::new(),
+            snapshot,
         };
         let files = compile_artifacts(&context, &view, &stale_report, &conflict_report)?;
         for file in &files {
@@ -1006,7 +1017,7 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let projection_path = root
             .join(".texo/cache/workspace-view")
             .join(format!("{}.bin", view.workspace_id));
-        let context = build_agent_context_from_view(&view, None, true)?;
+        let context = build_agent_context_from_view(&view, None, true, snapshot_for_view(&view)?)?;
         let agent_context_bytes = serde_json::to_vec(&context)?.len();
         Ok(StatsReadOutput {
             claims_total: view.claims.len(),
@@ -1025,20 +1036,20 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = workspace_status_item,
     name = "texo.workspace.status",
     effect = Inspect,
-    input_schema = "texo.workspace.status.input.v1",
-    output_schema = "texo.workspace.status.output.v1",
-    receipt_kind = "receipt.texo.workspace.status.v1",
+    input_schema = "texo.workspace.status.input.v2",
+    output_schema = "texo.workspace.status.output.v2",
+    receipt_kind = "receipt.texo.workspace.status.v2",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
 fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.workspace.status", || {
-        let _input: WorkspaceStatusInput = parse_input("texo.workspace.status", input)?;
+        let input: WorkspaceStatusInput = parse_input("texo.workspace.status", input)?;
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.workspace.status", error))?;
-        let view = assemble_current_view()?;
-        let settlement = authoritative_settlements()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        let settlement = authoritative_settlements(Some(view.frontier))?;
         let unresolved_pairs = settlement.unresolved_pairs;
         Ok(WorkspaceStatusOutput {
             workspace_id: view.workspace_id.clone(),
@@ -1049,6 +1060,8 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             settlement_complete: unresolved_pairs == 0,
             unresolved_pairs,
             authority_warnings: settlement.warnings.len(),
+            coverage: coverage_for_view(&view, &snapshot),
+            snapshot,
         })
     })
 }
@@ -1125,7 +1138,10 @@ struct WorkspaceInitInput {
 struct StatsReadInput {}
 
 #[derive(Debug, Deserialize)]
-struct WorkspaceStatusInput {}
+struct WorkspaceStatusInput {
+    #[serde(default)]
+    snapshot: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 struct StatsReadOutput {
@@ -1147,6 +1163,8 @@ struct WorkspaceStatusOutput {
     settlement_complete: bool,
     unresolved_pairs: usize,
     authority_warnings: usize,
+    snapshot: SnapshotRead,
+    coverage: KnowledgeCoverage,
 }
 
 #[derive(Debug, Serialize)]
@@ -1217,6 +1235,8 @@ struct IngestPhaseMs {
 #[derive(Debug, Deserialize)]
 struct ClaimsListInput {
     subject: Option<String>,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1226,6 +1246,8 @@ struct ClaimsSearchInput {
     status: Option<crate::claims::status::ClaimStatus>,
     limit: Option<usize>,
     cursor: Option<String>,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1233,6 +1255,7 @@ struct ClaimsListOutput {
     workspace_id: String,
     frontier: u64,
     claims: Vec<AgentClaimRow>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1245,17 +1268,21 @@ struct ClaimsSearchOutput {
     has_more: bool,
     next_cursor: Option<String>,
     claims: Vec<AgentClaimRow>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Deserialize)]
 struct ClaimExplainInput {
     claim_id: String,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct ClaimExplainOutput {
     card: ClaimCard,
     timeline: Vec<TimelineEntry>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1291,6 +1318,8 @@ struct VerifyRunOutput {
 #[derive(Debug, Deserialize)]
 struct StalenessCheckInput {
     path: PathBuf,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1299,6 +1328,7 @@ struct StalenessReport {
     checked_path: String,
     replayed_through_sequence: u64,
     diagnostics: Vec<StaleDiagnostic>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1335,6 +1365,8 @@ struct ContextAgentInput {
     include_stale: bool,
     #[serde(default)]
     strict_settlement: bool,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1346,6 +1378,7 @@ struct AgentContextOutput {
     stale_claims: Vec<AgentStaleClaimRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     conflicts: Vec<AgentConflictRow>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1609,6 +1642,128 @@ pub(crate) fn assemble_current_view() -> Result<std::sync::Arc<WorkspaceView>, T
     })?
 }
 
+fn assemble_snapshot_view(
+    requested: Option<&str>,
+) -> Result<(std::sync::Arc<WorkspaceView>, SnapshotRead), TexoError> {
+    let Some(requested) = requested else {
+        let view = assemble_current_view()?;
+        let snapshot = snapshot_for_view(&view)?;
+        return Ok((view, snapshot));
+    };
+    let (store, workspace) = env::with(|op_env| {
+        (
+            std::sync::Arc::clone(&op_env.store),
+            op_env.workspace_id.clone(),
+        )
+    })?;
+    let workspace_id = WorkspaceId::new(workspace.clone())?;
+    let descriptor =
+        SnapshotToken::resolve_for_workspace(requested, &workspace_id).map_err(|error| {
+            TexoError::Snapshot {
+                kind: SnapshotFailureKind::InvalidToken,
+                detail: error.to_string(),
+            }
+        })?;
+    if descriptor.source_snapshot_id.is_some() {
+        return Err(TexoError::Snapshot {
+            kind: SnapshotFailureKind::SourceUnavailable,
+            detail: "the token names a source snapshot not indexed in this store".to_string(),
+        });
+    }
+    validate_snapshot_anchor(&store, &workspace, &descriptor)?;
+    let view = assemble_through(&store, &workspace, descriptor.frontier).map_err(|error| {
+        TexoError::Snapshot {
+            kind: SnapshotFailureKind::Unavailable,
+            detail: error.to_string(),
+        }
+    })?;
+    Ok((view, SnapshotRead::new(descriptor)))
+}
+
+fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
+    let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+    let anchor_event_id_hex = env::with(|op_env| {
+        anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)
+    })??;
+    Ok(SnapshotRead::new(SnapshotDescriptor {
+        workspace_id,
+        frontier: view.frontier,
+        anchor_event_id_hex,
+        source_snapshot_id: None,
+    }))
+}
+
+fn validate_snapshot_anchor(
+    store: &batpak::store::Store<batpak::store::Open>,
+    workspace_id: &str,
+    descriptor: &SnapshotDescriptor,
+) -> Result<(), TexoError> {
+    let actual = anchor_at_frontier(store, workspace_id, descriptor.frontier)?;
+    if actual != descriptor.anchor_event_id_hex {
+        return Err(TexoError::Snapshot {
+            kind: SnapshotFailureKind::AnchorMismatch,
+            detail: format!(
+                "journal anchor at frontier {} differs from the token",
+                descriptor.frontier
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn anchor_at_frontier(
+    store: &batpak::store::Store<batpak::store::Open>,
+    workspace_id: &str,
+    frontier: u64,
+) -> Result<String, TexoError> {
+    if frontier == 0 {
+        return Ok(String::new());
+    }
+    let region = Region::scope(scope_for_workspace(workspace_id));
+    let entry = store
+        .query_entries_after(&region, Some(frontier.saturating_sub(1)), 1)
+        .into_iter()
+        .next()
+        .filter(|entry| entry.global_sequence() == frontier)
+        .ok_or_else(|| TexoError::Snapshot {
+            kind: SnapshotFailureKind::Unavailable,
+            detail: format!("workspace frontier {frontier} is unavailable"),
+        })?;
+    Ok(format!("{:032x}", entry.event_id().as_u128()))
+}
+
+fn claim_timeline_through(entity: &str, frontier: u64) -> Result<ClaimTimeline, TexoError> {
+    env::with(|op_env| {
+        let mut timeline = ClaimTimeline::default();
+        for entry in op_env.store.by_entity(entity) {
+            if entry.global_sequence() > frontier {
+                break;
+            }
+            let raw = op_env.store.read_raw(entry.event_id())?;
+            timeline.apply_event(&raw.event);
+        }
+        Ok::<_, TexoError>(timeline)
+    })?
+}
+
+fn coverage_for_view(view: &WorkspaceView, snapshot: &SnapshotRead) -> KnowledgeCoverage {
+    let gaps = if snapshot.descriptor.source_snapshot_id.is_none() {
+        vec![CoverageGap {
+            path: None,
+            kind: CoverageGapKind::SourceSnapshotUnavailable,
+        }]
+    } else {
+        Vec::new()
+    };
+    KnowledgeCoverage {
+        analysis_quality: AnalysisQuality::Unavailable,
+        sources_examined: u64::try_from(view.sources.len()).unwrap_or(u64::MAX),
+        occurrences: u64::try_from(view.claims.len()).unwrap_or(u64::MAX),
+        truncated: false,
+        gaps,
+    }
+}
+
 struct SettlementAuthority {
     verdicts: BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
     cache_keys: BTreeMap<(String, String), String>,
@@ -1616,7 +1771,7 @@ struct SettlementAuthority {
     unresolved_pairs: usize,
 }
 
-fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
+fn authoritative_settlements(frontier: Option<u64>) -> Result<SettlementAuthority, TexoError> {
     env::with(|op_env| {
         let scope = scope_for_workspace(&op_env.workspace_id);
         let region = Region::scope(&scope);
@@ -1628,10 +1783,19 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
                 break;
             }
             for entry in &page {
+                if frontier.is_some_and(|frontier| entry.global_sequence() > frontier) {
+                    break;
+                }
                 let entity = entry.coord().entity();
                 if entity.starts_with("relation:") {
                     entities.insert(entity.to_string());
                 }
+            }
+            if page
+                .last()
+                .is_some_and(|entry| frontier.is_some_and(|value| entry.global_sequence() > value))
+            {
+                break;
             }
             after = page.last().map(batpak::store::IndexEntry::global_sequence);
         }
@@ -1641,14 +1805,27 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
         let mut warnings = Vec::new();
         let mut unresolved_pairs = 0;
         for entity in entities {
-            let Some(card) = op_env
-                .store
-                .project::<crate::claims::settlement::SettlementCard>(
-                    &entity,
-                    &Freshness::Consistent,
-                )?
-            else {
-                continue;
+            let card = if let Some(frontier) = frontier {
+                let mut card = crate::claims::settlement::SettlementCard::default();
+                for entry in op_env.store.by_entity(&entity) {
+                    if entry.global_sequence() > frontier {
+                        break;
+                    }
+                    let raw = op_env.store.read_raw(entry.event_id())?;
+                    card.apply_event(&raw.event);
+                }
+                card
+            } else {
+                let Some(card) = op_env
+                    .store
+                    .project::<crate::claims::settlement::SettlementCard>(
+                        &entity,
+                        &Freshness::Consistent,
+                    )?
+                else {
+                    continue;
+                };
+                card
             };
             let Some(authoritative) = card.authoritative.as_ref() else {
                 if !card.deferrals.is_empty() {
@@ -1693,7 +1870,7 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
 }
 
 fn require_complete_settlement() -> Result<(), TexoError> {
-    let unresolved = authoritative_settlements()?.unresolved_pairs;
+    let unresolved = authoritative_settlements(None)?.unresolved_pairs;
     if unresolved == 0 {
         return Ok(());
     }
@@ -1895,7 +2072,7 @@ pub(crate) fn run_relate_pass(
             op_env.config.gateway.clone(),
         )
     })?;
-    let authority = authoritative_settlements()?;
+    let authority = authoritative_settlements(None)?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -2556,6 +2733,7 @@ fn build_agent_context_from_view(
     view: &WorkspaceView,
     subject: Option<&str>,
     include_stale: bool,
+    snapshot: SnapshotRead,
 ) -> Result<AgentContextOutput, TexoError> {
     let claims = claim_list_rows(view, subject)?
         .into_iter()
@@ -2622,6 +2800,7 @@ fn build_agent_context_from_view(
         claims,
         stale_claims,
         conflicts,
+        snapshot,
     })
 }
 
@@ -2630,6 +2809,7 @@ fn check_staleness_from_view(
     workspace_id: &str,
     root: &Path,
     input: &Path,
+    snapshot: SnapshotRead,
 ) -> Result<StalenessReport, TexoError> {
     let checked_path = input
         .strip_prefix(root)
@@ -2728,6 +2908,7 @@ fn check_staleness_from_view(
         checked_path,
         replayed_through_sequence: view.frontier,
         diagnostics,
+        snapshot,
     })
 }
 

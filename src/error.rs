@@ -65,6 +65,42 @@ pub struct FailureFacts {
     pub resume: Option<&'static str>,
 }
 
+/// Closed snapshot-read failure class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotFailureKind {
+    /// Token shape or checksum is invalid.
+    InvalidToken,
+    /// The exact journal frontier is no longer readable.
+    Unavailable,
+    /// The recorded anchor does not match the journal entry at the frontier.
+    AnchorMismatch,
+    /// The token names a source snapshot not present in this store.
+    SourceUnavailable,
+}
+
+impl SnapshotFailureKind {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidToken => "snapshot.invalid",
+            Self::Unavailable => "snapshot.unavailable",
+            Self::AnchorMismatch => "snapshot.anchor",
+            Self::SourceUnavailable => "snapshot.source_unavailable",
+        }
+    }
+}
+
+impl fmt::Display for SnapshotFailureKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidToken => "invalid token",
+            Self::Unavailable => "unavailable",
+            Self::AnchorMismatch => "anchor mismatch",
+            Self::SourceUnavailable => "source unavailable",
+        })
+    }
+}
+
 impl SurfaceKind {
     fn code(self) -> &'static str {
         match self {
@@ -240,6 +276,14 @@ pub enum TexoError {
         /// Sanitized failure detail.
         detail: String,
     },
+    /// Snapshot-consistent read failure.
+    #[error("snapshot {kind}: {detail}")]
+    Snapshot {
+        /// Closed failure class.
+        kind: SnapshotFailureKind,
+        /// Sanitized failure detail.
+        detail: String,
+    },
 }
 
 impl TexoError {
@@ -276,6 +320,7 @@ impl TexoError {
             Self::Model { .. } => "agent.model",
             Self::Session { .. } => "agent.session",
             Self::Backup { .. } => "backup",
+            Self::Snapshot { kind, .. } => kind.code(),
         }
     }
 
@@ -300,6 +345,18 @@ impl TexoError {
                 committed: No,
                 retry_safe: false,
                 resume: None,
+            },
+            Self::Snapshot { kind, .. } => FailureFacts {
+                committed: No,
+                retry_safe: true,
+                resume: Some(match kind {
+                    SnapshotFailureKind::InvalidToken => "fix the snapshot token and retry",
+                    SnapshotFailureKind::Unavailable
+                    | SnapshotFailureKind::AnchorMismatch
+                    | SnapshotFailureKind::SourceUnavailable => {
+                        "request the latest workspace snapshot and retry"
+                    }
+                }),
             },
             Self::OpInput { .. } => FailureFacts {
                 committed: No,
@@ -547,6 +604,19 @@ mod tests {
                     detail: "bad".to_string(),
                 },
                 "agent.session",
+            ),
+            (
+                TexoError::Backup {
+                    detail: "bad".to_string(),
+                },
+                "backup",
+            ),
+            (
+                TexoError::Snapshot {
+                    kind: SnapshotFailureKind::InvalidToken,
+                    detail: "bad".to_string(),
+                },
+                "snapshot.invalid",
             ),
         ];
 

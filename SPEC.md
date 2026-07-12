@@ -52,9 +52,11 @@ deterministic blake3 transition id and explicit causes.
   keep-alive comments on quiet ticks, and resume via `Last-Event-ID` header
   or `lastEventId` query param replays workspace events after the cursor.
 - MCP: line-delimited JSON-RPC 2.0 stdio with `initialize`, `tools/list`, and
-  `tools/call` for five read-only tools: `get_agent_context`, `search_claims`,
-  `explain_claim`, `check_staleness`, and `get_workspace_status`. Successful
-  calls carry structured content and bounded next actions.
+  `tools/call` for five read-only tools: `get_agent_context`,
+  `search_knowledge`, `explain_knowledge`, `triangulate`, and
+  `get_workspace_status`. Successful calls carry output-schema-validated
+  structured content, one reusable snapshot token, explicit coverage, and
+  bounded next actions.
 - Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
 ## Semantic Pipeline

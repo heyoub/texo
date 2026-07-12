@@ -41,6 +41,23 @@ fn read_json(stdout: &mut BufReader<ChildStdout>) -> TestResult<Value> {
     Ok(serde_json::from_str(&line)?)
 }
 
+fn assert_tool_catalog(tools: &Value) -> TestResult {
+    let tool_list = tools["result"]["tools"]
+        .as_array()
+        .ok_or("tools/list returns an array")?;
+    assert_eq!(tool_list.len(), 5);
+    assert_eq!(tool_list[0]["name"], "get_agent_context");
+    assert_eq!(tool_list[1]["name"], "search_knowledge");
+    assert_eq!(tool_list[4]["name"], "get_workspace_status");
+    assert!(tool_list
+        .iter()
+        .all(|tool| tool["annotations"]["readOnlyHint"] == true));
+    assert!(tool_list
+        .iter()
+        .all(|tool| tool["outputSchema"]["required"].is_array()));
+    Ok(())
+}
+
 #[test]
 fn mcp_stdio_full_session() -> TestResult {
     let mut workspace = TestWorkspace::new()?;
@@ -56,11 +73,11 @@ fn mcp_stdio_full_session() -> TestResult {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": { "protocolVersion": "2024-test" }
+            "params": { "protocolVersion": "2025-06-18" }
         }),
     )?;
     let initialize = read_json(&mut stdout)?;
-    assert_eq!(initialize["result"]["protocolVersion"], "2024-test");
+    assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(initialize["result"]["serverInfo"]["name"], "texo");
 
     send_json(
@@ -73,16 +90,7 @@ fn mcp_stdio_full_session() -> TestResult {
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     )?;
     let tools = read_json(&mut stdout)?;
-    let tool_list = tools["result"]["tools"]
-        .as_array()
-        .expect("tools/list returns an array");
-    assert_eq!(tool_list.len(), 5);
-    assert_eq!(tool_list[0]["name"], "get_agent_context");
-    assert_eq!(tool_list[1]["name"], "search_claims");
-    assert_eq!(tool_list[4]["name"], "get_workspace_status");
-    assert!(tool_list
-        .iter()
-        .all(|tool| tool["annotations"]["readOnlyHint"] == true));
+    assert_tool_catalog(&tools)?;
 
     send_json(
         &mut stdin,
@@ -91,7 +99,7 @@ fn mcp_stdio_full_session() -> TestResult {
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "search_claims",
+                "name": "search_knowledge",
                 "arguments": { "query": "deploy", "limit": 2 }
             }
         }),
@@ -102,13 +110,24 @@ fn mcp_stdio_full_session() -> TestResult {
         .expect("tool response has text content")
         .contains("matching claims"));
     let claims_json = &claims["result"]["structuredContent"];
-    assert_eq!(claims_json["schema"], "texo.mcp.claim-search.v1");
+    assert_eq!(claims_json["schema"], "texo.mcp.knowledge-search.v2");
     assert_eq!(claims_json["meta"]["workspace_id"], "demo");
     assert!(!claims_json["data"]["claims"]
         .as_array()
         .expect("claims output has claims array")
         .is_empty());
-    assert_eq!(claims_json["next_actions"][0]["tool"], "explain_claim");
+    assert_eq!(claims_json["next_actions"][0]["tool"], "explain_knowledge");
+    let snapshot_token = claims_json["meta"]["snapshot"]["token"]
+        .as_str()
+        .expect("meta carries a snapshot token");
+    assert_eq!(
+        claims_json["data"]["snapshot"]["token"],
+        claims_json["meta"]["snapshot"]["token"]
+    );
+    assert_eq!(
+        claims_json["next_actions"][0]["arguments"]["snapshot_token"],
+        snapshot_token
+    );
 
     send_json(
         &mut stdin,
@@ -117,8 +136,11 @@ fn mcp_stdio_full_session() -> TestResult {
             "id": 4,
             "method": "tools/call",
             "params": {
-                "name": "explain_claim",
-                "arguments": { "claim_id": "claim:missing" }
+                "name": "explain_knowledge",
+                "arguments": {
+                    "claim_id": "claim:missing",
+                    "snapshot_token": snapshot_token
+                }
             }
         }),
     )?;
@@ -156,7 +178,7 @@ fn mcp_input_error_carries_safe_retry_facts() -> TestResult {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "search_claims", "arguments": {"limit": 101}}
+            "params": {"name": "search_knowledge", "arguments": {"limit": 101}}
         }),
     )?;
     let response = read_json(&mut stdout)?;
