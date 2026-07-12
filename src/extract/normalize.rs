@@ -2,7 +2,13 @@
 
 /// Normalize a line for claim identity and comparison.
 pub fn normalize_line(line: &str) -> String {
-    let trimmed = line.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    lower.split_whitespace().collect::<Vec<_>>().join(" ")
+    let lower = line.trim().to_ascii_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    for word in lower.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }

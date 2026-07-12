@@ -34,7 +34,7 @@ use crate::events::payloads::{
     ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, OnboardingCompiledV2,
     RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
 };
-use crate::extract::hints::hints_from_line;
+use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
 use crate::ops::env::{self, ReceiptNote};
@@ -244,16 +244,16 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             let project_started = Instant::now();
             view = assemble_current_view()?;
             project_ms = project_ms.saturating_add(elapsed_ms(project_started));
-            let new_claims = plan
-                .sources
-                .iter()
-                .flat_map(|source| source.claims.iter().cloned())
-                .collect::<Vec<_>>();
             if !config
                 .semantics
                 .as_ref()
                 .is_some_and(|semantics| semantics.enabled)
             {
+                let new_claims = plan
+                    .sources
+                    .iter()
+                    .flat_map(|source| source.claims.iter().cloned())
+                    .collect::<Vec<_>>();
                 let append_started = Instant::now();
                 for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
                     append_json(
@@ -1364,7 +1364,7 @@ struct AgentSourceRow {
     line_start: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AgentReceiptRow {
     event_id: String,
     sequence: u64,
@@ -2114,16 +2114,18 @@ fn claim_record_receipts() -> Result<BTreeMap<String, AgentReceiptRow>, TexoErro
             if entry.event_kind() != <ClaimRecordedV2 as EventPayload>::KIND {
                 continue;
             }
-            let raw = op_env.store.read_raw(entry.event_id())?;
-            let payload: ClaimRecordedV2 = batpak::encoding::from_bytes(&raw.event.payload)
-                .map_err(|error| TexoError::Decode {
-                    entity: entity_for_claim("unknown"),
-                    detail: error.to_string(),
-                })?;
-            receipts.entry(payload.claim_id).or_insert(AgentReceiptRow {
-                event_id: event_id_hex(entry.event_id()),
-                sequence: entry.global_sequence(),
-            });
+            // The entity coordinate is "claim:{claim_id}" — the payload decode
+            // it used to do here (read_raw + msgpack per event) carried no
+            // information the index entry does not already hold.
+            let Some(claim_id) = entry.coord().entity().strip_prefix("claim:") else {
+                continue;
+            };
+            receipts
+                .entry(claim_id.to_string())
+                .or_insert(AgentReceiptRow {
+                    event_id: event_id_hex(entry.event_id()),
+                    sequence: entry.global_sequence(),
+                });
         }
         Ok::<_, TexoError>(receipts)
     })?
@@ -2165,10 +2167,10 @@ fn extract_heuristic_claims(
     let source_id = SourceId::try_from(doc.source_id.as_str())?;
     let mut claims = Vec::new();
     for line in &doc.lines {
-        let Some(hints) = hints_from_line(&line.text) else {
+        let normalized = normalize_line(&line.text);
+        let Some(hints) = hints_from_line_normalized(&line.text, &normalized) else {
             continue;
         };
-        let normalized = normalize_line(&line.text);
         let claim_id = claim_id_from_parts(&source_id, line.number, &normalized).to_string();
         let char_start = saturating_u32(line.char_start);
         let char_end = saturating_u32(line.char_start.saturating_add(line.text.len()));
@@ -2351,11 +2353,16 @@ fn claim_list_rows(
     subject: Option<&str>,
 ) -> Result<Vec<AgentClaimRow>, TexoError> {
     let mut rows = Vec::new();
+    // One index scan for all receipts instead of one by_entity per claim.
+    let receipts = claim_record_receipts()?;
     for claim in &view.claims {
         if subject.is_some_and(|wanted| claim.card.subject_hint.as_deref() != Some(wanted)) {
             continue;
         }
-        let receipt = claim_receipt(&claim.card.claim_id)?;
+        let receipt = match receipts.get(&claim.card.claim_id) {
+            Some(row) => row.clone(),
+            None => claim_receipt(&claim.card.claim_id)?,
+        };
         rows.push(AgentClaimRow {
             claim_id: claim.card.claim_id.clone(),
             status: claim.status,
@@ -2484,6 +2491,12 @@ fn check_staleness_from_view(
         // the doc's current lines. Reconstructing claim ids from whole lines
         // only matches heuristic whole-line claims; LLM extraction proposes
         // sub-sentence claims whose identity a line-level rebuild never hits.
+        // Normalize each doc line once, not once per superseded claim.
+        let normalized_lines = doc
+            .lines
+            .iter()
+            .map(|line| (line, normalize_line(&line.text)))
+            .collect::<Vec<_>>();
         for claim in &view.claims {
             if claim.card.phase != 2 || claim.card.source_id != source_id.as_str() {
                 continue;
@@ -2492,18 +2505,17 @@ fn check_staleness_from_view(
             if needle.is_empty() {
                 continue;
             }
-            let line = doc
-                .lines
+            let line = normalized_lines
                 .iter()
-                .find(|line| {
-                    line.number == claim.card.line_start
-                        && normalize_line(&line.text).contains(needle)
+                .find(|(line, normalized)| {
+                    line.number == claim.card.line_start && normalized.contains(needle)
                 })
                 .or_else(|| {
-                    doc.lines
+                    normalized_lines
                         .iter()
-                        .find(|line| normalize_line(&line.text).contains(needle))
-                });
+                        .find(|(_, normalized)| normalized.contains(needle))
+                })
+                .map(|(line, _)| *line);
             let Some(line) = line else {
                 continue; // the stale text no longer appears in the doc
             };

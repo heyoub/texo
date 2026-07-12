@@ -45,10 +45,15 @@ const KEYWORDS: &[(&str, u32)] = &[
 
 /// Derive hints from a raw markdown line.
 pub fn hints_from_line(line: &str) -> Option<ClaimHints> {
+    hints_from_line_normalized(line, &normalize_line(line))
+}
+
+/// Like [`hints_from_line`] for callers that already normalized the line —
+/// the extract hot loop otherwise normalizes every candidate line twice.
+pub fn hints_from_line_normalized(line: &str, normalized: &str) -> Option<ClaimHints> {
     if !super::heuristics::is_claim_line(line) {
         return None;
     }
-    let normalized = normalize_line(line);
     if normalized.is_empty() {
         return None;
     }
@@ -57,8 +62,8 @@ pub fn hints_from_line(line: &str) -> Option<ClaimHints> {
     let (confidence_ppm, _) = detect_confidence(&lower);
 
     let predicate_hint = detect_predicate(&lower);
-    let subject_hint = detect_subject(&lower, &normalized);
-    let object_hint = detect_object(&normalized, predicate_hint);
+    let subject_hint = detect_subject(&lower, normalized);
+    let object_hint = detect_object(normalized, predicate_hint);
 
     Some(ClaimHints {
         subject_hint,

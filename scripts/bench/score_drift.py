@@ -64,6 +64,10 @@ def main() -> int:
 
         if kind == "supersede":
             ok = v1 == exp["v1_status"] and v2 == exp["v2_status"]
+            if exp.get("conflict") and not conflict_between(
+                conflicts, claims, it["v1_text_contains"], it["v2_text_contains"]
+            ):
+                ok = False
             if mode == "heuristic" and it["signal"] == "implicit" and v1 == "superseded":
                 phantom_relations += 1  # implicit pairing shouldn't exist at this layer
         elif kind == "conflict":

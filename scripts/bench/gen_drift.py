@@ -19,7 +19,7 @@ import random
 import sys
 from pathlib import Path
 
-GENERATOR_VERSION = "2.0.0"
+GENERATOR_VERSION = "2.2.0"
 # v2: templates aligned with Texo's actual heuristics (verified in source):
 # - every sentence carries an extraction trigger word ("is"/"uses") so it
 #   reliably becomes a claim (extract/heuristics.rs has_claim_signal);
@@ -51,6 +51,7 @@ def main() -> int:
     corpus, out = Path(argv[0]), Path(argv[1])
     items_n = int(argv[argv.index("--items") + 1]) if "--items" in argv else 1000
     seed = int(argv[argv.index("--seed") + 1]) if "--seed" in argv else 42
+    noise_lines = int(argv[argv.index("--noise-lines") + 1]) if "--noise-lines" in argv else 8
     rng = random.Random(seed)
 
     manifest = json.loads((corpus / "manifest.json").read_text())
@@ -70,7 +71,7 @@ def main() -> int:
     for i, f in enumerate(files):
         kind = kinds[i % len(kinds)]
         noise = (corpus / f["path"]).read_bytes().decode("utf-8", "replace")
-        noise = "\n".join(noise.splitlines()[:40])
+        noise = "\n".join(noise.splitlines()[:noise_lines])
         name = f"{NAMES[rng.randrange(len(NAMES))]}-{i:04d}"
         item_id = f"drift-{i:06d}"
 
@@ -84,8 +85,11 @@ def main() -> int:
                             "semantic": {"v1_status": "superseded", "v2_status": "current"}}
             else:
                 v2_s = f"{name} sync window target day is {d2}."
+                # Relation contract: no change wording => conflict, never
+                # supersession (recency alone is not a replacement signal).
                 expected = {"heuristic": {"v1_status": "current", "v2_status": "current"},
-                            "semantic": {"v1_status": "superseded", "v2_status": "current"}}
+                            "semantic": {"v1_status": "conflicting", "v2_status": "conflicting",
+                                         "conflict": True}}
             signal = "explicit" if kind == "supersede_explicit" else "implicit"
             kind_out = "supersede"
         elif kind == "conflict":
@@ -94,7 +98,7 @@ def main() -> int:
             v2_s = f"{name} archive layer uses the {s2} storage engine."
             expected = {"heuristic": {"v1_status": "current", "v2_status": "current",
                                       "conflict": False},
-                        "semantic": {"v1_status": "current", "v2_status": "current",
+                        "semantic": {"v1_status": "conflicting", "v2_status": "conflicting",
                                      "conflict": True}}
             signal, kind_out = "none", "conflict"
         elif kind == "duplicate":
@@ -102,7 +106,7 @@ def main() -> int:
             v1_s = f"{name} rotation duty holder is {o}."
             v2_s = v1_s
             expected = {"heuristic": {"both_present_current": True},
-                        "semantic": {"single_current": True}}
+                        "semantic": {"both_present_current": True}}
             signal, kind_out = "none", "duplicate"
         else:
             d = DAYS[rng.randrange(len(DAYS))]
@@ -133,6 +137,7 @@ def main() -> int:
         "schema": "texo.bench.drift.v1",
         "generator_version": GENERATOR_VERSION,
         "seed": seed,
+        "noise_lines": noise_lines,
         "corpus_digest": manifest["corpus_digest"],
         "totals": totals,
         "items": oracle_items,

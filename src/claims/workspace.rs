@@ -266,32 +266,21 @@ pub fn assemble(
         }
     }
 
-    let mut claims = cache
-        .cards
-        .values()
-        .filter_map(|(_, card)| match card {
-            CachedCard::Claim(card) => Some(card.clone()),
-            CachedCard::Conflict(_) | CachedCard::Source(_) => None,
-        })
-        .collect::<Vec<_>>();
+    // One pass over the card map instead of three full walks. The map is
+    // keyed by entity string, so each family arrives already id-ordered; the
+    // sorts below are near-no-ops kept as the explicit determinism proof.
+    let mut claims = Vec::new();
+    let mut conflicts = Vec::new();
+    let mut sources = Vec::new();
+    for (_, card) in cache.cards.values() {
+        match card {
+            CachedCard::Claim(card) => claims.push(card.clone()),
+            CachedCard::Conflict(card) => conflicts.push(card.clone()),
+            CachedCard::Source(card) => sources.push(card.clone()),
+        }
+    }
     claims.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
-    let mut conflicts = cache
-        .cards
-        .values()
-        .filter_map(|(_, card)| match card {
-            CachedCard::Conflict(card) => Some(card.clone()),
-            CachedCard::Claim(_) | CachedCard::Source(_) => None,
-        })
-        .collect::<Vec<_>>();
     conflicts.sort_by(|left, right| left.conflict_id.cmp(&right.conflict_id));
-    let mut sources = cache
-        .cards
-        .values()
-        .filter_map(|(_, card)| match card {
-            CachedCard::Source(card) => Some(card.clone()),
-            CachedCard::Claim(_) | CachedCard::Conflict(_) => None,
-        })
-        .collect::<Vec<_>>();
     sources.sort_by(|left, right| left.source_id.cmp(&right.source_id));
 
     let mut open_conflict_claims = BTreeSet::new();
@@ -438,17 +427,22 @@ fn fold_after(
             .discovery_entries_paged
             .saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
         for entry in &page {
-            let entity = entry.coord().entity().to_string();
-            cache.frontier = entry.global_sequence();
-            cache.anchor_event_id_hex = format!("{:032x}", entry.event_id().as_u128());
-            let Some(family) = CardFamily::of(&entity) else {
+            let entity = entry.coord().entity();
+            let Some(family) = CardFamily::of(entity) else {
                 continue; // relation:*, session lanes, workspace-meta: not card state
             };
-            prior_generations
-                .entry(entity.clone())
-                .or_insert_with(|| cache.cards.get(&entity).map_or(0, |(g, _)| *g));
+            if !prior_generations.contains_key(entity) {
+                let prior = cache.cards.get(entity).map_or(0, |(g, _)| *g);
+                prior_generations.insert(entity.to_string(), prior);
+            }
             let raw = store.read_raw(entry.event_id())?;
-            fold_event(cache, &entity, family, entry.event_kind(), &raw.event);
+            fold_event(cache, entity, family, entry.event_kind(), &raw.event);
+        }
+        if let Some(last) = page.last() {
+            // Frontier and anchor are last-writer-in-paging-order state: one
+            // assignment per page, not one heap-allocating format per entry.
+            cache.frontier = last.global_sequence();
+            cache.anchor_event_id_hex = format!("{:032x}", last.event_id().as_u128());
         }
         after = page.last().map(batpak::store::IndexEntry::global_sequence);
     }
@@ -517,14 +511,19 @@ fn fold_event(
     if !relevant {
         return;
     }
-    let slot = cache
-        .cards
-        .entry(entity.to_string())
-        .or_insert_with(|| match family {
-            CardFamily::Claim => (0, CachedCard::Claim(ClaimCard::default())),
-            CardFamily::Conflict => (0, CachedCard::Conflict(ConflictCard::default())),
-            CardFamily::Source => (0, CachedCard::Source(SourceCard::default())),
-        });
+    if !cache.cards.contains_key(entity) {
+        cache.cards.insert(
+            entity.to_string(),
+            match family {
+                CardFamily::Claim => (0, CachedCard::Claim(ClaimCard::default())),
+                CardFamily::Conflict => (0, CachedCard::Conflict(ConflictCard::default())),
+                CardFamily::Source => (0, CachedCard::Source(SourceCard::default())),
+            },
+        );
+    }
+    let Some(slot) = cache.cards.get_mut(entity) else {
+        return;
+    };
     match (&mut slot.1, family) {
         (CachedCard::Claim(card), CardFamily::Claim) => card.apply_event(event),
         (CachedCard::Conflict(card), CardFamily::Conflict) => card.apply_event(event),
