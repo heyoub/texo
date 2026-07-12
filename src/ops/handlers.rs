@@ -330,7 +330,7 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let view = assemble_current_view()?;
         let claims = claim_list_rows(&view, input.subject.as_deref())?;
         Ok(ClaimsListOutput {
-            workspace_id: view.workspace_id,
+            workspace_id: view.workspace_id.clone(),
             frontier: view.frontier,
             claims,
         })
@@ -1463,7 +1463,7 @@ fn config_error(error: crate::config::ConfigError) -> TexoError {
     }
 }
 
-pub(crate) fn assemble_current_view() -> Result<WorkspaceView, TexoError> {
+pub(crate) fn assemble_current_view() -> Result<std::sync::Arc<WorkspaceView>, TexoError> {
     env::with(|op_env| {
         let mut cache = op_env.cache.borrow_mut();
         assemble(&op_env.store, &op_env.workspace_id, &mut cache)

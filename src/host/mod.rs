@@ -250,9 +250,16 @@ impl TexoHost {
 
 impl Drop for TexoHost {
     fn drop(&mut self) {
-        let cache = self.env.cache.borrow().clone();
-        if let Err(error) = cache.save(&self.env.root, &self.env.workspace_id) {
-            tracing::warn!(error = %error, "workspace projection sidecar persist failed");
+        // Move the cache out rather than cloning it: at scale the clone is
+        // hundreds of megabytes of peak RSS per teardown.
+        let mut cache = self.env.cache.take();
+        if cache.is_dirty() {
+            match cache.save(&self.env.root, &self.env.workspace_id) {
+                Ok(()) => cache.mark_clean(),
+                Err(error) => {
+                    tracing::warn!(error = %error, "workspace projection sidecar persist failed");
+                }
+            }
         }
         if let Some(shared) = &self.shared_cache {
             if let Ok(mut slot) = shared.lock() {

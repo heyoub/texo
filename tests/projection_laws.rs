@@ -238,15 +238,20 @@ fn persisted_cache_uses_zero_delta_warm_view_and_advances_only_dirty_entity() ->
     let reopened = assemble(&store, WORKSPACE, &mut warm)?;
     assert_eq!(reopened, initial);
     assert_eq!(warm.freshness(), ProjectionFreshness::Fresh);
-    assert_eq!(warm.counters.warm_view_hits, 1);
+    // Sidecar v2 persists folded cards only: the warm path proves itself by
+    // doing zero discovery, zero folds, and zero store projections — the one
+    // derived view rebuild runs from persisted card state alone.
     assert_eq!(warm.counters.discovery_entries_paged, 0);
+    assert_eq!(warm.counters.folded_events, 0);
     assert_eq!(warm.counters.project_calls, 0);
+    assert_eq!(warm.counters.view_rebuilds, 1);
 
     append_record(&store, "claim_d", 6)?;
     let advanced = assemble(&store, WORKSPACE, &mut warm)?;
     assert_eq!(advanced.claims.len(), initial.claims.len() + 1);
     assert_eq!(warm.counters.discovery_entries_paged, 1);
-    assert_eq!(warm.counters.project_calls, 1);
+    assert_eq!(warm.counters.folded_events, 1);
+    assert_eq!(warm.counters.project_calls, 0);
     Ok(())
 }
 
@@ -399,5 +404,47 @@ fn session_turns_project() -> TestResult {
         .map(|turn| turn.turn_no)
         .collect::<Vec<_>>();
     assert_eq!(turn_numbers, vec![1, 2, 3]);
+    Ok(())
+}
+
+/// Folded card states must be indistinguishable from full store replays, on
+/// both the cold-rebuild path and the warm incremental-delta path.
+#[test]
+fn folded_cards_match_store_replay() -> TestResult {
+    let dir = TempDir::new()?;
+    let store = open_store(&dir)?;
+    populate_three_claim_workspace(&store)?;
+    append_conflict(&store, "conflict_1", "claim_a", "claim_b", 30)?;
+
+    // Cold path: fold everything from sequence zero.
+    let mut cache = WorkspaceCache::default();
+    let cold = assemble(&store, WORKSPACE, &mut cache)?;
+
+    // Warm path: new events fold as a delta onto the cached states.
+    append_record(&store, "claim_d", 40)?;
+    append_supersede(&store, "claim_d", "claim_a", "delta supersede", 41)?;
+    let warm = assemble(&store, WORKSPACE, &mut cache)?;
+    assert!(warm.claims.len() > cold.claims.len());
+    assert!(cache.counters.folded_events > 0, "delta path must fold");
+    assert_eq!(
+        cache.counters.project_calls, 0,
+        "steady state must not hit the store projection repair path"
+    );
+
+    // Ground truth: every folded card equals its full store replay.
+    for view in &warm.claims {
+        let entity = format!("claim:{}", view.card.claim_id);
+        let replayed = store
+            .project::<ClaimCard>(&entity, &Freshness::Consistent)?
+            .expect("claim entity must replay");
+        assert_eq!(view.card, replayed, "fold diverged for {entity}");
+    }
+    for conflict in &warm.conflicts {
+        let entity = format!("conflict:{}", conflict.conflict_id);
+        let replayed = store
+            .project::<texo::claims::conflict::ConflictCard>(&entity, &Freshness::Consistent)?
+            .expect("conflict entity must replay");
+        assert_eq!(conflict, &replayed, "fold diverged for {entity}");
+    }
     Ok(())
 }

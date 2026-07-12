@@ -1,11 +1,13 @@
 //! Deterministic workspace view assembly.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 
 use batpak::coordinate::Region;
+use batpak::event::{Event, EventKind, EventPayload, EventSourced};
 use batpak::id::EntityIdType;
-use batpak::store::{Freshness, Open, Store};
+use batpak::store::{Open, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::claims::card::ClaimCard;
@@ -14,9 +16,12 @@ use crate::claims::source::SourceCard;
 use crate::claims::status::{claim_status, ClaimStatus};
 use crate::error::TexoError;
 use crate::events::coordinate::scope_for_workspace;
+use crate::events::payloads::{
+    ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, SourceObservedV2,
+};
 
 const PAGE_LIMIT: usize = 256;
-const SIDECAR_VERSION: u32 = 1;
+const SIDECAR_VERSION: u32 = 2;
 
 /// Explicit state of the disposable workspace projection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +45,9 @@ pub struct WorkspaceCacheCounters {
     pub assemble_calls: u64,
     /// Entries paged during entity discovery.
     pub discovery_entries_paged: u64,
-    /// Per-entity projection calls.
+    /// Events folded directly into cached card states (the delta path).
+    pub folded_events: u64,
+    /// Per-entity store projection calls (repair path only; 0 in steady state).
     pub project_calls: u64,
     /// Derived workspace-view rebuilds.
     pub view_rebuilds: u64,
@@ -49,29 +56,44 @@ pub struct WorkspaceCacheCounters {
 }
 
 /// Projection cache for deterministic workspace assembly.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct WorkspaceCache {
     cards: BTreeMap<String, (u64, CachedCard)>,
-    entities: BTreeSet<String>,
     frontier: u64,
     anchor_event_id_hex: String,
-    view: Option<WorkspaceView>,
+    view: Option<Arc<WorkspaceView>>,
     freshness: ProjectionFreshness,
     /// Number of projection rebuilds performed by this cache.
     pub project_misses: u64,
     /// Runtime proof counters.
     pub counters: WorkspaceCacheCounters,
+    /// True when persisted state (cards/frontier/anchor) changed since the
+    /// last load or save; unchanged caches skip the sidecar rewrite entirely.
+    dirty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Persisted sidecar (v2): folded card states only. The derived view and any
+/// discovery bookkeeping are rebuilt on load — persisting them doubled every
+/// claim text and made the sidecar outweigh the journal it derives from.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 struct PersistedWorkspace {
     version: u32,
     workspace_id: String,
     frontier: u64,
     anchor_event_id_hex: String,
-    entities: BTreeSet<String>,
     cache: BTreeMap<String, (u64, CachedCard)>,
-    view: Option<WorkspaceView>,
+}
+
+/// Borrowing twin of [`PersistedWorkspace`] so `save` serializes in place
+/// instead of cloning every cached card (the clone doubled peak RSS at scale).
+/// Field names and order must match `PersistedWorkspace` exactly.
+#[derive(Serialize)]
+struct PersistedWorkspaceRef<'a> {
+    version: u32,
+    workspace_id: &'a str,
+    frontier: u64,
+    anchor_event_id_hex: &'a str,
+    cache: &'a BTreeMap<String, (u64, CachedCard)>,
 }
 
 // The anchor detects truncation, forks that replace the frontier event, and
@@ -102,14 +124,25 @@ impl WorkspaceCache {
         }
         Self {
             cards: persisted.cache,
-            entities: persisted.entities,
             frontier: persisted.frontier,
             anchor_event_id_hex: persisted.anchor_event_id_hex,
-            view: persisted.view,
+            view: None,
             freshness: ProjectionFreshness::Stale,
             project_misses: 0,
             counters: WorkspaceCacheCounters::default(),
+            dirty: false,
         }
+    }
+
+    /// Whether persisted state changed since the last load or save.
+    #[must_use]
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Mark persisted state as flushed.
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
     }
 
     /// Persist the disposable cache with atomic replacement.
@@ -123,14 +156,12 @@ impl WorkspaceCache {
             return Ok(());
         };
         std::fs::create_dir_all(parent)?;
-        let persisted = PersistedWorkspace {
+        let persisted = PersistedWorkspaceRef {
             version: SIDECAR_VERSION,
-            workspace_id: workspace_id.to_string(),
+            workspace_id,
             frontier: self.frontier,
-            anchor_event_id_hex: self.anchor_event_id_hex.clone(),
-            entities: self.entities.clone(),
-            cache: self.cards.clone(),
-            view: self.view.clone(),
+            anchor_event_id_hex: &self.anchor_event_id_hex,
+            cache: &self.cards,
         };
         let bytes = batpak::encoding::to_bytes(&persisted).map_err(|error| TexoError::Decode {
             entity: format!("workspace-cache:{workspace_id}"),
@@ -215,7 +246,7 @@ pub fn assemble(
     store: &Store<Open>,
     workspace_id: &str,
     cache: &mut WorkspaceCache,
-) -> Result<WorkspaceView, TexoError> {
+) -> Result<Arc<WorkspaceView>, TexoError> {
     cache.counters.assemble_calls = cache.counters.assemble_calls.saturating_add(1);
     let scope = scope_for_workspace(workspace_id);
     let region = Region::scope(&scope);
@@ -231,7 +262,7 @@ pub fn assemble(
         if let Some(view) = &cache.view {
             cache.counters.warm_view_hits = cache.counters.warm_view_hits.saturating_add(1);
             trace_assemble(cache);
-            return Ok(view.clone());
+            return Ok(Arc::clone(view));
         }
     }
 
@@ -298,15 +329,15 @@ pub fn assemble(
         })
         .collect();
 
-    let view = WorkspaceView {
+    let view = Arc::new(WorkspaceView {
         workspace_id: workspace_id.to_string(),
         frontier: cache.frontier,
         freshness: ProjectionFreshness::Fresh,
         claims: claim_views,
         conflicts,
         sources,
-    };
-    cache.view = Some(view.clone());
+    });
+    cache.view = Some(Arc::clone(&view));
     cache.freshness = ProjectionFreshness::Fresh;
     cache.counters.view_rebuilds = cache.counters.view_rebuilds.saturating_add(1);
     trace_assemble(cache);
@@ -344,12 +375,11 @@ fn rebuild_cache(
 ) -> Result<(), TexoError> {
     cache.freshness = ProjectionFreshness::Rebuilding;
     cache.cards.clear();
-    cache.entities.clear();
     cache.frontier = 0;
     cache.anchor_event_id_hex.clear();
     cache.view = None;
-    let dirty = discover_after(store, region, None, cache);
-    project_dirty(store, &dirty, cache)?;
+    fold_after(store, region, None, cache)?;
+    cache.dirty = true;
     cache.freshness = ProjectionFreshness::Stale;
     Ok(())
 }
@@ -359,31 +389,45 @@ fn advance_cache(
     region: &Region,
     cache: &mut WorkspaceCache,
 ) -> Result<(), TexoError> {
-    let dirty = discover_after(store, region, Some(cache.frontier), cache);
-    if dirty.is_empty() {
-        cache.freshness = ProjectionFreshness::Fresh;
-        return Ok(());
-    }
-    cache.freshness = ProjectionFreshness::Stale;
-    for entity in &dirty {
-        if let Some((cached_generation, _)) = cache.cards.get(entity) {
-            if store.entity_generation(entity).unwrap_or(0) < *cached_generation {
-                cache.freshness = ProjectionFreshness::Invalid;
-                return rebuild_cache(store, region, cache);
-            }
+    match fold_after(store, region, Some(cache.frontier), cache)? {
+        FoldOutcome::NoDelta => {
+            cache.freshness = ProjectionFreshness::Fresh;
+            Ok(())
+        }
+        FoldOutcome::Folded => {
+            cache.dirty = true;
+            cache.freshness = ProjectionFreshness::Stale;
+            cache.view = None;
+            Ok(())
+        }
+        FoldOutcome::GenerationRegressed => {
+            cache.freshness = ProjectionFreshness::Invalid;
+            rebuild_cache(store, region, cache)
         }
     }
-    project_dirty(store, &dirty, cache)
 }
 
-fn discover_after(
+enum FoldOutcome {
+    NoDelta,
+    Folded,
+    GenerationRegressed,
+}
+
+/// Page every entry after `initial_after` and fold each event directly into
+/// its cached card state. One pass, O(delta): the paged entries already carry
+/// everything the fold needs, so no per-entity store replays occur (each
+/// `Store::project` call rebuilds an O(region) replay plan — the quadratic
+/// knee this module previously bent at).
+fn fold_after(
     store: &Store<Open>,
     region: &Region,
     initial_after: Option<u64>,
     cache: &mut WorkspaceCache,
-) -> BTreeSet<String> {
+) -> Result<FoldOutcome, TexoError> {
     let mut after = initial_after;
-    let mut dirty = BTreeSet::new();
+    // Generation each dirty entity had before this fold; used for the
+    // fail-closed regression check once authoritative generations are known.
+    let mut prior_generations: BTreeMap<String, u64> = BTreeMap::new();
     loop {
         let page = store.query_entries_after(region, after, PAGE_LIMIT);
         if page.is_empty() {
@@ -395,147 +439,99 @@ fn discover_after(
             .saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
         for entry in &page {
             let entity = entry.coord().entity().to_string();
-            cache.entities.insert(entity.clone());
-            dirty.insert(entity);
             cache.frontier = entry.global_sequence();
             cache.anchor_event_id_hex = format!("{:032x}", entry.event_id().as_u128());
+            let Some(family) = CardFamily::of(&entity) else {
+                continue; // relation:*, session lanes, workspace-meta: not card state
+            };
+            prior_generations
+                .entry(entity.clone())
+                .or_insert_with(|| cache.cards.get(&entity).map_or(0, |(g, _)| *g));
+            let raw = store.read_raw(entry.event_id())?;
+            fold_event(cache, &entity, family, entry.event_kind(), &raw.event);
         }
         after = page.last().map(batpak::store::IndexEntry::global_sequence);
     }
-    dirty
+    if prior_generations.is_empty() {
+        return Ok(FoldOutcome::NoDelta);
+    }
+    // Stamp authoritative generations; a store generation below the pre-fold
+    // value means the entity stream went backwards under us — fail closed.
+    for (entity, prior) in &prior_generations {
+        let generation = store.entity_generation(entity).unwrap_or(0);
+        if generation < *prior {
+            return Ok(FoldOutcome::GenerationRegressed);
+        }
+        if let Some(slot) = cache.cards.get_mut(entity) {
+            slot.0 = generation;
+        }
+    }
+    Ok(FoldOutcome::Folded)
 }
 
-fn project_dirty(
-    store: &Store<Open>,
-    dirty: &BTreeSet<String>,
-    cache: &mut WorkspaceCache,
-) -> Result<(), TexoError> {
-    for entity in dirty {
+/// Card family an entity belongs to, by coordinate prefix.
+#[derive(Clone, Copy)]
+enum CardFamily {
+    Claim,
+    Conflict,
+    Source,
+}
+
+impl CardFamily {
+    fn of(entity: &str) -> Option<Self> {
         if entity.starts_with("claim:") {
-            let _ = project_claim(store, entity, cache)?;
+            Some(Self::Claim)
         } else if entity.starts_with("conflict:") {
-            let _ = project_conflict(store, entity, cache)?;
+            Some(Self::Conflict)
         } else if entity.starts_with("source:") {
-            let _ = project_source(store, entity, cache)?;
+            Some(Self::Source)
+        } else {
+            None
         }
     }
-    cache.view = None;
-    Ok(())
 }
 
-fn project_claim(
-    store: &Store<Open>,
-    entity: &str,
+/// Fold one raw event into the cached card for `entity`.
+///
+/// Kinds outside the family's registered set are skipped explicitly (belt) in
+/// addition to the derive's own unknown-kind no-op (suspenders), so a future
+/// event kind landing on a card entity cannot corrupt folded state.
+fn fold_event(
     cache: &mut WorkspaceCache,
-) -> Result<Option<ClaimCard>, TexoError> {
-    let generation = store.entity_generation(entity).unwrap_or(0);
-    if let Some((cached_generation, CachedCard::Claim(card))) = cache.cards.get(entity) {
-        if *cached_generation == generation {
-            return Ok(Some(card.clone()));
-        }
-        cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-        if let Some((returned_generation, projected)) = store.project_if_changed::<ClaimCard>(
-            entity,
-            *cached_generation,
-            &Freshness::Consistent,
-        )? {
-            cache.project_misses = cache.project_misses.saturating_add(1);
-            return Ok(projected.inspect(|card| {
-                cache.cards.insert(
-                    entity.to_string(),
-                    (returned_generation, CachedCard::Claim(card.clone())),
-                );
-            }));
-        }
-        return Ok(Some(card.clone()));
-    }
-
-    cache.project_misses = cache.project_misses.saturating_add(1);
-    cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-    let projected = store.project::<ClaimCard>(entity, &Freshness::Consistent)?;
-    if let Some(card) = &projected {
-        cache.cards.insert(
-            entity.to_string(),
-            (generation, CachedCard::Claim(card.clone())),
-        );
-    }
-    Ok(projected)
-}
-
-fn project_conflict(
-    store: &Store<Open>,
     entity: &str,
-    cache: &mut WorkspaceCache,
-) -> Result<Option<ConflictCard>, TexoError> {
-    let generation = store.entity_generation(entity).unwrap_or(0);
-    if let Some((cached_generation, CachedCard::Conflict(card))) = cache.cards.get(entity) {
-        if *cached_generation == generation {
-            return Ok(Some(card.clone()));
+    family: CardFamily,
+    kind: EventKind,
+    event: &Event<Vec<u8>>,
+) {
+    let relevant = match family {
+        CardFamily::Claim => {
+            kind == <ClaimRecordedV2 as EventPayload>::KIND
+                || kind == <ClaimSupersededV2 as EventPayload>::KIND
         }
-        cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-        if let Some((returned_generation, projected)) = store.project_if_changed::<ConflictCard>(
-            entity,
-            *cached_generation,
-            &Freshness::Consistent,
-        )? {
-            cache.project_misses = cache.project_misses.saturating_add(1);
-            return Ok(projected.inspect(|card| {
-                cache.cards.insert(
-                    entity.to_string(),
-                    (returned_generation, CachedCard::Conflict(card.clone())),
-                );
-            }));
+        CardFamily::Conflict => {
+            kind == <ConflictOpenedV2 as EventPayload>::KIND
+                || kind == <ConflictResolvedV2 as EventPayload>::KIND
         }
-        return Ok(Some(card.clone()));
+        CardFamily::Source => kind == <SourceObservedV2 as EventPayload>::KIND,
+    };
+    if !relevant {
+        return;
     }
-
-    cache.project_misses = cache.project_misses.saturating_add(1);
-    cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-    let projected = store.project::<ConflictCard>(entity, &Freshness::Consistent)?;
-    if let Some(card) = &projected {
-        cache.cards.insert(
-            entity.to_string(),
-            (generation, CachedCard::Conflict(card.clone())),
-        );
+    let slot = cache
+        .cards
+        .entry(entity.to_string())
+        .or_insert_with(|| match family {
+            CardFamily::Claim => (0, CachedCard::Claim(ClaimCard::default())),
+            CardFamily::Conflict => (0, CachedCard::Conflict(ConflictCard::default())),
+            CardFamily::Source => (0, CachedCard::Source(SourceCard::default())),
+        });
+    match (&mut slot.1, family) {
+        (CachedCard::Claim(card), CardFamily::Claim) => card.apply_event(event),
+        (CachedCard::Conflict(card), CardFamily::Conflict) => card.apply_event(event),
+        (CachedCard::Source(card), CardFamily::Source) => card.apply_event(event),
+        // A prefix can only ever map to one family; a mismatch means the
+        // cached slot predates a (nonexistent) entity-family change.
+        _ => debug_assert!(false, "cached card family mismatch for {entity}"),
     }
-    Ok(projected)
-}
-
-fn project_source(
-    store: &Store<Open>,
-    entity: &str,
-    cache: &mut WorkspaceCache,
-) -> Result<Option<SourceCard>, TexoError> {
-    let generation = store.entity_generation(entity).unwrap_or(0);
-    if let Some((cached_generation, CachedCard::Source(card))) = cache.cards.get(entity) {
-        if *cached_generation == generation {
-            return Ok(Some(card.clone()));
-        }
-        cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-        if let Some((returned_generation, projected)) = store.project_if_changed::<SourceCard>(
-            entity,
-            *cached_generation,
-            &Freshness::Consistent,
-        )? {
-            cache.project_misses = cache.project_misses.saturating_add(1);
-            return Ok(projected.inspect(|card| {
-                cache.cards.insert(
-                    entity.to_string(),
-                    (returned_generation, CachedCard::Source(card.clone())),
-                );
-            }));
-        }
-        return Ok(Some(card.clone()));
-    }
-
-    cache.project_misses = cache.project_misses.saturating_add(1);
-    cache.counters.project_calls = cache.counters.project_calls.saturating_add(1);
-    let projected = store.project::<SourceCard>(entity, &Freshness::Consistent)?;
-    if let Some(card) = &projected {
-        cache.cards.insert(
-            entity.to_string(),
-            (generation, CachedCard::Source(card.clone())),
-        );
-    }
-    Ok(projected)
+    cache.counters.folded_events = cache.counters.folded_events.saturating_add(1);
 }
