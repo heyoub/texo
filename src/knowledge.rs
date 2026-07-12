@@ -406,6 +406,51 @@ pub enum AnswerState {
     Incomparable,
 }
 
+/// Closed target accepted by evidence triangulation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TriangulationTarget {
+    /// One durable semantic assertion.
+    Claim {
+        /// Claim identity.
+        claim_id: String,
+    },
+    /// All assertions and evidence intersecting a repository path and optional
+    /// one-based inclusive line range.
+    Path {
+        /// Slash-separated repository-relative path.
+        path: String,
+        /// Optional first line.
+        line_start: Option<u32>,
+        /// Optional last line.
+        line_end: Option<u32>,
+    },
+    /// One language-index symbol. Precise resolution requires an indexed code
+    /// artifact and never falls back silently.
+    Symbol {
+        /// SCIP or analyzer-stable symbol identifier.
+        symbol: String,
+    },
+}
+
+/// Typed reason an evidence answer cannot be treated as complete certainty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyReason {
+    /// No frozen source snapshot exists at the requested journal frontier.
+    SourceSnapshotUnavailable,
+    /// The snapshot has known coverage omissions or hit a configured bound.
+    PartialCoverage,
+    /// Relevant semantic pair settlement is incomplete.
+    SettlementIncomplete,
+    /// The target requires a code index that is not present at this snapshot.
+    CodeIndexUnavailable,
+    /// Evidence exists on source revisions that are not ancestrally ordered.
+    ConcurrentRevision,
+    /// The target exists as an assertion but has no exact durable occurrence.
+    ExactEvidenceUnavailable,
+}
+
 /// Source class for an evidence occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -540,6 +585,24 @@ pub struct EvidenceOccurrence {
     pub analyzer_fingerprint: String,
     /// Quality tier of the analysis that produced the occurrence.
     pub analysis_quality: AnalysisQuality,
+}
+
+/// Snapshot-bounded evidence joined to one durable semantic assertion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimEvidence {
+    /// Assertion receiving the evidence link.
+    pub claim_id: String,
+    /// Exact durable occurrence.
+    pub occurrence: EvidenceOccurrence,
+    /// How the evidence bears on the assertion.
+    pub stance: EvidenceStance,
+    /// Mechanism that linked evidence to the assertion.
+    pub method: EvidenceLinkMethod,
+    /// Journal sequence of the occurrence event.
+    pub occurrence_sequence: u64,
+    /// Journal sequence of the link event.
+    pub link_sequence: u64,
 }
 
 impl EvidenceOccurrence {

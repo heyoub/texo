@@ -18,6 +18,7 @@ use syncbat::{CoreBuilder, HandlerError, HandlerResult, OperationRegisterItem};
 
 use crate::claims::card::ClaimCard;
 use crate::claims::conflict::ConflictCard;
+use crate::claims::evidence::{assemble_through as assemble_evidence_through, EvidenceProjection};
 use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
 use crate::claims::workspace::{assemble, assemble_through, ClaimView, WorkspaceView};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
@@ -41,10 +42,10 @@ use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
 use crate::git_source::{capture as capture_git, CaptureLimits, CapturedLayer, CapturedSource};
 use crate::knowledge::{
-    AnalysisQuality, ByteRange, CoverageGap, CoverageGapKind, EvidenceLinkMethod,
-    EvidenceOccurrence, EvidenceOccurrenceId, EvidenceSourceKind, EvidenceStance,
-    KnowledgeCoverage, LineRange, RepositoryId, SnapshotDescriptor, SnapshotRead, SnapshotToken,
-    MAX_EVIDENCE_EXCERPT_BYTES,
+    AnalysisQuality, AnswerState, ByteRange, ClaimEvidence, CoverageGap, CoverageGapKind,
+    EvidenceLinkMethod, EvidenceOccurrence, EvidenceOccurrenceId, EvidenceSourceKind,
+    EvidenceStance, KnowledgeCoverage, LineRange, RepositoryId, SnapshotDescriptor, SnapshotRead,
+    SnapshotToken, TriangulationTarget, UncertaintyReason, MAX_EVIDENCE_EXCERPT_BYTES,
 };
 use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
@@ -420,8 +421,8 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.claim.explain",
     effect = Inspect,
     input_schema = "texo.claim.explain.input.v3",
-    output_schema = "texo.claim.explain.output.v3",
-    receipt_kind = "receipt.texo.claim.explain.v3",
+    output_schema = "texo.claim.explain.output.v4",
+    receipt_kind = "receipt.texo.claim.explain.v4",
     queries_projections = ["texo.claim.explain.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -442,11 +443,47 @@ fn claim_explain(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 entity: entity.clone(),
             })?;
         let timeline = claim_timeline_through(&entity, view.frontier)?;
+        let evidence = evidence_projection_through(view.frontier)?.take_claim(&input.claim_id);
+        let coverage = coverage_for_view(&view, &snapshot);
+        let answer_state = answer_state_for_claim(
+            view.claims
+                .iter()
+                .find(|claim| claim.card.claim_id == input.claim_id)
+                .map(|claim| claim.status),
+            &evidence,
+        );
         Ok(ClaimExplainOutput {
             card,
             timeline: timeline.entries,
+            answer_state,
+            evidence,
+            coverage,
             snapshot,
         })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = KNOWLEDGE_TRIANGULATE,
+    register = register_knowledge_triangulate,
+    register_item = knowledge_triangulate_item,
+    name = "texo.knowledge.triangulate",
+    effect = Inspect,
+    input_schema = "texo.knowledge.triangulate.input.v1",
+    output_schema = "texo.knowledge.triangulate.output.v1",
+    receipt_kind = "receipt.texo.knowledge.triangulate.v1",
+    reads_events = ["evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
+    queries_projections = ["texo.workspace.view.v2", "texo.evidence.view.v1"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_triangulate(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.triangulate", || {
+        let input: KnowledgeTriangulateInput = parse_input("texo.knowledge.triangulate", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.triangulate", error))?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        triangulate_from_view(&view, &snapshot, input.target)
     })
 }
 
@@ -1212,6 +1249,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         host_fingerprint_item(),
         stats_read_item(),
         knowledge_index_item(),
+        knowledge_triangulate_item(),
         workspace_status_item(),
     ]
 }
@@ -1239,6 +1277,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_host_fingerprint(builder)?;
     register_stats_read(builder)?;
     register_knowledge_index(builder)?;
+    register_knowledge_triangulate(builder)?;
     register_workspace_status(builder)?;
     Ok(())
 }
@@ -1445,6 +1484,28 @@ struct ClaimExplainInput {
 struct ClaimExplainOutput {
     card: ClaimCard,
     timeline: Vec<TimelineEntry>,
+    answer_state: AnswerState,
+    evidence: Vec<ClaimEvidence>,
+    coverage: KnowledgeCoverage,
+    snapshot: SnapshotRead,
+}
+
+#[derive(Debug, Deserialize)]
+struct KnowledgeTriangulateInput {
+    target: TriangulationTarget,
+    #[serde(default)]
+    snapshot: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeTriangulateOutput {
+    target: TriangulationTarget,
+    answer_state: AnswerState,
+    assertions: Vec<AgentClaimRow>,
+    evidence: Vec<ClaimEvidence>,
+    uncertainty: Vec<UncertaintyReason>,
+    coverage: KnowledgeCoverage,
+    settlement_complete: bool,
     snapshot: SnapshotRead,
 }
 
@@ -1965,6 +2026,211 @@ fn latest_source_snapshot(
         }
         Ok::<_, TexoError>(latest)
     })?
+}
+
+fn evidence_projection_through(frontier: u64) -> Result<EvidenceProjection, TexoError> {
+    env::with(|op_env| assemble_evidence_through(&op_env.store, &op_env.workspace_id, frontier))?
+}
+
+fn triangulate_from_view(
+    view: &WorkspaceView,
+    snapshot: &SnapshotRead,
+    target: TriangulationTarget,
+) -> Result<KnowledgeTriangulateOutput, TexoError> {
+    validate_triangulation_target(&target)?;
+    let projection = evidence_projection_through(view.frontier)?;
+    let claim_ids = triangulation_claim_ids(view, &target)?;
+    let assertions = claim_list_rows(view, None)?
+        .into_iter()
+        .filter(|claim| claim_ids.contains(&claim.claim_id))
+        .collect::<Vec<_>>();
+    let mut evidence = claim_ids
+        .iter()
+        .flat_map(|claim_id| projection.for_claim(claim_id).iter().cloned())
+        .collect::<Vec<_>>();
+    evidence.retain(|item| evidence_matches_target(item, &target));
+    let mut coverage = coverage_for_view(view, snapshot);
+    if projection.is_incomplete() {
+        coverage.gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::AnalysisIncomplete,
+        });
+    }
+    let settlement = authoritative_settlements(Some(view.frontier))?;
+    let settlement_complete = settlement.unresolved_pairs == 0;
+    let mut uncertainty = BTreeSet::new();
+    if snapshot.descriptor.source_snapshot_id.is_none() {
+        uncertainty.insert(UncertaintyReason::SourceSnapshotUnavailable);
+    }
+    if coverage.truncated || !coverage.gaps.is_empty() {
+        uncertainty.insert(UncertaintyReason::PartialCoverage);
+    }
+    if !settlement_complete {
+        uncertainty.insert(UncertaintyReason::SettlementIncomplete);
+    }
+    if matches!(target, TriangulationTarget::Symbol { .. }) {
+        uncertainty.insert(UncertaintyReason::CodeIndexUnavailable);
+    }
+    if !assertions.is_empty() && evidence.is_empty() {
+        uncertainty.insert(UncertaintyReason::ExactEvidenceUnavailable);
+    }
+    let answer_state = answer_state_for_rows(&assertions, &evidence);
+    Ok(KnowledgeTriangulateOutput {
+        target,
+        answer_state,
+        assertions,
+        evidence,
+        uncertainty: uncertainty.into_iter().collect(),
+        coverage,
+        settlement_complete,
+        snapshot: snapshot.clone(),
+    })
+}
+
+fn validate_triangulation_target(target: &TriangulationTarget) -> Result<(), TexoError> {
+    match target {
+        TriangulationTarget::Claim { claim_id } if claim_id.is_empty() => Err(TexoError::OpInput {
+            op: "texo.knowledge.triangulate".to_string(),
+            detail: "claim_id must not be empty".to_string(),
+        }),
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => {
+            let safe = !path.is_empty()
+                && !Path::new(path).is_absolute()
+                && Path::new(path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)));
+            let valid_range = match (*line_start, *line_end) {
+                (None, None) => true,
+                (Some(start), Some(end)) => start > 0 && start <= end,
+                _ => false,
+            };
+            if safe && valid_range {
+                Ok(())
+            } else {
+                Err(TexoError::OpInput {
+                    op: "texo.knowledge.triangulate".to_string(),
+                    detail: "path must be repository-relative and line bounds must be absent or an ordered one-based pair".to_string(),
+                })
+            }
+        }
+        TriangulationTarget::Symbol { symbol } if symbol.is_empty() || symbol.len() > 1024 => {
+            Err(TexoError::OpInput {
+                op: "texo.knowledge.triangulate".to_string(),
+                detail: "symbol must contain between 1 and 1024 bytes".to_string(),
+            })
+        }
+        TriangulationTarget::Claim { .. } | TriangulationTarget::Symbol { .. } => Ok(()),
+    }
+}
+
+fn triangulation_claim_ids(
+    view: &WorkspaceView,
+    target: &TriangulationTarget,
+) -> Result<BTreeSet<String>, TexoError> {
+    match target {
+        TriangulationTarget::Claim { claim_id } => {
+            if view
+                .claims
+                .iter()
+                .any(|claim| claim.card.claim_id == *claim_id)
+            {
+                Ok(BTreeSet::from([claim_id.clone()]))
+            } else {
+                Err(TexoError::MissingEntity {
+                    entity: entity_for_claim(claim_id),
+                })
+            }
+        }
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => Ok(view
+            .claims
+            .iter()
+            .filter(|claim| claim.card.source_path == *path)
+            .filter(|claim| {
+                line_start.is_none_or(|start| claim.card.line_end >= start)
+                    && line_end.is_none_or(|end| claim.card.line_start <= end)
+            })
+            .map(|claim| claim.card.claim_id.clone())
+            .collect()),
+        TriangulationTarget::Symbol { .. } => Ok(BTreeSet::new()),
+    }
+}
+
+fn evidence_matches_target(evidence: &ClaimEvidence, target: &TriangulationTarget) -> bool {
+    match target {
+        TriangulationTarget::Claim { .. } => true,
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => {
+            evidence.occurrence.path == *path
+                && line_start.is_none_or(|start| evidence.occurrence.line_range.end >= start)
+                && line_end.is_none_or(|end| evidence.occurrence.line_range.start <= end)
+        }
+        TriangulationTarget::Symbol { .. } => false,
+    }
+}
+
+fn answer_state_for_rows(assertions: &[AgentClaimRow], evidence: &[ClaimEvidence]) -> AnswerState {
+    use crate::claims::status::ClaimStatus;
+    if evidence
+        .iter()
+        .any(|item| item.stance == EvidenceStance::Contradicts)
+    {
+        AnswerState::Contradicted
+    } else if assertions
+        .iter()
+        .any(|claim| claim.status == ClaimStatus::Conflicting)
+    {
+        AnswerState::Incomparable
+    } else if assertions
+        .iter()
+        .any(|claim| claim.status == ClaimStatus::Superseded)
+    {
+        AnswerState::Stale
+    } else if !assertions.is_empty()
+        && evidence
+            .iter()
+            .any(|item| item.stance == EvidenceStance::Supports)
+    {
+        AnswerState::Supported
+    } else {
+        AnswerState::Unverified
+    }
+}
+
+fn answer_state_for_claim(
+    status: Option<crate::claims::status::ClaimStatus>,
+    evidence: &[ClaimEvidence],
+) -> AnswerState {
+    use crate::claims::status::ClaimStatus;
+    match status {
+        Some(ClaimStatus::Superseded) => AnswerState::Stale,
+        Some(ClaimStatus::Conflicting) => AnswerState::Incomparable,
+        Some(ClaimStatus::Current)
+            if evidence
+                .iter()
+                .any(|item| item.stance == EvidenceStance::Contradicts) =>
+        {
+            AnswerState::Contradicted
+        }
+        Some(ClaimStatus::Current)
+            if evidence
+                .iter()
+                .any(|item| item.stance == EvidenceStance::Supports) =>
+        {
+            AnswerState::Supported
+        }
+        Some(ClaimStatus::Current) | None => AnswerState::Unverified,
+    }
 }
 
 struct EvidencePlan {

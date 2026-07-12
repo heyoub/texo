@@ -188,13 +188,13 @@ struct MappedTool {
 fn map_tool_input(name: &str, args: &Value) -> Result<MappedTool, String> {
     match name {
         "triangulate" => {
-            let path = args
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "missing path".to_string())?;
+            let target = args
+                .get("target")
+                .cloned()
+                .ok_or_else(|| "missing target".to_string())?;
             Ok(MappedTool {
-                op: "texo.staleness.check",
-                input: json!({ "path": path }),
+                op: "texo.knowledge.triangulate",
+                input: json!({ "target": target }),
             })
         }
         "search_knowledge" => Ok(MappedTool {
@@ -259,8 +259,13 @@ fn tool_summary(name: &str, output: &Value) -> String {
             "Loaded the claim card and snapshot-bounded journal timeline.".to_string()
         }
         "triangulate" => format!(
-            "Checked the document and found {} staleness diagnostics.",
-            array_len(output, "diagnostics")
+            "Triangulation state is {}; found {} assertions and {} exact evidence occurrences.",
+            output
+                .get("answer_state")
+                .and_then(Value::as_str)
+                .unwrap_or("unverified"),
+            array_len(output, "assertions"),
+            array_len(output, "evidence")
         ),
         "get_workspace_status" => format!(
             "Workspace is at frontier {}; settlement complete: {}.",
@@ -308,7 +313,7 @@ fn next_actions(name: &str, output: &Value) -> Value {
         }
         "triangulate" => json!([{
             "tool": "get_agent_context",
-            "reason": "Load the current replacement claims before editing stale prose.",
+            "reason": "Load current and replacement claims when triangulation is stale, contradicted, or incomplete.",
             "arguments": {
                 "include_stale": true,
                 "snapshot_token": output_snapshot_token(output)

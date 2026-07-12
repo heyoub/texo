@@ -43,8 +43,8 @@ pub fn tools() -> Vec<AgentToolSpec> {
         },
         AgentToolSpec {
             name: "triangulate",
-            operation: "texo.staleness.check",
-            description: "Triangulate a path against current assertions at one frozen snapshot. Returns exact stale/superseded diagnostics now and expands to Git/code evidence as indexed. Absence outside declared coverage is never a negative fact. This tool is read-only.",
+            operation: "texo.knowledge.triangulate",
+            description: "Triangulate a claim, repository path/span, or code symbol against exact evidence at one frozen snapshot. Inspect answer_state, uncertainty, and coverage before relying on the result; absence outside declared coverage is never a negative fact. This tool is read-only.",
             result_schema: "texo.mcp.triangulation.v2",
         },
         AgentToolSpec {
@@ -155,10 +155,42 @@ pub fn input_schema(name: &str) -> Value {
         "triangulate" => json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string" },
+                "target": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "claim" },
+                                "claim_id": { "type": "string" }
+                            },
+                            "required": ["kind", "claim_id"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "path" },
+                                "path": { "type": "string" },
+                                "line_start": { "type": ["integer", "null"], "minimum": 1 },
+                                "line_end": { "type": ["integer", "null"], "minimum": 1 }
+                            },
+                            "required": ["kind", "path"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "symbol" },
+                                "symbol": { "type": "string", "maxLength": 1024 }
+                            },
+                            "required": ["kind", "symbol"],
+                            "additionalProperties": false
+                        }
+                    ]
+                },
                 "snapshot_token": snapshot_token_schema()
             },
-            "required": ["path"],
+            "required": ["target"],
             "additionalProperties": false
         }),
         "get_workspace_status" => json!({

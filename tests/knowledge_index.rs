@@ -141,3 +141,93 @@ fn changed_worktree_never_links_old_claim_as_supporting_evidence() -> TestResult
         })));
     Ok(())
 }
+
+#[test]
+fn explain_and_triangulate_join_exact_evidence_at_one_snapshot() -> TestResult {
+    let (_root, mut host) = initialized_repository()?;
+    let before = host.invoke_json("texo.workspace.status", &json!({}))?;
+    let before_token = before["snapshot"]["token"]
+        .as_str()
+        .ok_or("snapshot token")?;
+    let claims = host.invoke_json(
+        "texo.claims.list",
+        &json!({"subject": null, "snapshot": null}),
+    )?;
+    let claim_id = claims["claims"][0]["claim_id"].as_str().ok_or("claim id")?;
+
+    let _ = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_002_u64}),
+    )?;
+    let explain = host.invoke_json(
+        "texo.claim.explain",
+        &json!({"claim_id": claim_id, "snapshot": null}),
+    )?;
+    assert_eq!(explain["answer_state"], "supported");
+    assert_eq!(explain["evidence"][0]["claim_id"], claim_id);
+    assert_eq!(
+        explain["evidence"][0]["occurrence"]["excerpt"],
+        "Decision: deploys happen on Friday."
+    );
+    assert_eq!(
+        explain["evidence"][0]["occurrence"]["path"],
+        "docs/decision.md"
+    );
+
+    let triangulated = host.invoke_json(
+        "texo.knowledge.triangulate",
+        &json!({
+            "target": {
+                "kind": "path",
+                "path": "docs/decision.md",
+                "line_start": 1,
+                "line_end": 1
+            },
+            "snapshot": null
+        }),
+    )?;
+    assert_eq!(triangulated["answer_state"], "supported");
+    assert_eq!(triangulated["assertions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(triangulated["evidence"].as_array().map(Vec::len), Some(1));
+    assert_eq!(triangulated["settlement_complete"], true);
+
+    let historical = host.invoke_json(
+        "texo.claim.explain",
+        &json!({"claim_id": claim_id, "snapshot": before_token}),
+    )?;
+    assert_eq!(historical["answer_state"], "unverified");
+    assert_eq!(historical["evidence"].as_array().map(Vec::len), Some(0));
+    assert_eq!(
+        historical["coverage"]["gaps"][0]["kind"],
+        "source_snapshot_unavailable"
+    );
+    Ok(())
+}
+
+#[test]
+fn symbol_and_unsafe_path_targets_fail_honestly() -> TestResult {
+    let (_root, mut host) = initialized_repository()?;
+    let symbol = host.invoke_json(
+        "texo.knowledge.triangulate",
+        &json!({
+            "target": {"kind": "symbol", "symbol": "rust-analyzer cargo_crate::item"},
+            "snapshot": null
+        }),
+    )?;
+    assert_eq!(symbol["answer_state"], "unverified");
+    assert!(symbol["uncertainty"]
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row == "code_index_unavailable")));
+
+    let error = host
+        .invoke_json(
+            "texo.knowledge.triangulate",
+            &json!({
+                "target": {"kind": "path", "path": "../secret", "line_start": null, "line_end": null},
+                "snapshot": null
+            }),
+        )
+        .expect_err("parent traversal must fail closed");
+    assert_eq!(error.code(), "op.input");
+    Ok(())
+}

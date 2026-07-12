@@ -48,6 +48,13 @@ fn assert_tool_catalog(tools: &Value) -> TestResult {
     assert_eq!(tool_list.len(), 5);
     assert_eq!(tool_list[0]["name"], "get_agent_context");
     assert_eq!(tool_list[1]["name"], "search_knowledge");
+    assert_eq!(tool_list[3]["name"], "triangulate");
+    assert_eq!(
+        tool_list[3]["inputSchema"]["properties"]["target"]["oneOf"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
     assert_eq!(tool_list[4]["name"], "get_workspace_status");
     assert!(tool_list
         .iter()
@@ -55,6 +62,40 @@ fn assert_tool_catalog(tools: &Value) -> TestResult {
     assert!(tool_list
         .iter()
         .all(|tool| tool["outputSchema"]["required"].is_array()));
+    Ok(())
+}
+
+fn assert_triangulation_call(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    snapshot_token: &str,
+) -> TestResult {
+    send_json(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "triangulate",
+                "arguments": {
+                    "target": {
+                        "kind": "path",
+                        "path": "docs/old.md",
+                        "line_start": null,
+                        "line_end": null
+                    },
+                    "snapshot_token": snapshot_token
+                }
+            }
+        }),
+    )?;
+    let triangulated = read_json(stdout)?;
+    let structured = &triangulated["result"]["structuredContent"];
+    assert_eq!(structured["schema"], "texo.mcp.triangulation.v2");
+    assert_eq!(structured["data"]["snapshot"]["token"], snapshot_token);
+    assert!(structured["data"]["answer_state"].is_string());
+    assert!(structured["data"]["uncertainty"].is_array());
     Ok(())
 }
 
@@ -153,6 +194,8 @@ fn mcp_stdio_full_session() -> TestResult {
     assert!(explain_error["error"]["data"]["committed"].is_string());
     assert!(explain_error["error"]["data"]["retry_safe"].is_boolean());
     assert!(explain_error["error"]["data"].get("resume").is_some());
+
+    assert_triangulation_call(&mut stdin, &mut stdout, snapshot_token)?;
 
     stdin.write_all(b"{not json\n")?;
     stdin.flush()?;

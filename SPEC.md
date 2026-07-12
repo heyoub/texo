@@ -61,6 +61,10 @@ deterministic blake3 transition id and explicit causes.
   `get_workspace_status`. Successful calls carry output-schema-validated
   structured content, one reusable snapshot token, explicit coverage, and
   bounded next actions.
+- Triangulation returns a closed answer state (`supported`, `contradicted`,
+  `stale`, `unverified`, or `incomparable`), exact bounded evidence when
+  journaled, typed uncertainty, and coverage. Search hits alone are never
+  promoted to evidence.
 - Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
 ## Semantic Pipeline
