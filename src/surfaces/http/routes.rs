@@ -39,9 +39,10 @@ pub struct RouteState {
 /// Returns [`TexoError`] when JSON serialization fails.
 pub fn route(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, TexoError> {
     match (request.method, request.path.as_str()) {
+        (Method::Get, "/api/health") => api_health(state),
         (Method::Get, "/api/host") => api_host(state),
         (Method::Get, "/api/memory") => api_memory(state),
-        (Method::Post, "/api/host" | "/api/memory" | "/api/stream") => {
+        (Method::Post, "/api/health" | "/api/host" | "/api/memory" | "/api/stream") => {
             Ok(method_not_allowed("GET"))
         }
         (Method::Post, "/api/chat") => api_chat(request, state),
@@ -59,6 +60,33 @@ pub fn route(request: &HttpRequest, state: &RouteState) -> Result<HttpResponse, 
                 .push(("Allow".to_string(), "GET, POST".to_string()));
             Ok(response)
         }
+    }
+}
+
+fn api_health(state: &RouteState) -> Result<HttpResponse, TexoError> {
+    let result =
+        open_host(state).and_then(|mut host| host.invoke_json("texo.stats.read", &json!({})));
+    match result {
+        Ok(metrics) => HttpResponse::json(
+            200,
+            &json!({
+                "status": "ok",
+                "version": env!("CARGO_PKG_VERSION"),
+                "workspace_id": state.workspace_id,
+                "frontier": metrics.get("frontier_sequence").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                "chat_enabled": state.chat_enabled,
+            }),
+        )
+        .map_err(TexoError::Json),
+        Err(error) => HttpResponse::json(
+            503,
+            &json!({
+                "status": "degraded",
+                "error": error.to_string(),
+                "code": error.code(),
+            }),
+        )
+        .map_err(TexoError::Json),
     }
 }
 

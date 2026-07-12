@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use batpak::coordinate::Region;
 use batpak::event::{EventKind, EventPayload};
@@ -177,7 +178,9 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 op_env.config.clone(),
             )
         })?;
+        let project_started = Instant::now();
         let mut view = assemble_current_view()?;
+        let mut project_ms = elapsed_ms(project_started);
         let path = resolve_path(&root, &input.path);
         let plan = plan_sources(
             "texo.ingest.run",
@@ -208,6 +211,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let mut source_count = 0_u32;
         let mut claim_count = 0_u32;
         let mut supersede_count = 0_u32;
+        let mut append_ms = 0_u64;
 
         if input.dry_run {
             for source in &plan.sources {
@@ -216,6 +220,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 claim_count = claim_count.saturating_add(planned);
             }
         } else {
+            let append_started = Instant::now();
             for source in &plan.sources {
                 append_json(
                     "texo.ingest.run",
@@ -234,8 +239,11 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     claim_count = claim_count.saturating_add(1);
                 }
             }
+            append_ms = append_ms.saturating_add(elapsed_ms(append_started));
 
+            let project_started = Instant::now();
             view = assemble_current_view()?;
+            project_ms = project_ms.saturating_add(elapsed_ms(project_started));
             let new_claims = plan
                 .sources
                 .iter()
@@ -246,6 +254,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 .as_ref()
                 .is_some_and(|semantics| semantics.enabled)
             {
+                let append_started = Instant::now();
                 for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
                     append_json(
                         "texo.ingest.run",
@@ -255,6 +264,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     )?;
                     supersede_count = supersede_count.saturating_add(1);
                 }
+                append_ms = append_ms.saturating_add(elapsed_ms(append_started));
             }
         }
 
@@ -277,6 +287,19 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             skipped,
             skipped_total,
             skipped_artifact,
+            phase_ms: IngestPhaseMs {
+                discover: plan.discover_ms,
+                extract: plan.extract_ms,
+                append: append_ms,
+                project: project_ms,
+            },
+            events_appended: if input.dry_run {
+                0
+            } else {
+                u64::from(source_count)
+                    .saturating_add(u64::from(claim_count))
+                    .saturating_add(u64::from(supersede_count))
+            },
             receipts: if input.dry_run {
                 Vec::new()
             } else {
@@ -471,6 +494,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.verify.run", || {
         let _input: VerifyRunInput = parse_input("texo.verify.run", input)?;
+        let replay_started = Instant::now();
         for kind in DOMAIN_KINDS {
             cx.event_read_handle()
                 .read_event(format!("evt.{:04x}", kind.as_raw_u16()))
@@ -481,7 +505,7 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .map_err(|error| op_runtime("texo.verify.run", error))?;
 
         let mut errors = Vec::new();
-        let (journal_ok, view) = env::with(|op_env| {
+        let (journal_ok, view, events_replayed) = env::with(|op_env| {
             let chain = op_env.store.verify_chain()?;
             let mut journal_ok = chain.is_intact();
             if !chain.is_intact() {
@@ -490,12 +514,14 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             let scope = scope_for_workspace(&op_env.workspace_id);
             let region = Region::scope(&scope);
             let mut after = None;
+            let mut events_replayed = 0usize;
             loop {
                 let page = op_env.store.query_entries_after(&region, after, 256);
                 if page.is_empty() {
                     break;
                 }
                 for entry in &page {
+                    events_replayed = events_replayed.saturating_add(1);
                     if !DOMAIN_KINDS.contains(&entry.event_kind()) {
                         journal_ok = false;
                         errors.push(format!(
@@ -516,7 +542,7 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             }
             let mut cache = op_env.cache.borrow_mut();
             let view = assemble(&op_env.store, &op_env.workspace_id, &mut cache)?;
-            Ok::<_, TexoError>((journal_ok, view))
+            Ok::<_, TexoError>((journal_ok, view, events_replayed))
         })??;
 
         let projection_ok = view
@@ -537,6 +563,8 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             journal_ok,
             transitions_ok,
             errors,
+            replay_ms: elapsed_ms(replay_started),
+            events_replayed,
         })
     })
 }
@@ -889,6 +917,43 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
+#[syncbat::operation(
+    descriptor = STATS_READ,
+    register = register_stats_read,
+    register_item = stats_read_item,
+    name = "texo.stats.read",
+    effect = Inspect,
+    input_schema = "texo.stats.read.input.v1",
+    output_schema = "texo.stats.read.output.v1",
+    receipt_kind = "receipt.texo.stats.read.v1",
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.stats.read", || {
+        let _input: StatsReadInput = parse_input("texo.stats.read", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.stats.read", error))?;
+        let view = assemble_current_view()?;
+        let (root, config) = env::with(|op_env| (op_env.root.clone(), op_env.config.clone()))?;
+        let store_path = config.store_path_buf(&root);
+        let projection_path = root
+            .join(".texo/cache/workspace-view")
+            .join(format!("{}.bin", view.workspace_id));
+        let context = build_agent_context_from_view(&view, None, true)?;
+        let agent_context_bytes = serde_json::to_vec(&context)?.len();
+        Ok(StatsReadOutput {
+            claims_total: view.claims.len(),
+            events_total: workspace_event_count()?,
+            journal_bytes: journal_file_bytes(&store_path)?,
+            projection_bytes: file_bytes(&projection_path)?,
+            agent_context_bytes: u64::try_from(agent_context_bytes).unwrap_or(u64::MAX),
+            frontier_sequence: view.frontier,
+        })
+    })
+}
+
 const DOMAIN_KINDS: [EventKind; 10] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
@@ -920,6 +985,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         conflict_resolve_item(),
         relate_run_item(),
         host_fingerprint_item(),
+        stats_read_item(),
     ]
 }
 
@@ -943,12 +1009,26 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_conflict_resolve(builder)?;
     register_relate_run(builder)?;
     register_host_fingerprint(builder)?;
+    register_stats_read(builder)?;
     Ok(())
 }
 
 #[derive(Debug, Deserialize)]
 struct WorkspaceInitInput {
     workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StatsReadInput {}
+
+#[derive(Debug, Serialize)]
+struct StatsReadOutput {
+    claims_total: usize,
+    events_total: usize,
+    journal_bytes: u64,
+    projection_bytes: u64,
+    agent_context_bytes: u64,
+    frontier_sequence: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1003,7 +1083,17 @@ struct IngestRunOutput {
     skipped_total: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     skipped_artifact: Option<String>,
+    phase_ms: IngestPhaseMs,
+    events_appended: u64,
     receipts: Vec<ReceiptNote>,
+}
+
+#[derive(Debug, Serialize)]
+struct IngestPhaseMs {
+    discover: u64,
+    extract: u64,
+    append: u64,
+    project: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1055,6 +1145,8 @@ struct VerifyRunOutput {
     journal_ok: bool,
     transitions_ok: bool,
     errors: Vec<String>,
+    replay_ms: u64,
+    events_replayed: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1288,6 +1380,8 @@ pub(crate) struct SourcePlan {
     pub(crate) skipped: Vec<SourceSkipRow>,
     empty: bool,
     succeeded: usize,
+    discover_ms: u64,
+    extract_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1504,10 +1598,12 @@ pub(crate) fn plan_sources(
         .collect::<BTreeSet<_>>();
     let mut batch_hashes = BTreeSet::new();
     let mut planned = Vec::new();
+    let discover_started = Instant::now();
     let discovery = collect_markdown_files(input_path).map_err(|error| TexoError::Source {
         path: input_path.to_string_lossy().to_string(),
         detail: error.to_string(),
     })?;
+    let discover_ms = elapsed_ms(discover_started);
     let empty = discovery.files.is_empty();
     let mut skipped = discovery
         .failures
@@ -1519,6 +1615,7 @@ pub(crate) fn plan_sources(
         })
         .collect::<Vec<_>>();
     let mut succeeded = 0;
+    let extract_started = Instant::now();
     for path in discovery.files {
         let doc = match MarkdownDocument::from_path(&path, root) {
             Ok(doc) => doc,
@@ -1565,7 +1662,13 @@ pub(crate) fn plan_sources(
         skipped,
         empty,
         succeeded,
+        discover_ms,
+        extract_ms: elapsed_ms(extract_started),
     })
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn bounded_source_detail(detail: &str) -> String {
@@ -2661,6 +2764,53 @@ fn conflict_phase_name(phase: u64) -> &'static str {
         3 => "ignored",
         _ => "invalid",
     }
+}
+
+fn workspace_event_count() -> Result<usize, TexoError> {
+    env::with(|op_env| {
+        let region = Region::scope(scope_for_workspace(&op_env.workspace_id));
+        let mut after = None;
+        let mut count = 0usize;
+        loop {
+            let page = op_env.store.query_entries_after(&region, after, 256);
+            if page.is_empty() {
+                break;
+            }
+            count = count.saturating_add(page.len());
+            after = page.last().map(batpak::store::IndexEntry::global_sequence);
+        }
+        count
+    })
+}
+
+fn file_bytes(path: &Path) -> Result<u64, TexoError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn journal_file_bytes(path: &Path) -> Result<u64, TexoError> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_file() {
+        return Ok(
+            if path.extension().and_then(std::ffi::OsStr::to_str) == Some("fbat") {
+                metadata.len()
+            } else {
+                0
+            },
+        );
+    }
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        bytes = bytes.saturating_add(journal_file_bytes(&entry?.path())?);
+    }
+    Ok(bytes)
 }
 
 fn conflict_subject(view: &WorkspaceView, conflict: &ConflictCard) -> String {

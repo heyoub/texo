@@ -230,6 +230,7 @@ pub fn assemble(
     if cache.freshness == ProjectionFreshness::Fresh {
         if let Some(view) = &cache.view {
             cache.counters.warm_view_hits = cache.counters.warm_view_hits.saturating_add(1);
+            trace_assemble(cache);
             return Ok(view.clone());
         }
     }
@@ -308,7 +309,21 @@ pub fn assemble(
     cache.view = Some(view.clone());
     cache.freshness = ProjectionFreshness::Fresh;
     cache.counters.view_rebuilds = cache.counters.view_rebuilds.saturating_add(1);
+    trace_assemble(cache);
     Ok(view)
+}
+
+fn trace_assemble(cache: &WorkspaceCache) {
+    tracing::debug!(
+        frontier = cache.frontier,
+        freshness = ?cache.freshness,
+        assemble_calls = cache.counters.assemble_calls,
+        discovery_entries_paged = cache.counters.discovery_entries_paged,
+        project_calls = cache.counters.project_calls,
+        view_rebuilds = cache.counters.view_rebuilds,
+        warm_view_hits = cache.counters.warm_view_hits,
+        "workspace projection assembled"
+    );
 }
 
 fn anchor_matches(store: &Store<Open>, region: &Region, cache: &WorkspaceCache) -> bool {

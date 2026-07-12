@@ -2,16 +2,20 @@
 Description=texo memory agent (claim-chain memory over Qwen Cloud)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 EnvironmentFile=/opt/texo/env
 Environment=TEXO_AGENT_ROOT=/opt/texo/workspace
-Environment=TEXO_AGENT_ADDR=0.0.0.0:8787
 Environment=TEXO_UI_DIR=/opt/texo/ui/dist
 ExecStart=/opt/texo/bin/texo serve
 Restart=on-failure
 RestartSec=2
+MemoryMax=1G
+MemoryHigh=768M
+NoNewPrivileges=true
 # The journal is the durable state; give it a stable home.
 WorkingDirectory=/opt/texo/workspace
 

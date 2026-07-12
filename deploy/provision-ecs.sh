@@ -17,18 +17,24 @@ IMAGE_ID="${IMAGE_ID:-ubuntu_24_04_x64_20G_alibase_20260615.vhd}"
 KEY_PAIR="${KEY_PAIR:?set KEY_PAIR to an existing ECS key pair name}"
 SG_NAME="${SG_NAME:-texo-agent-sg}"
 INSTANCE_NAME="${INSTANCE_NAME:-texo-agent}"
-AGENT_PORT="${AGENT_PORT:-8787}"
+VPC_NAME="${VPC_NAME:-texo-vpc}"
+VSWITCH_NAME="${VSWITCH_NAME:-texo-vsw}"
+VPC_CIDR="${VPC_CIDR:-172.16.0.0/16}"
+VSWITCH_CIDR="${VSWITCH_CIDR:-172.16.0.0/24}"
+PORT="${PORT:-8787}"
+SSH_INGRESS_CIDR="${SSH_INGRESS_CIDR:?set SSH_INGRESS_CIDR to your public IP in CIDR form}"
+AGENT_INGRESS_CIDR="${AGENT_INGRESS_CIDR:-0.0.0.0/0}"
 
 # The region requires VPC networking (classic instances are gone:
 # OperationDenied.InvalidNetworkType). Create the VPC + vswitch first and
 # scope the security group to the VPC.
 echo "==> vpc + vswitch in ${REGION}/${ZONE}"
-VPC_ID=$(aliyun vpc CreateVpc --RegionId "$REGION" --CidrBlock 172.16.0.0/16 \
-  --VpcName texo-vpc \
+VPC_ID=$(aliyun vpc CreateVpc --RegionId "$REGION" --CidrBlock "$VPC_CIDR" \
+  --VpcName "$VPC_NAME" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["VpcId"])')
 sleep 5
 VSW_ID=$(aliyun vpc CreateVSwitch --RegionId "$REGION" --ZoneId "$ZONE" \
-  --VpcId "$VPC_ID" --CidrBlock 172.16.0.0/24 --VSwitchName texo-vsw \
+  --VpcId "$VPC_ID" --CidrBlock "$VSWITCH_CIDR" --VSwitchName "$VSWITCH_NAME" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["VSwitchId"])')
 echo "    ${VPC_ID} / ${VSW_ID}"
 
@@ -40,12 +46,13 @@ SG_ID=$(aliyun ecs CreateSecurityGroup --RegionId "$REGION" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["SecurityGroupId"])')
 echo "    ${SG_ID}"
 
-echo "==> ingress rules (ssh 22, agent ${AGENT_PORT})"
-for PORT in 22 "$AGENT_PORT"; do
-  aliyun ecs AuthorizeSecurityGroup --RegionId "$REGION" \
-    --SecurityGroupId "$SG_ID" --IpProtocol tcp \
-    --PortRange "${PORT}/${PORT}" --SourceCidrIp 0.0.0.0/0 >/dev/null
-done
+echo "==> ingress rules (ssh 22 from ${SSH_INGRESS_CIDR}, agent ${PORT} from ${AGENT_INGRESS_CIDR})"
+aliyun ecs AuthorizeSecurityGroup --RegionId "$REGION" \
+  --SecurityGroupId "$SG_ID" --IpProtocol tcp \
+  --PortRange "22/22" --SourceCidrIp "$SSH_INGRESS_CIDR" >/dev/null
+aliyun ecs AuthorizeSecurityGroup --RegionId "$REGION" \
+  --SecurityGroupId "$SG_ID" --IpProtocol tcp \
+  --PortRange "${PORT}/${PORT}" --SourceCidrIp "$AGENT_INGRESS_CIDR" >/dev/null
 
 echo "==> ECS instance (${INSTANCE_TYPE}, ${IMAGE_ID})"
 INSTANCE_ID=$(aliyun ecs RunInstances --RegionId "$REGION" --ZoneId "$ZONE" \

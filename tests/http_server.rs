@@ -109,6 +109,12 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
     assert!(host_post.contains("HTTP/1.1 405 Method Not Allowed"));
     assert!(host_post.contains("Allow: GET"));
 
+    let health = request(addr, "GET /api/health HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+    assert!(health.contains("HTTP/1.1 200 OK"));
+    assert!(health.contains("\"status\":\"ok\""));
+    assert!(health.contains("\"workspace_id\":\"demo\""));
+    assert!(health.contains("\"chat_enabled\":false"));
+
     let invalid = request(
         addr,
         "POST /api/chat HTTP/1.1\r\nHost: localhost\r\nContent-Length: 41\r\n\r\n{\"session_id\":\"bad id\",\"message\":\"hello\"}",

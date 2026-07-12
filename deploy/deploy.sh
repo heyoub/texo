@@ -6,6 +6,7 @@ set -euo pipefail
 HOST="${1:?usage: deploy.sh <host-ip> [ssh-user]}"
 SSH_USER="${2:-root}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PORT="${PORT:-8787}"
 
 echo "==> release build"
 cargo build --release --bin texo --manifest-path "$REPO_ROOT/Cargo.toml"
@@ -38,4 +39,4 @@ ssh "${SSH_USER}@${HOST}" 'systemctl daemon-reload && systemctl enable --now tex
 
 echo
 echo "edit /opt/texo/env with the DashScope key, then: systemctl restart texo-agent"
-echo "agent: http://${HOST}:8787"
+echo "agent: http://${HOST}:${PORT}"

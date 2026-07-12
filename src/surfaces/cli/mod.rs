@@ -112,6 +112,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Report deterministic workspace counters and artifact sizes.
+    Stats {
+        #[arg(long)]
+        json: bool,
+    },
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
@@ -361,6 +366,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             } else {
                 ExitCode::SUCCESS
             })
+        }
+        Command::Stats { json: _ } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let output = host.invoke_json("texo.stats.read", &json!({}))?;
+            render::json(&output)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::Host {
             cmd: HostCmd::Fingerprint,
