@@ -24,7 +24,7 @@ syncbat = "0.10.0"
 hostbat = "0.10.0"
 flume = "0.12"
 signal-hook = "0.3"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 rmpv = "1"
 thiserror = "2"

@@ -437,14 +437,14 @@ fn folded_cards_match_store_replay() -> TestResult {
         let replayed = store
             .project::<ClaimCard>(&entity, &Freshness::Consistent)?
             .expect("claim entity must replay");
-        assert_eq!(view.card, replayed, "fold diverged for {entity}");
+        assert_eq!(*view.card, replayed, "fold diverged for {entity}");
     }
     for conflict in &warm.conflicts {
         let entity = format!("conflict:{}", conflict.conflict_id);
         let replayed = store
             .project::<texo::claims::conflict::ConflictCard>(&entity, &Freshness::Consistent)?
             .expect("conflict entity must replay");
-        assert_eq!(conflict, &replayed, "fold diverged for {entity}");
+        assert_eq!(**conflict, replayed, "fold diverged for {entity}");
     }
     Ok(())
 }

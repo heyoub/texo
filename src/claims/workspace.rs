@@ -187,15 +187,19 @@ fn sidecar_path(root: &Path, workspace_id: &str) -> PathBuf {
         .join(format!("{workspace_id}.bin"))
 }
 
-/// Cached card by entity kind.
+/// Cached card by entity kind. Cards are `Arc`-shared with assembled views so
+/// a view rebuild bumps refcounts instead of deep-cloning every text field;
+/// the fold path takes `Arc::make_mut`, so copy-on-write cost is delta-sized.
+/// serde's `rc` feature serializes `Arc<T>` exactly as `T` — sidecar bytes
+/// are unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CachedCard {
     /// Cached claim card.
-    Claim(ClaimCard),
+    Claim(Arc<ClaimCard>),
     /// Cached conflict card.
-    Conflict(ConflictCard),
+    Conflict(Arc<ConflictCard>),
     /// Cached source card.
-    Source(SourceCard),
+    Source(Arc<SourceCard>),
 }
 
 /// Assembled deterministic workspace view.
@@ -210,16 +214,16 @@ pub struct WorkspaceView {
     /// Claim views sorted by claim id.
     pub claims: Vec<ClaimView>,
     /// Conflict cards sorted by conflict id.
-    pub conflicts: Vec<ConflictCard>,
+    pub conflicts: Vec<Arc<ConflictCard>>,
     /// Source cards sorted by source id.
-    pub sources: Vec<SourceCard>,
+    pub sources: Vec<Arc<SourceCard>>,
 }
 
 /// Claim card plus derived relationships.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClaimView {
-    /// Projected claim card.
-    pub card: ClaimCard,
+    /// Projected claim card (shared with the projection cache).
+    pub card: Arc<ClaimCard>,
     /// Derived claim status.
     pub status: ClaimStatus,
     /// Claim ids this claim supersedes, sorted ascending.
@@ -274,9 +278,9 @@ pub fn assemble(
     let mut sources = Vec::new();
     for (_, card) in cache.cards.values() {
         match card {
-            CachedCard::Claim(card) => claims.push(card.clone()),
-            CachedCard::Conflict(card) => conflicts.push(card.clone()),
-            CachedCard::Source(card) => sources.push(card.clone()),
+            CachedCard::Claim(card) => claims.push(Arc::clone(card)),
+            CachedCard::Conflict(card) => conflicts.push(Arc::clone(card)),
+            CachedCard::Source(card) => sources.push(Arc::clone(card)),
         }
     }
     claims.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
@@ -515,9 +519,9 @@ fn fold_event(
         cache.cards.insert(
             entity.to_string(),
             match family {
-                CardFamily::Claim => (0, CachedCard::Claim(ClaimCard::default())),
-                CardFamily::Conflict => (0, CachedCard::Conflict(ConflictCard::default())),
-                CardFamily::Source => (0, CachedCard::Source(SourceCard::default())),
+                CardFamily::Claim => (0, CachedCard::Claim(Arc::new(ClaimCard::default()))),
+                CardFamily::Conflict => (0, CachedCard::Conflict(Arc::new(ConflictCard::default()))),
+                CardFamily::Source => (0, CachedCard::Source(Arc::new(SourceCard::default()))),
             },
         );
     }
@@ -525,9 +529,11 @@ fn fold_event(
         return;
     };
     match (&mut slot.1, family) {
-        (CachedCard::Claim(card), CardFamily::Claim) => card.apply_event(event),
-        (CachedCard::Conflict(card), CardFamily::Conflict) => card.apply_event(event),
-        (CachedCard::Source(card), CardFamily::Source) => card.apply_event(event),
+        (CachedCard::Claim(card), CardFamily::Claim) => Arc::make_mut(card).apply_event(event),
+        (CachedCard::Conflict(card), CardFamily::Conflict) => {
+            Arc::make_mut(card).apply_event(event);
+        }
+        (CachedCard::Source(card), CardFamily::Source) => Arc::make_mut(card).apply_event(event),
         // A prefix can only ever map to one family; a mismatch means the
         // cached slot predates a (nonexistent) entity-family change.
         _ => debug_assert!(false, "cached card family mismatch for {entity}"),
