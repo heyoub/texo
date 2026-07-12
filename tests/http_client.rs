@@ -16,6 +16,14 @@ use texo::surfaces::openai::OpenAiCompatClient;
 enum Step {
     Respond(Vec<u8>),
     Stall(Duration),
+    /// Write `head`, then trickle body bytes forever (until the client hangs
+    /// up or `max_bytes` is reached) — each byte lands within the socket
+    /// timeout, so only a wall-clock deadline can stop the read.
+    Trickle {
+        head: Vec<u8>,
+        interval: Duration,
+        max_bytes: usize,
+    },
 }
 
 fn start_server(steps: Vec<Step>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
@@ -40,6 +48,20 @@ fn start_server(steps: Vec<Step>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) 
                     }
                     Step::Stall(duration) => {
                         std::thread::sleep(duration);
+                    }
+                    Step::Trickle {
+                        head,
+                        interval,
+                        max_bytes,
+                    } => {
+                        stream.write_all(&head).expect("write trickle head");
+                        stream.flush().expect("flush trickle head");
+                        for _ in 0..max_bytes {
+                            std::thread::sleep(interval);
+                            if stream.write_all(b"x").and_then(|()| stream.flush()).is_err() {
+                                break; // client gave up — the desired outcome
+                            }
+                        }
                     }
                 }
             }
@@ -120,4 +142,71 @@ fn head_too_large() {
         .expect_err("large head rejected");
     assert!(matches!(error, HttpClientError::HeadTooLarge));
     handle.join().expect("server joins");
+}
+
+
+#[test]
+fn trickled_content_length_body_respects_deadline() {
+    let (base, _, handle) = start_server(vec![Step::Trickle {
+        head: b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n".to_vec(),
+        interval: Duration::from_millis(40),
+        max_bytes: 2000,
+    }]);
+    let started = Instant::now();
+    let error = request(&get(&format!("{base}/slow")), Duration::from_secs(1))
+        .expect_err("trickled body must not outlive the deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(error, HttpClientError::DeadlineExceeded),
+        "expected DeadlineExceeded, got {error:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "request ran {elapsed:?} against a 1s deadline"
+    );
+    drop(handle); // server thread exits via broken pipe; do not join a trickler
+}
+
+#[test]
+fn trickled_header_line_respects_deadline() {
+    let (base, _, handle) = start_server(vec![Step::Trickle {
+        head: b"HTTP/1.1 200 OK\r\nX-Slow: ".to_vec(),
+        interval: Duration::from_millis(40),
+        max_bytes: 2000,
+    }]);
+    let started = Instant::now();
+    let error = request(&get(&format!("{base}/slow-head")), Duration::from_secs(1))
+        .expect_err("trickled header must not outlive the deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(error, HttpClientError::DeadlineExceeded),
+        "expected DeadlineExceeded, got {error:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "request ran {elapsed:?} against a 1s deadline"
+    );
+    drop(handle);
+}
+
+#[test]
+fn trickled_chunked_body_respects_deadline() {
+    let (base, _, handle) = start_server(vec![Step::Trickle {
+        head: b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFF\r\n".to_vec(),
+        interval: Duration::from_millis(40),
+        max_bytes: 2000,
+    }]);
+    let started = Instant::now();
+    let error = request(&get(&format!("{base}/slow-chunk")), Duration::from_secs(1))
+        .expect_err("trickled chunk must not outlive the deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(error, HttpClientError::DeadlineExceeded),
+        "expected DeadlineExceeded, got {error:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "request ran {elapsed:?} against a 1s deadline"
+    );
+    drop(handle);
 }

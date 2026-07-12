@@ -409,16 +409,68 @@ fn write_request(
     })
 }
 
+/// Read adapter that re-arms the socket timeout and enforces the wall-clock
+/// deadline before EVERY read. `SO_RCVTIMEO` alone cannot bound a trickling
+/// peer: each delivered byte resets the socket timer, so `read_exact`,
+/// `read_until`, and chunk decoding could otherwise run for hours inside one
+/// nominally 120-second request (observed live against a stalled provider).
+struct DeadlineReader<'a> {
+    inner: &'a mut BufReader<Connection>,
+    deadline: &'a Deadline,
+}
+
+impl DeadlineReader<'_> {
+    fn arm(&mut self) -> io::Result<()> {
+        let remaining = self
+            .deadline
+            .remaining()
+            .map_err(|_| io::Error::from(ErrorKind::TimedOut))?;
+        self.inner
+            .get_mut()
+            .set_read_timeout(remaining)
+            .map_err(|_| io::Error::from(ErrorKind::Other))?;
+        Ok(())
+    }
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.arm()?;
+        self.inner.read(buf)
+    }
+}
+
+impl BufRead for DeadlineReader<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.arm()?;
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt);
+    }
+}
+
 fn read_response(
     reader: &mut BufReader<Connection>,
     deadline: &Deadline,
 ) -> Result<HttpResponse, HttpClientError> {
-    let (status, headers) = read_head(reader, deadline)?;
+    let mut reader = DeadlineReader {
+        inner: reader,
+        deadline,
+    };
+    let (status, headers) = read_head(&mut reader)?;
     let body = if (100..200).contains(&status) || matches!(status, 204 | 304) {
         Vec::new()
     } else if header_contains(&headers, "transfer-encoding", "chunked") {
-        reader.get_mut().set_read_timeout(deadline.remaining()?)?;
-        decode_chunked(reader, BODY_CAP)?
+        decode_chunked(&mut reader, BODY_CAP).map_err(|error| {
+            if let HttpClientError::Io { source, .. } = &error {
+                if is_timeout_error(source) {
+                    return HttpClientError::DeadlineExceeded;
+                }
+            }
+            error
+        })?
     } else if let Some(length) = header_value(&headers, "content-length") {
         let length =
             length
@@ -431,7 +483,6 @@ fn read_response(
             return Err(HttpClientError::BodyTooLarge);
         }
         let mut body = vec![0_u8; length];
-        reader.get_mut().set_read_timeout(deadline.remaining()?)?;
         reader.read_exact(&mut body).map_err(|source| {
             if is_timeout_error(&source) {
                 HttpClientError::DeadlineExceeded
@@ -448,7 +499,7 @@ fn read_response(
         })?;
         body
     } else {
-        read_to_eof(reader, deadline)?
+        read_to_eof(&mut reader)?
     };
     Ok(HttpResponse {
         status,
@@ -458,8 +509,7 @@ fn read_response(
 }
 
 fn read_head(
-    reader: &mut BufReader<Connection>,
-    deadline: &Deadline,
+    reader: &mut DeadlineReader<'_>,
 ) -> Result<(u16, Vec<(String, String)>), HttpClientError> {
     let mut head = Vec::new();
     loop {
@@ -467,7 +517,6 @@ fn read_head(
             return Err(HttpClientError::HeadTooLarge);
         }
         let mut line = Vec::new();
-        reader.get_mut().set_read_timeout(deadline.remaining()?)?;
         let read = reader.read_until(b'\n', &mut line).map_err(|source| {
             if is_timeout_error(&source) {
                 HttpClientError::DeadlineExceeded
@@ -479,7 +528,7 @@ fn read_head(
             }
         })?;
         if read == 0 {
-            if deadline.remaining().is_err() {
+            if reader.deadline.remaining().is_err() {
                 return Err(HttpClientError::DeadlineExceeded);
             }
             return Err(HttpClientError::MalformedResponse {
@@ -542,14 +591,10 @@ fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), HttpClientErr
     Ok((status, headers))
 }
 
-fn read_to_eof(
-    reader: &mut BufReader<Connection>,
-    deadline: &Deadline,
-) -> Result<Vec<u8>, HttpClientError> {
+fn read_to_eof(reader: &mut DeadlineReader<'_>) -> Result<Vec<u8>, HttpClientError> {
     let mut body = Vec::new();
     let mut buffer = [0_u8; 8192];
     loop {
-        reader.get_mut().set_read_timeout(deadline.remaining()?)?;
         let read = reader.read(&mut buffer).map_err(|source| {
             if is_timeout_error(&source) {
                 HttpClientError::DeadlineExceeded
