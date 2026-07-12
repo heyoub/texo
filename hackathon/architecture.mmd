@@ -1,0 +1,37 @@
+%% Texo memory-agent architecture (render: mmdc -i architecture.mmd -o architecture.svg)
+flowchart LR
+    subgraph sources["Source material"]
+        MD["Markdown docs\nsession transcripts"]
+    end
+
+    subgraph qwen["Qwen Cloud (DashScope compatible mode)"]
+        QP["qwen3.7-max\npropose"]
+        QR["qwen3.7-max\nrelate judge"]
+        QE["text-embedding-v4\nembed"]
+        QC["qwen3.7-max\nchat"]
+    end
+
+    subgraph texo["Texo agent (Alibaba Cloud ECS, systemd)"]
+        GW["AI gateway\nprovider config, roles, limits"]
+        EX["extract\nsegment → propose → faithfulness gate"]
+        REL["relate\ncluster → judge → settle"]
+        subgraph journal["BatPak journal (source truth)"]
+            EV["claims · supersessions · conflicts\nrelation settlement · receipts"]
+        end
+        PROJ["incremental projection\ncurrent memory, staleness, conflicts"]
+        SURF["surfaces\nCLI · HTTP+SSE · MCP"]
+    end
+
+    subgraph agent["Agent recall"]
+        CTX["compiled context\ncurrent claims only + provenance"]
+    end
+
+    MD --> EX
+    EX -- proposals --> GW
+    GW <--> QP & QR & QE & QC
+    EX -- "source-backed claims" --> EV
+    REL -- "supersede / conflict\n(receipted, resumable)" --> EV
+    EV -- "deterministic replay" --> PROJ
+    PROJ --> SURF
+    SURF --> CTX
+    CTX -- "chat with memory" --> GW
