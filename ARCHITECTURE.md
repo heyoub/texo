@@ -48,9 +48,10 @@ frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 ## Operation Catalog
 
 The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 21 operations:
+contains 22 operations:
 
 `texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
+`texo.knowledge.index`,
 `texo.claims.list`, `texo.claims.search`,
 `texo.claim.explain`, `texo.claim.supersede`, `texo.staleness.check`,
 `texo.context.agent`, `texo.compile.run`, `texo.conflicts.list`,

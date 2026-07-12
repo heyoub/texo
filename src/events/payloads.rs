@@ -8,6 +8,10 @@ use crate::events::ids::{ClaimId, WorkspaceId};
 use crate::events::machines::{
     transition_id, TransitionCauseV1, TransitionRecordV1, CLAIM_MACHINE, CONFLICT_MACHINE,
 };
+use crate::knowledge::{
+    CodeIndexFormat, CodeIndexId, EvidenceLinkMethod, EvidenceOccurrence, EvidenceOccurrenceId,
+    EvidenceStance, GitObjectId, KnowledgeCoverage, RepositoryId, SourceSnapshotId,
+};
 use crate::relate::settlement::{RelationFailureClass, SettledRelation};
 
 /// A source document observation.
@@ -220,6 +224,84 @@ pub struct RelationDeferredV1 {
     pub observed_at_ms: u64,
 }
 
+/// One frozen Git commit plus index/worktree overlay observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 11, version = 1)]
+pub struct SourceSnapshotRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Stable local repository identity.
+    pub repository_id: RepositoryId,
+    /// Content-addressed snapshot identity.
+    pub snapshot_id: SourceSnapshotId,
+    /// Commit resolved once at capture start.
+    pub base_commit: GitObjectId,
+    /// Tree referenced by the base commit.
+    pub base_tree: GitObjectId,
+    /// Digest of the exact Git index bytes.
+    pub index_digest_hex: String,
+    /// Digest of the sorted frozen worktree overlay.
+    pub overlay_digest_hex: String,
+    /// Whether the frozen overlay differs from the base tree.
+    pub dirty: bool,
+    /// Bounded capture coverage and omissions.
+    pub coverage: KnowledgeCoverage,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// One exact bounded occurrence of source evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 12, version = 1)]
+pub struct EvidenceOccurrenceRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Exact occurrence and analyzer provenance.
+    pub occurrence: EvidenceOccurrence,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// Durable link from an assertion to exact evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 13, version = 1)]
+pub struct ClaimEvidenceLinkedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Existing semantic claim identity.
+    pub claim_id: ClaimId,
+    /// Exact evidence occurrence identity.
+    pub occurrence_id: EvidenceOccurrenceId,
+    /// How the evidence bears on the claim.
+    pub stance: EvidenceStance,
+    /// Mechanism whose result policy accepted.
+    pub method: EvidenceLinkMethod,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// Registration of one disposable, content-addressed code index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 14, version = 1)]
+pub struct CodeIndexRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Frozen source snapshot indexed.
+    pub snapshot_id: SourceSnapshotId,
+    /// Content-addressed code-index identity.
+    pub index_id: CodeIndexId,
+    /// Artifact encoding.
+    pub format: CodeIndexFormat,
+    /// Analyzer implementation and version.
+    pub analyzer_fingerprint: String,
+    /// BLAKE3 digest of the disposable artifact bytes.
+    pub artifact_digest_hex: String,
+    /// Bounded index coverage and omissions.
+    pub coverage: KnowledgeCoverage,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
 struct SourceObservedV1ToV2;
 struct ClaimRecordedV1ToV2;
 struct ClaimSupersededV1ToV2;
@@ -378,6 +460,10 @@ mod tests {
 
     use super::*;
     use crate::events::machines::{transition_record, CLAIM_MACHINE, CONFLICT_MACHINE};
+    use crate::knowledge::{
+        AnalysisQuality, ByteRange, CoverageGap, CoverageGapKind, EvidenceSourceKind,
+        GitObjectFormat, LineRange,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -537,6 +623,70 @@ mod tests {
             failure_class: RelationFailureClass::Deadline,
             attempts: 5,
             observed_at_ms: 15,
+        })
+    }
+
+    #[test]
+    fn knowledge_payloads_round_trip() -> TestResult {
+        let workspace_id = WorkspaceId::new("demo")?;
+        let snapshot_id = SourceSnapshotId::derive("snapshot");
+        let occurrence_id = EvidenceOccurrenceId::derive("occurrence");
+        let coverage = KnowledgeCoverage {
+            analysis_quality: AnalysisQuality::Syntactic,
+            sources_examined: 1,
+            occurrences: 1,
+            truncated: false,
+            gaps: vec![CoverageGap {
+                path: Some("vendor".to_string()),
+                kind: CoverageGapKind::Gitlink,
+            }],
+        };
+        assert_round_trip(&SourceSnapshotRecordedV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: RepositoryId::derive("repository"),
+            snapshot_id: snapshot_id.clone(),
+            base_commit: GitObjectId::new(GitObjectFormat::Sha1, "a".repeat(40))?,
+            base_tree: GitObjectId::new(GitObjectFormat::Sha1, "b".repeat(40))?,
+            index_digest_hex: "c".repeat(64),
+            overlay_digest_hex: "d".repeat(64),
+            dirty: true,
+            coverage: coverage.clone(),
+            observed_at_ms: 16,
+        })?;
+        assert_round_trip(&EvidenceOccurrenceRecordedV1 {
+            workspace_id: workspace_id.clone(),
+            occurrence: EvidenceOccurrence {
+                occurrence_id: occurrence_id.clone(),
+                snapshot_id: snapshot_id.clone(),
+                source_kind: EvidenceSourceKind::WorktreeOverlay,
+                path: "docs/a.md".to_string(),
+                byte_range: ByteRange::new(0, 5)?,
+                line_range: LineRange::new(1, 1)?,
+                git_blob: None,
+                source_digest_hex: "e".repeat(64),
+                excerpt: "claim".to_string(),
+                analyzer_fingerprint: "markdown:heuristic:v1".to_string(),
+                analysis_quality: AnalysisQuality::Syntactic,
+            },
+            observed_at_ms: 17,
+        })?;
+        assert_round_trip(&ClaimEvidenceLinkedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from("claim_aaaaaaaaaaaa")?,
+            occurrence_id,
+            stance: EvidenceStance::Supports,
+            method: EvidenceLinkMethod::Deterministic,
+            observed_at_ms: 18,
+        })?;
+        assert_round_trip(&CodeIndexRecordedV1 {
+            workspace_id,
+            snapshot_id,
+            index_id: CodeIndexId::derive("index"),
+            format: CodeIndexFormat::Syntax,
+            analyzer_fingerprint: "tree-sitter-rust:1".to_string(),
+            artifact_digest_hex: "f".repeat(64),
+            coverage,
+            observed_at_ms: 19,
         })
     }
 }

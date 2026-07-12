@@ -35,6 +35,14 @@ pub enum KnowledgeContractError {
         /// Exclusive range end.
         end: u64,
     },
+    /// A line range was zero-based or reversed.
+    #[error("line range must be one-based and ordered; received {start}..={end}")]
+    InvalidLineRange {
+        /// Inclusive first line.
+        start: u32,
+        /// Inclusive last line.
+        end: u32,
+    },
     /// An evidence excerpt exceeded its durable bound.
     #[error("evidence excerpt is {actual} bytes; maximum is {maximum}")]
     ExcerptTooLarge {
@@ -316,6 +324,29 @@ pub struct ByteRange {
     pub end: u64,
 }
 
+/// Inclusive one-based source line range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LineRange {
+    /// Inclusive first line.
+    pub start: u32,
+    /// Inclusive last line.
+    pub end: u32,
+}
+
+impl LineRange {
+    /// Construct a non-reversed, one-based line range.
+    ///
+    /// # Errors
+    /// Returns a range error when either line is zero or `start > end`.
+    pub fn new(start: u32, end: u32) -> Result<Self, KnowledgeContractError> {
+        if start == 0 || end == 0 || start > end {
+            return Err(KnowledgeContractError::InvalidLineRange { start, end });
+        }
+        Ok(Self { start, end })
+    }
+}
+
 impl ByteRange {
     /// Construct a non-reversed range.
     ///
@@ -393,6 +424,40 @@ pub enum EvidenceSourceKind {
     Lexical,
 }
 
+/// How one evidence occurrence bears on a semantic assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceStance {
+    /// Evidence directly supports the assertion.
+    Supports,
+    /// Evidence contradicts the assertion.
+    Contradicts,
+    /// Evidence mentions the subject without deciding the assertion.
+    Mentions,
+}
+
+/// Mechanism that produced an evidence-to-claim link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceLinkMethod {
+    /// Exact source identity and span match.
+    Deterministic,
+    /// Cached model proposal accepted by deterministic policy.
+    SemanticPolicy,
+}
+
+/// Durable code-index artifact format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeIndexFormat {
+    /// SCIP Protocol Buffer index.
+    Scip,
+    /// Texo's bounded syntactic index.
+    Syntax,
+    /// Texo's bounded lexical index.
+    Lexical,
+}
+
 /// Closed explanation for a coverage gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -407,6 +472,8 @@ pub enum CoverageGapKind {
     MissingObject,
     /// Entry is a submodule gitlink.
     Gitlink,
+    /// Entry is a symbolic link; the target was recorded but never followed.
+    Symlink,
     /// Blob is a Git LFS pointer whose target was not read.
     LfsPointer,
     /// Source encoding is unsupported.
@@ -461,6 +528,8 @@ pub struct EvidenceOccurrence {
     pub path: String,
     /// Exact byte range in the captured source.
     pub byte_range: ByteRange,
+    /// Exact one-based line range.
+    pub line_range: LineRange,
     /// Optional committed blob identity.
     pub git_blob: Option<GitObjectId>,
     /// Digest of the exact complete source bytes.
@@ -569,6 +638,7 @@ mod tests {
             source_kind: EvidenceSourceKind::Markdown,
             path: "docs/a.md".to_string(),
             byte_range: ByteRange::new(0, 3).expect("range"),
+            line_range: LineRange::new(1, 1).expect("line range"),
             git_blob: None,
             source_digest_hex: "d".repeat(64),
             excerpt: "abc".to_string(),

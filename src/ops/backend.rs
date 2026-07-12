@@ -1,14 +1,15 @@
 //! Texo syncbat effect backend.
 
 use batpak::event::{EventKind, EventPayload};
-use batpak::id::{EntityIdType, IdempotencyKey};
+use batpak::id::{CausationId, CorrelationId, EntityIdType, IdempotencyKey};
 use batpak::store::{AppendOptions, AppendPositionHint, AppendReceipt};
 use syncbat::{EffectBackend, EffectError};
 
 use crate::error::TexoError;
 use crate::events::coordinate::{
-    coordinate_for_claim, coordinate_for_conflict, coordinate_for_onboarding_projection,
-    coordinate_for_relation_pair, coordinate_for_session, coordinate_for_source,
+    coordinate_for_claim, coordinate_for_code_index, coordinate_for_conflict,
+    coordinate_for_evidence, coordinate_for_onboarding_projection, coordinate_for_relation_pair,
+    coordinate_for_session, coordinate_for_source, coordinate_for_source_snapshot,
     coordinate_for_workspace_meta, entity_for_session, scope_for_workspace, session_lane,
 };
 use crate::events::ids::relation_pair_id;
@@ -16,8 +17,10 @@ use crate::events::machines::{
     ignore_conflict, open_conflict, record_claim, resolve_conflict, supersede_claim,
 };
 use crate::events::payloads::{
-    ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, OnboardingCompiledV2,
-    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
+    ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
+    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2,
+    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2,
+    SourceSnapshotRecordedV1, WorkspaceInitializedV2,
 };
 use crate::ops::env::{self, OpEnv, ReceiptNote};
 
@@ -206,6 +209,89 @@ fn append_domain_event(
             coordinate_for_relation_pair(payload.workspace_id.as_str(), pair_id.as_str())?;
         let receipt = op_env.store.append_typed(&coordinate, &payload)?;
         verify_and_note(op_env, kind, &receipt)
+    } else if kind == <SourceSnapshotRecordedV1 as EventPayload>::KIND {
+        let payload = decode::<SourceSnapshotRecordedV1>(payload_bytes)?;
+        let coordinate = coordinate_for_source_snapshot(
+            payload.workspace_id.as_str(),
+            payload.snapshot_id.as_str(),
+        )?;
+        let key = IdempotencyKey::for_operation(
+            "texo.source.snapshot.recorded.v1",
+            &[payload.workspace_id.as_str(), payload.snapshot_id.as_str()],
+        );
+        let receipt = op_env.store.append_typed_with_options(
+            &coordinate,
+            &payload,
+            AppendOptions::new().with_idempotency(key),
+        )?;
+        verify_and_note(op_env, kind, &receipt)
+    } else if kind == <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND {
+        let payload = decode::<EvidenceOccurrenceRecordedV1>(payload_bytes)?;
+        payload
+            .occurrence
+            .validate()
+            .map_err(|error| TexoError::OpInput {
+                op: "texo.knowledge.index".to_string(),
+                detail: error.to_string(),
+            })?;
+        let coordinate = coordinate_for_evidence(
+            payload.workspace_id.as_str(),
+            payload.occurrence.occurrence_id.as_str(),
+        )?;
+        let key = IdempotencyKey::for_operation(
+            "texo.evidence.occurrence.recorded.v1",
+            &[
+                payload.workspace_id.as_str(),
+                payload.occurrence.occurrence_id.as_str(),
+            ],
+        );
+        let options = knowledge_append_options(
+            op_env,
+            key,
+            <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+        );
+        let receipt = op_env
+            .store
+            .append_typed_with_options(&coordinate, &payload, options)?;
+        verify_and_note(op_env, kind, &receipt)
+    } else if kind == <ClaimEvidenceLinkedV1 as EventPayload>::KIND {
+        let payload = decode::<ClaimEvidenceLinkedV1>(payload_bytes)?;
+        let coordinate =
+            coordinate_for_claim(payload.workspace_id.as_str(), payload.claim_id.as_str())?;
+        let key = IdempotencyKey::for_operation(
+            "texo.claim.evidence.linked.v1",
+            &[
+                payload.workspace_id.as_str(),
+                payload.claim_id.as_str(),
+                payload.occurrence_id.as_str(),
+            ],
+        );
+        let options = knowledge_append_options(
+            op_env,
+            key,
+            <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+        );
+        let receipt = op_env
+            .store
+            .append_typed_with_options(&coordinate, &payload, options)?;
+        verify_and_note(op_env, kind, &receipt)
+    } else if kind == <CodeIndexRecordedV1 as EventPayload>::KIND {
+        let payload = decode::<CodeIndexRecordedV1>(payload_bytes)?;
+        let coordinate =
+            coordinate_for_code_index(payload.workspace_id.as_str(), payload.index_id.as_str())?;
+        let key = IdempotencyKey::for_operation(
+            "texo.code.index.recorded.v1",
+            &[payload.workspace_id.as_str(), payload.index_id.as_str()],
+        );
+        let options = knowledge_append_options(
+            op_env,
+            key,
+            <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+        );
+        let receipt = op_env
+            .store
+            .append_typed_with_options(&coordinate, &payload, options)?;
+        verify_and_note(op_env, kind, &receipt)
     } else if kind == <SessionTurnV1 as EventPayload>::KIND {
         let payload = decode::<SessionTurnV1>(payload_bytes)?;
         let coordinate = coordinate_for_session(&payload.workspace_id, &payload.session_id)?;
@@ -248,6 +334,33 @@ fn append_domain_event(
             denied: false,
         })
     }
+}
+
+fn knowledge_append_options(
+    op_env: &OpEnv,
+    key: IdempotencyKey,
+    cause_kind: EventKind,
+) -> AppendOptions {
+    let receipts = op_env.receipts.borrow();
+    let root = receipts
+        .iter()
+        .find(|receipt| {
+            receipt.kind_bits == <SourceSnapshotRecordedV1 as EventPayload>::KIND.as_raw_u16()
+        })
+        .and_then(|receipt| u128::from_str_radix(&receipt.event_id_hex, 16).ok());
+    let cause = receipts
+        .iter()
+        .rev()
+        .find(|receipt| receipt.kind_bits == cause_kind.as_raw_u16())
+        .and_then(|receipt| u128::from_str_radix(&receipt.event_id_hex, 16).ok());
+    let mut options = AppendOptions::new().with_idempotency(key);
+    if let Some(root) = root {
+        options = options.with_correlation(CorrelationId::from(root));
+    }
+    if let Some(cause) = cause {
+        options = options.with_causation(CausationId::from(cause));
+    }
+    options
 }
 
 fn decode<T>(payload_bytes: &[u8]) -> Result<T, TexoError>

@@ -87,6 +87,10 @@ by accepting a claim, path, span, or code symbol target.
 ### Git and code-intelligence rules
 
 - Use `gix` with a minimal feature set and reject untrusted repository config.
+- Pin `gix` 0.80 for this BatPak 0.10 line: newer `gix-odb` releases require a
+  `tempfile` range disjoint from BatPak's frozen family dependency. This is a
+  dependency-family compatibility choice, not a second Git implementation or
+  a relaxed durability boundary.
 - Read committed content as raw object-database blobs. Working-tree filters do
   not participate in committed identity.
 - Represent Git SHA-1 and SHA-256 object IDs explicitly.
@@ -140,4 +144,3 @@ deterministic legacy occurrence projection; old stores require no rewrite.
   propagation.
 - Old-store gauntlet, backup/verify, full repository gates, and an end-to-end
   committed-plus-dirty-worktree demonstration.
-

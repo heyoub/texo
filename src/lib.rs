@@ -14,6 +14,8 @@ pub mod error;
 pub mod lexicon;
 /// Typed configuration and resolution for every model role.
 pub mod gateway;
+/// Deterministic Git commit and worktree source capture.
+pub mod git_source;
 /// Fixed read-only agent hook contracts.
 pub mod hooks;
 /// Idempotent agent-appliance installation.

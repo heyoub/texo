@@ -31,15 +31,20 @@ use crate::events::machines::{
     CONFLICT_MACHINE,
 };
 use crate::events::payloads::{
-    ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, OnboardingCompiledV2,
-    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
+    ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2,
+    ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2, RelationDeferredV1,
+    RelationJudgedV1, SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1,
+    WorkspaceInitializedV2,
 };
 use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
+use crate::git_source::{capture as capture_git, CaptureLimits, CapturedLayer, CapturedSource};
 use crate::knowledge::{
-    AnalysisQuality, CoverageGap, CoverageGapKind, KnowledgeCoverage, SnapshotDescriptor,
-    SnapshotRead, SnapshotToken,
+    AnalysisQuality, ByteRange, CoverageGap, CoverageGapKind, EvidenceLinkMethod,
+    EvidenceOccurrence, EvidenceOccurrenceId, EvidenceSourceKind, EvidenceStance,
+    KnowledgeCoverage, LineRange, RepositoryId, SnapshotDescriptor, SnapshotRead, SnapshotToken,
+    MAX_EVIDENCE_EXCERPT_BYTES,
 };
 use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
@@ -556,7 +561,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.verify.run.input.v2",
     output_schema = "texo.verify.run.output.v2",
     receipt_kind = "receipt.texo.verify.run.v2",
-    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a"],
+    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -994,6 +999,109 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 }
 
 #[syncbat::operation(
+    descriptor = KNOWLEDGE_INDEX,
+    register = register_knowledge_index,
+    register_item = knowledge_index_item,
+    name = "texo.knowledge.index",
+    effect = Persist,
+    input_schema = "texo.knowledge.index.input.v1",
+    output_schema = "texo.knowledge.index.output.v1",
+    receipt_kind = "receipt.texo.knowledge.index.v1",
+    appends_events = ["evt.e00b", "evt.e00c", "evt.e00d"],
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.index", || {
+        let input: KnowledgeIndexInput = parse_input("texo.knowledge.index", input)?;
+        let limits = input.validated_limits()?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.index", error))?;
+        let view = assemble_current_view()?;
+        let (root, workspace_id) =
+            env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
+        let workspace = WorkspaceId::new(workspace_id.clone())?;
+        let repository_id = latest_source_snapshot(Some(view.frontier))?.map_or_else(
+            || {
+                let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+                RepositoryId::derive(&format!(
+                    "texo.repository.v1\u{1f}{workspace_id}\u{1f}{}",
+                    canonical.display()
+                ))
+            },
+            |snapshot| snapshot.repository_id,
+        );
+        let mut capture = capture_git(&root, repository_id, limits)?;
+        if latest_source_snapshot(Some(view.frontier))?
+            .is_some_and(|existing| existing.snapshot_id == capture.snapshot_id)
+        {
+            return Ok(KnowledgeIndexOutput {
+                workspace_id,
+                snapshot_id: capture.snapshot_id,
+                base_commit: capture.base_commit,
+                dirty: capture.dirty,
+                sources_captured: capture.sources.len(),
+                evidence_recorded: 0,
+                claims_linked: 0,
+                already_indexed: true,
+                coverage: capture.coverage,
+                receipts: Vec::new(),
+            });
+        }
+
+        let planned = plan_claim_evidence(
+            &view,
+            &capture.sources,
+            &capture.snapshot_id,
+            input.observed_at_ms,
+        )?;
+        for gap in planned.gaps {
+            if capture.coverage.gaps.len() < 256 {
+                capture.coverage.gaps.push(gap);
+            } else {
+                capture.coverage.truncated = true;
+            }
+        }
+        if !planned.rows.is_empty() {
+            capture.coverage.analysis_quality = AnalysisQuality::Syntactic;
+        }
+        capture.coverage.occurrences = u64::try_from(planned.rows.len()).unwrap_or(u64::MAX);
+        let snapshot = SourceSnapshotRecordedV1 {
+            workspace_id: workspace.clone(),
+            repository_id: capture.repository_id,
+            snapshot_id: capture.snapshot_id.clone(),
+            base_commit: capture.base_commit.clone(),
+            base_tree: capture.base_tree,
+            index_digest_hex: capture.index_digest_hex,
+            overlay_digest_hex: capture.overlay_digest_hex,
+            dirty: capture.dirty,
+            coverage: capture.coverage.clone(),
+            observed_at_ms: input.observed_at_ms,
+        };
+        let receipts = append_knowledge_plan(
+            cx,
+            &workspace,
+            &snapshot,
+            &planned.rows,
+            input.observed_at_ms,
+        )?;
+        Ok(KnowledgeIndexOutput {
+            workspace_id,
+            snapshot_id: capture.snapshot_id,
+            base_commit: capture.base_commit,
+            dirty: capture.dirty,
+            sources_captured: capture.sources.len(),
+            evidence_recorded: planned.rows.len(),
+            claims_linked: planned.rows.len(),
+            already_indexed: false,
+            coverage: capture.coverage,
+            receipts,
+        })
+    })
+}
+
+#[syncbat::operation(
     descriptor = STATS_READ,
     register = register_stats_read,
     register_item = stats_read_item,
@@ -1066,7 +1174,7 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
-const DOMAIN_KINDS: [EventKind; 10] = [
+const DOMAIN_KINDS: [EventKind; 14] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
     <ClaimSupersededV2 as EventPayload>::KIND,
@@ -1077,6 +1185,10 @@ const DOMAIN_KINDS: [EventKind; 10] = [
     <SessionTurnV1 as EventPayload>::KIND,
     <RelationJudgedV1 as EventPayload>::KIND,
     <RelationDeferredV1 as EventPayload>::KIND,
+    <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+    <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+    <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
+    <crate::events::payloads::CodeIndexRecordedV1 as EventPayload>::KIND,
 ];
 
 /// Return the operation registration items.
@@ -1099,6 +1211,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         relate_run_item(),
         host_fingerprint_item(),
         stats_read_item(),
+        knowledge_index_item(),
         workspace_status_item(),
     ]
 }
@@ -1125,6 +1238,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_relate_run(builder)?;
     register_host_fingerprint(builder)?;
     register_stats_read(builder)?;
+    register_knowledge_index(builder)?;
     register_workspace_status(builder)?;
     Ok(())
 }
@@ -1132,6 +1246,55 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
 #[derive(Debug, Deserialize)]
 struct WorkspaceInitInput {
     workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct KnowledgeIndexInput {
+    observed_at_ms: u64,
+    #[serde(default)]
+    max_files: Option<usize>,
+    #[serde(default)]
+    max_file_bytes: Option<u64>,
+    #[serde(default)]
+    max_total_bytes: Option<u64>,
+}
+
+impl KnowledgeIndexInput {
+    fn validated_limits(&self) -> Result<CaptureLimits, TexoError> {
+        let defaults = CaptureLimits::default();
+        let limits = CaptureLimits {
+            max_files: self.max_files.unwrap_or(defaults.max_files),
+            max_file_bytes: self.max_file_bytes.unwrap_or(defaults.max_file_bytes),
+            max_total_bytes: self.max_total_bytes.unwrap_or(defaults.max_total_bytes),
+        };
+        if limits.max_files == 0
+            || limits.max_files > 100_000
+            || limits.max_file_bytes == 0
+            || limits.max_file_bytes > 16 * 1024 * 1024
+            || limits.max_total_bytes == 0
+            || limits.max_total_bytes > 512 * 1024 * 1024
+        {
+            return Err(TexoError::OpInput {
+                op: "texo.knowledge.index".to_string(),
+                detail: "capture limits must be non-zero and at most 100000 files, 16 MiB per file, and 512 MiB total".to_string(),
+            });
+        }
+        Ok(limits)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeIndexOutput {
+    workspace_id: String,
+    snapshot_id: crate::knowledge::SourceSnapshotId,
+    base_commit: crate::knowledge::GitObjectId,
+    dirty: bool,
+    sources_captured: usize,
+    evidence_recorded: usize,
+    claims_linked: usize,
+    already_indexed: bool,
+    coverage: KnowledgeCoverage,
+    receipts: Vec<ReceiptNote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1664,10 +1827,13 @@ fn assemble_snapshot_view(
                 detail: error.to_string(),
             }
         })?;
-    if descriptor.source_snapshot_id.is_some() {
+    let available_source =
+        latest_source_snapshot(Some(descriptor.frontier))?.map(|snapshot| snapshot.snapshot_id);
+    if available_source != descriptor.source_snapshot_id {
         return Err(TexoError::Snapshot {
             kind: SnapshotFailureKind::SourceUnavailable,
-            detail: "the token names a source snapshot not indexed in this store".to_string(),
+            detail: "the token's source snapshot is unavailable at its journal frontier"
+                .to_string(),
         });
     }
     validate_snapshot_anchor(&store, &workspace, &descriptor)?;
@@ -1685,11 +1851,13 @@ fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
     let anchor_event_id_hex = env::with(|op_env| {
         anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)
     })??;
+    let source_snapshot_id =
+        latest_source_snapshot(Some(view.frontier))?.map(|snapshot| snapshot.snapshot_id);
     Ok(SnapshotRead::new(SnapshotDescriptor {
         workspace_id,
         frontier: view.frontier,
         anchor_event_id_hex,
-        source_snapshot_id: None,
+        source_snapshot_id,
     }))
 }
 
@@ -1747,21 +1915,222 @@ fn claim_timeline_through(entity: &str, frontier: u64) -> Result<ClaimTimeline, 
 }
 
 fn coverage_for_view(view: &WorkspaceView, snapshot: &SnapshotRead) -> KnowledgeCoverage {
-    let gaps = if snapshot.descriptor.source_snapshot_id.is_none() {
-        vec![CoverageGap {
-            path: None,
-            kind: CoverageGapKind::SourceSnapshotUnavailable,
-        }]
-    } else {
-        Vec::new()
-    };
+    if let Ok(Some(recorded)) = latest_source_snapshot(Some(view.frontier)) {
+        if Some(&recorded.snapshot_id) == snapshot.descriptor.source_snapshot_id.as_ref() {
+            return recorded.coverage;
+        }
+    }
     KnowledgeCoverage {
         analysis_quality: AnalysisQuality::Unavailable,
         sources_examined: u64::try_from(view.sources.len()).unwrap_or(u64::MAX),
         occurrences: u64::try_from(view.claims.len()).unwrap_or(u64::MAX),
         truncated: false,
-        gaps,
+        gaps: vec![CoverageGap {
+            path: None,
+            kind: CoverageGapKind::SourceSnapshotUnavailable,
+        }],
     }
+}
+
+fn latest_source_snapshot(
+    frontier: Option<u64>,
+) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
+    env::with(|op_env| {
+        let region = Region::scope(scope_for_workspace(&op_env.workspace_id));
+        let mut after = None;
+        let mut latest = None;
+        'pages: loop {
+            let page = op_env.store.query_entries_after(&region, after, 256);
+            if page.is_empty() {
+                break;
+            }
+            for entry in &page {
+                if frontier.is_some_and(|frontier| entry.global_sequence() > frontier) {
+                    break 'pages;
+                }
+                if entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND {
+                    let raw = op_env.store.read_raw(entry.event_id())?;
+                    latest = Some(
+                        batpak::encoding::from_bytes::<SourceSnapshotRecordedV1>(
+                            &raw.event.payload,
+                        )
+                        .map_err(|error| TexoError::Decode {
+                            entity: entry.coord().entity().to_string(),
+                            detail: error.to_string(),
+                        })?,
+                    );
+                }
+            }
+            after = page.last().map(batpak::store::IndexEntry::global_sequence);
+        }
+        Ok::<_, TexoError>(latest)
+    })?
+}
+
+struct EvidencePlan {
+    rows: Vec<(EvidenceOccurrence, ClaimEvidenceLinkedV1)>,
+    gaps: Vec<CoverageGap>,
+}
+
+fn append_knowledge_plan(
+    cx: &mut syncbat::Ctx<'_>,
+    workspace_id: &WorkspaceId,
+    snapshot: &SourceSnapshotRecordedV1,
+    rows: &[(EvidenceOccurrence, ClaimEvidenceLinkedV1)],
+    observed_at_ms: u64,
+) -> Result<Vec<ReceiptNote>, TexoError> {
+    append_json(
+        "texo.knowledge.index",
+        cx,
+        <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+        snapshot,
+    )?;
+    for (occurrence, link) in rows {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+            &EvidenceOccurrenceRecordedV1 {
+                workspace_id: workspace_id.clone(),
+                occurrence: occurrence.clone(),
+                observed_at_ms,
+            },
+        )?;
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
+            link,
+        )?;
+    }
+    take_receipts()
+}
+
+fn plan_claim_evidence(
+    view: &WorkspaceView,
+    sources: &[CapturedSource],
+    snapshot_id: &crate::knowledge::SourceSnapshotId,
+    observed_at_ms: u64,
+) -> Result<EvidencePlan, TexoError> {
+    let by_path = sources
+        .iter()
+        .map(|source| (source.path.as_str(), source))
+        .collect::<BTreeMap<_, _>>();
+    let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+    let mut rows = Vec::new();
+    let mut gaps = Vec::new();
+    for claim in &view.claims {
+        let Some(source) = by_path.get(claim.card.source_path.as_str()) else {
+            continue;
+        };
+        let source_digest_hex = crate::events::ids::blake3_bytes_hex(&source.bytes);
+        let captured_source_id = crate::events::ids::source_id_from_hash(&source_digest_hex)?;
+        if captured_source_id.as_str() != claim.card.source_id {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::AnalysisIncomplete,
+            });
+            continue;
+        }
+        let Some((start, end)) =
+            line_byte_range(&source.bytes, claim.card.line_start, claim.card.line_end)
+        else {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::AnalysisIncomplete,
+            });
+            continue;
+        };
+        let excerpt_bytes = &source.bytes[start..end];
+        let Ok(excerpt) = std::str::from_utf8(excerpt_bytes) else {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::UnsupportedEncoding,
+            });
+            continue;
+        };
+        if excerpt.len() > MAX_EVIDENCE_EXCERPT_BYTES {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::SourceTooLarge,
+            });
+            continue;
+        }
+        let material = format!(
+            "texo.evidence.occurrence.v1\u{1f}{snapshot_id}\u{1f}{}\u{1f}{start}\u{1f}{end}\u{1f}{}",
+            source.path, claim.card.claim_id
+        );
+        let occurrence_id = EvidenceOccurrenceId::derive(&material);
+        let occurrence = EvidenceOccurrence {
+            occurrence_id: occurrence_id.clone(),
+            snapshot_id: snapshot_id.clone(),
+            source_kind: match source.layer {
+                CapturedLayer::Committed => EvidenceSourceKind::GitBlob,
+                CapturedLayer::Worktree => EvidenceSourceKind::WorktreeOverlay,
+            },
+            path: source.path.clone(),
+            byte_range: ByteRange::new(
+                u64::try_from(start).unwrap_or(u64::MAX),
+                u64::try_from(end).unwrap_or(u64::MAX),
+            )
+            .map_err(|error| TexoError::Source {
+                path: source.path.clone(),
+                detail: error.to_string(),
+            })?,
+            line_range: LineRange::new(claim.card.line_start, claim.card.line_end).map_err(
+                |error| TexoError::Source {
+                    path: source.path.clone(),
+                    detail: error.to_string(),
+                },
+            )?,
+            git_blob: source.blob_id.clone(),
+            source_digest_hex,
+            excerpt: excerpt.to_string(),
+            analyzer_fingerprint: format!(
+                "{}:{}:{}",
+                claim.card.extractor_kind, claim.card.extractor_model, claim.card.prompt_version
+            ),
+            analysis_quality: AnalysisQuality::Syntactic,
+        };
+        occurrence.validate().map_err(|error| TexoError::Source {
+            path: source.path.clone(),
+            detail: error.to_string(),
+        })?;
+        let link = ClaimEvidenceLinkedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from(claim.card.claim_id.as_str())?,
+            occurrence_id,
+            stance: EvidenceStance::Supports,
+            method: EvidenceLinkMethod::Deterministic,
+            observed_at_ms,
+        };
+        rows.push((occurrence, link));
+    }
+    Ok(EvidencePlan { rows, gaps })
+}
+
+fn line_byte_range(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(usize, usize)> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+    let mut line = 1_u32;
+    let mut line_start = 0_usize;
+    let mut range_start = None;
+    for offset in 0..=bytes.len() {
+        let boundary = offset == bytes.len() || bytes.get(offset) == Some(&b'\n');
+        if !boundary {
+            continue;
+        }
+        if line == start_line {
+            range_start = Some(line_start);
+        }
+        if line == end_line {
+            return range_start.map(|start| (start, offset));
+        }
+        line = line.saturating_add(1);
+        line_start = offset.saturating_add(1);
+    }
+    None
 }
 
 struct SettlementAuthority {

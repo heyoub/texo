@@ -119,6 +119,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Freeze the current Git commit and worktree as evidence.
+    Index {
+        /// Maximum source files captured.
+        #[arg(long)]
+        max_files: Option<usize>,
+        /// Maximum bytes captured from one source.
+        #[arg(long)]
+        max_file_bytes: Option<u64>,
+        /// Maximum total captured source bytes.
+        #[arg(long)]
+        max_total_bytes: Option<u64>,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
@@ -476,6 +491,25 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
         Command::Stats { json: _ } => {
             let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
             let output = host.invoke_json("texo.stats.read", &json!({}))?;
+            render::json(&output)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Index {
+            max_files,
+            max_file_bytes,
+            max_total_bytes,
+            json: _,
+        } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let output = host.invoke_json(
+                "texo.knowledge.index",
+                &json!({
+                    "observed_at_ms": observed_at_ms(),
+                    "max_files": max_files,
+                    "max_file_bytes": max_file_bytes,
+                    "max_total_bytes": max_total_bytes
+                }),
+            )?;
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }
