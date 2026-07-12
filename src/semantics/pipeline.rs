@@ -390,10 +390,22 @@ struct PendingPair {
     newer: ClaimId,
 }
 
-/// Verdict-acquisition result for one pending pair.
+/// Verdict-acquisition result for one pending pair. Clone so a coalesced text
+/// pair's single outcome fans to every logical pair that shares its texts.
+#[derive(Clone)]
 enum PairOutcome {
     Judged(crate::semantics::RelationVerdict, bool),
     Failed(PairFailureView),
+}
+
+/// The failure view for a pair the wall budget cut off before it ran.
+fn budget_exhausted() -> PairFailureView {
+    PairFailureView {
+        class: RelationFailureClass::BudgetExhausted,
+        endpoint: None,
+        status: None,
+        attempts: 0,
+    }
 }
 
 /// Embed, cluster, and enumerate surviving candidate pairs in deterministic
@@ -459,12 +471,7 @@ fn acquire_sequential(
         return PairOutcome::Judged(*verdict, true);
     }
     if started.elapsed() >= budget {
-        return PairOutcome::Failed(PairFailureView {
-            class: RelationFailureClass::BudgetExhausted,
-            endpoint: None,
-            status: None,
-            attempts: 0,
-        });
+        return PairOutcome::Failed(budget_exhausted());
     }
     // Feed raw claim text: case and update wording carry the intent signal
     // that normalized embedding text discards.
@@ -665,17 +672,29 @@ pub fn relate_claims_settled_parallel(
 
     let mut outcomes: Vec<Option<PairOutcome>> = Vec::with_capacity(pending.len());
     outcomes.resize_with(pending.len(), || None);
-    let mut jobs = Vec::new();
-    for (idx, pair) in pending.iter().enumerate() {
-        let key = (pair.older.clone(), pair.newer.clone());
-        if let Some(verdict) = settled.get(&key) {
-            outcomes[idx] = Some(PairOutcome::Judged(*verdict, true));
-        } else {
-            jobs.push(idx);
-        }
-    }
 
-    std::thread::scope(|scope| {
+    // Coalesce unsettled jobs by their exact relate() arguments. The disk cache
+    // keys on (fingerprint, older_text, newer_text), so two logical pairs with
+    // identical texts MUST make one model call and share the verdict: otherwise
+    // a cold parallel run makes duplicate paid calls, can receive different
+    // verdicts for identical prompts, and races writes to one cache tmp file.
+    // The representative is the lowest pending index in each group, so the
+    // choice is deterministic. Settled pairs resolve here and never dispatch.
+    let mut groups: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    for (idx, pair) in pending.iter().enumerate() {
+        if let Some(verdict) = settled.get(&(pair.older.clone(), pair.newer.clone())) {
+            outcomes[idx] = Some(PairOutcome::Judged(*verdict, true));
+            continue;
+        }
+        let texts = (
+            claims[pair.old_idx].1.text.as_str(),
+            claims[pair.new_idx].1.text.as_str(),
+        );
+        groups.entry(texts).or_default().push(idx);
+    }
+    let representatives: Vec<usize> = groups.values().map(|members| members[0]).collect();
+
+    let mut rep_outcomes: BTreeMap<usize, PairOutcome> = std::thread::scope(|scope| {
         let (job_tx, job_rx) = flume::bounded::<usize>(concurrency);
         let (result_tx, result_rx) = flume::unbounded::<(usize, PairOutcome)>();
         for _ in 0..concurrency {
@@ -686,12 +705,7 @@ pub fn relate_claims_settled_parallel(
                 while let Ok(idx) = job_rx.recv() {
                     let pair = &pending[idx];
                     let outcome = if started.elapsed() >= budget {
-                        PairOutcome::Failed(PairFailureView {
-                            class: RelationFailureClass::BudgetExhausted,
-                            endpoint: None,
-                            status: None,
-                            attempts: 0,
-                        })
+                        PairOutcome::Failed(budget_exhausted())
                     } else {
                         let old_view = &claims[pair.old_idx].1;
                         let new_view = &claims[pair.new_idx].1;
@@ -708,27 +722,28 @@ pub fn relate_claims_settled_parallel(
         }
         drop(job_rx);
         drop(result_tx);
-        for idx in &jobs {
+        for idx in &representatives {
             if job_tx.send(*idx).is_err() {
                 break;
             }
         }
         drop(job_tx);
-        for (idx, outcome) in &result_rx {
-            outcomes[idx] = Some(outcome);
-        }
+        result_rx.iter().collect()
     });
+
+    // Fan each representative's single outcome to every member of its group.
+    for members in groups.values() {
+        let outcome = rep_outcomes
+            .remove(&members[0])
+            .unwrap_or(PairOutcome::Failed(budget_exhausted()));
+        for &idx in members {
+            outcomes[idx] = Some(outcome.clone());
+        }
+    }
 
     let outcomes = outcomes
         .into_iter()
-        .map(|slot| {
-            slot.unwrap_or(PairOutcome::Failed(PairFailureView {
-                class: RelationFailureClass::BudgetExhausted,
-                endpoint: None,
-                status: None,
-                attempts: 0,
-            }))
-        })
+        .map(|slot| slot.unwrap_or(PairOutcome::Failed(budget_exhausted())))
         .collect::<Vec<_>>();
     Ok(reduce_outcomes(claims, pending, outcomes))
 }
@@ -1513,6 +1528,317 @@ mod tests {
                 .filter(|judgment| judgment.reused_authority)
                 .count(),
             1
+        );
+    }
+
+    /// Verdict depends only on the text pair, so a correct parallel run must
+    /// produce byte-identical output to the sequential run; call count exposes
+    /// duplicate model calls for identical-text pairs.
+    struct TextKeyedCountingRelater {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TextKeyedCountingRelater {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ClaimRelater for TextKeyedCountingRelater {
+        fn relate(&self, _older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Deterministic in the text pair: "supersede" wording => Supersedes.
+            let relation = if newer.contains("moved") {
+                ClaimRelation::Supersedes
+            } else {
+                ClaimRelation::Unrelated
+            };
+            Ok(RelationVerdict {
+                relation,
+                score: 1.0,
+            })
+        }
+        fn fingerprint(&self) -> String {
+            "text-keyed-counting".to_owned()
+        }
+    }
+
+    /// Two clusters, each three same-day claims: many intra-cluster pairs feed
+    /// the fan-out so worker interleaving is genuinely exercised.
+    fn parallel_fanout_corpus() -> (Vec<(ClaimId, ClaimView)>, FixedEmbedder) {
+        let claims = vec![
+            claim(
+                "claim_0000000000a1",
+                "deploy",
+                "Deploys happen on Friday",
+                1,
+            ),
+            claim(
+                "claim_0000000000a2",
+                "deploy",
+                "Deploys moved to Wednesday",
+                2,
+            ),
+            claim(
+                "claim_0000000000a3",
+                "deploy",
+                "Deploys moved to Tuesday",
+                3,
+            ),
+            claim(
+                "claim_0000000000b1",
+                "release",
+                "Releases happen on Monday",
+                4,
+            ),
+            claim(
+                "claim_0000000000b2",
+                "release",
+                "Releases moved to Thursday",
+                5,
+            ),
+            claim(
+                "claim_0000000000b3",
+                "release",
+                "Releases moved to Saturday",
+                6,
+            ),
+        ];
+        let embedder = FixedEmbedder::new(
+            vec![
+                ("deploys happen on friday", vec![1.0, 0.0]),
+                ("deploys moved to wednesday", vec![0.999, 0.01]),
+                ("deploys moved to tuesday", vec![0.998, 0.02]),
+                ("releases happen on monday", vec![0.0, 1.0]),
+                ("releases moved to thursday", vec![0.01, 0.999]),
+                ("releases moved to saturday", vec![0.02, 0.998]),
+            ],
+            2,
+        );
+        (claims, embedder)
+    }
+
+    #[test]
+    fn parallel_relate_equals_sequential_output() {
+        let (claims, embedder) = parallel_fanout_corpus();
+        let seq = relate_claims_with_settled(
+            &claims,
+            &embedder,
+            &TextKeyedCountingRelater::new(),
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+        )
+        .expect("sequential");
+        for concurrency in [2_usize, 4, 8] {
+            let par = relate_claims_settled_parallel(
+                &claims,
+                &embedder,
+                &TextKeyedCountingRelater::new(),
+                th(0.9, 0.6),
+                &BTreeMap::new(),
+                Duration::MAX,
+                concurrency,
+            )
+            .expect("parallel");
+            assert_eq!(
+                format!("{seq:?}"),
+                format!("{par:?}"),
+                "parallel output diverged at concurrency {concurrency}"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_relate_coalesces_duplicate_text_pairs_to_one_call() {
+        // Four logical claim ids but only two distinct text pairs among the
+        // candidate pairs: identical texts must judge exactly once.
+        let claims = vec![
+            claim("claim_00000000dup1", "x", "The service uses Postgres", 1),
+            claim("claim_00000000dup2", "x", "The service uses Postgres", 2),
+            claim("claim_00000000dup3", "x", "The service uses Redis", 3),
+            claim("claim_00000000dup4", "x", "The service uses Redis", 4),
+        ];
+        let embedder = FixedEmbedder::new(
+            vec![
+                ("the service uses postgres", vec![1.0, 0.0]),
+                ("the service uses redis", vec![0.99, 0.02]),
+            ],
+            2,
+        );
+        let relater = TextKeyedCountingRelater::new();
+        let out = relate_claims_settled_parallel(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+            8,
+        )
+        .expect("parallel");
+        // All four claims cluster (postgres ~= redis at 0.9998). The two
+        // same-text pairs (postgres,postgres) and (redis,redis) are dropped by
+        // the normalized-text guard, leaving four distinct LOGICAL cross-pairs
+        // that all carry the identical (postgres, redis) text pair. Coalescing
+        // must judge that text pair exactly ONCE and fan the verdict to all
+        // four — without it a cold parallel run would make four paid calls.
+        assert_eq!(
+            relater.count(),
+            1,
+            "identical-text logical pairs must coalesce to a single model call"
+        );
+        assert_eq!(
+            out.related.judgments.len(),
+            4,
+            "every surviving logical pair receives the shared verdict"
+        );
+        assert!(out.unresolved.is_empty());
+
+        // Sanity: the sequential path with the same stub (no disk cache) makes
+        // one call per pair — proving the parallel coalescing, not the corpus,
+        // is what collapses the calls.
+        let seq_relater = TextKeyedCountingRelater::new();
+        let _ = relate_claims_with_settled(
+            &claims,
+            &embedder,
+            &seq_relater,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+        )
+        .expect("sequential");
+        assert_eq!(
+            seq_relater.count(),
+            4,
+            "uncached sequential path judges each of the four logical pairs"
+        );
+    }
+
+    #[test]
+    fn parallel_relate_preserves_settlement_and_holdback() {
+        let (claims, embedder) = parallel_fanout_corpus();
+        // Pre-settle one pair from journal authority; it must not be re-judged.
+        let mut settled = BTreeMap::new();
+        settled.insert(
+            (claims[0].0.clone(), claims[1].0.clone()),
+            RelationVerdict {
+                relation: ClaimRelation::Supersedes,
+                score: 1.0,
+            },
+        );
+        let relater = TextKeyedCountingRelater::new();
+        let out = relate_claims_settled_parallel(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.6),
+            &settled,
+            Duration::MAX,
+            4,
+        )
+        .expect("parallel");
+        assert_eq!(
+            out.related
+                .judgments
+                .iter()
+                .filter(|judgment| judgment.reused_authority)
+                .count(),
+            1,
+            "the settled pair is reused, not re-judged"
+        );
+    }
+
+    /// A relater that answers in REVERSE completion order relative to dispatch:
+    /// the first pair dispatched blocks until the last has answered. If the
+    /// reduction depended on worker completion order the output would flip;
+    /// proving byte-identity to the sequential run under this adversarial
+    /// schedule is the determinism guarantee the fan-out claims.
+    struct ReverseOrderRelater {
+        gate: std::sync::Barrier,
+    }
+
+    impl ReverseOrderRelater {
+        fn new(total: usize) -> Self {
+            Self {
+                gate: std::sync::Barrier::new(total),
+            }
+        }
+    }
+
+    impl ClaimRelater for ReverseOrderRelater {
+        fn relate(&self, _older: &str, newer: &str) -> Result<RelationVerdict, SemanticsError> {
+            // Every worker waits at the barrier, so all calls are in flight at
+            // once and complete in scheduler order, not dispatch order.
+            self.gate.wait();
+            let relation = if newer.contains("moved") {
+                ClaimRelation::Supersedes
+            } else {
+                ClaimRelation::Unrelated
+            };
+            Ok(RelationVerdict {
+                relation,
+                score: 1.0,
+            })
+        }
+        fn fingerprint(&self) -> String {
+            "reverse-order".to_owned()
+        }
+    }
+
+    #[test]
+    fn parallel_reassembly_is_independent_of_completion_order() {
+        let (claims, embedder) = parallel_fanout_corpus();
+        // Establish the distinct-text-pair count so the barrier width matches
+        // the number of representative calls (coalescing means one call per
+        // distinct surviving text pair).
+        let seq = relate_claims_with_settled(
+            &claims,
+            &embedder,
+            &TextKeyedCountingRelater::new(),
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+        )
+        .expect("sequential");
+
+        let counter = TextKeyedCountingRelater::new();
+        let _ = relate_claims_settled_parallel(
+            &claims,
+            &embedder,
+            &counter,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+            8,
+        )
+        .expect("count");
+        let representative_calls = counter.count();
+        assert!(
+            representative_calls >= 2,
+            "need real fan-out to test ordering"
+        );
+
+        let relater = ReverseOrderRelater::new(representative_calls);
+        let par = relate_claims_settled_parallel(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            Duration::MAX,
+            representative_calls,
+        )
+        .expect("parallel");
+        assert_eq!(
+            format!("{seq:?}"),
+            format!("{par:?}"),
+            "reassembly must not depend on worker completion order"
         );
     }
 }

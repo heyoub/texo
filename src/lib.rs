@@ -2,6 +2,8 @@
 
 /// Error types.
 pub mod error;
+
+pub mod lexicon;
 /// Typed configuration and resolution for every model role.
 pub mod gateway;
 /// Configuration loading and defaults.

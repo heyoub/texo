@@ -228,12 +228,13 @@ impl HttpClientError {
 pub fn request(req: &HttpRequest, deadline: Duration) -> Result<HttpResponse, HttpClientError> {
     let deadline = Deadline::new(deadline)?;
     let tcp = connect(&req.url, &deadline)?;
+    let stream = DeadlineStream::new(tcp, &deadline);
     let mut connection = if req.url.scheme == "https" {
-        Connection::Tls(Box::new(tls_connect(tcp, &req.url, &deadline)?))
+        Connection::Tls(Box::new(tls_connect(stream, &req.url)?))
     } else {
-        Connection::Plain(tcp)
+        Connection::Plain(stream)
     };
-    write_request(&mut connection, req, &deadline)?;
+    write_request(&mut connection, req)?;
     let mut reader = BufReader::new(connection);
     read_response(&mut reader, &deadline)
 }
@@ -309,10 +310,9 @@ fn tls_config() -> Result<Arc<ClientConfig>, HttpClientError> {
 }
 
 fn tls_connect(
-    stream: TcpStream,
+    stream: DeadlineStream,
     url: &ParsedUrl,
-    deadline: &Deadline,
-) -> Result<StreamOwned<ClientConnection, TcpStream>, HttpClientError> {
+) -> Result<StreamOwned<ClientConnection, DeadlineStream>, HttpClientError> {
     let server_name =
         ServerName::try_from(url.host.clone()).map_err(|error| HttpClientError::Tls {
             detail: error.to_string(),
@@ -322,22 +322,10 @@ fn tls_connect(
             detail: error.to_string(),
         }
     })?;
+    // The handshake reads/writes through DeadlineStream, so every raw socket op
+    // re-arms from the absolute deadline; a stalled handshake fails closed.
     let mut stream = StreamOwned::new(connection, stream);
     while stream.conn.is_handshaking() {
-        stream
-            .sock
-            .set_read_timeout(Some(deadline.remaining()?))
-            .map_err(|source| HttpClientError::Io {
-                during: "tls read timeout",
-                source,
-            })?;
-        stream
-            .sock
-            .set_write_timeout(Some(deadline.remaining()?))
-            .map_err(|source| HttpClientError::Io {
-                during: "tls write timeout",
-                source,
-            })?;
         stream.conn.complete_io(&mut stream.sock).map_err(|error| {
             if is_timeout_error(&error) {
                 HttpClientError::DeadlineExceeded
@@ -351,11 +339,7 @@ fn tls_connect(
     Ok(stream)
 }
 
-fn write_request(
-    connection: &mut Connection,
-    req: &HttpRequest,
-    deadline: &Deadline,
-) -> Result<(), HttpClientError> {
+fn write_request(connection: &mut Connection, req: &HttpRequest) -> Result<(), HttpClientError> {
     let mut request = Vec::new();
     write!(
         &mut request,
@@ -386,7 +370,6 @@ fn write_request(
     .expect("writing to a Vec cannot fail");
     request.extend_from_slice(&req.body);
 
-    connection.set_write_timeout(deadline.remaining()?)?;
     connection.write_all(&request).map_err(|source| {
         if is_timeout_error(&source) {
             HttpClientError::DeadlineExceeded
@@ -409,61 +392,15 @@ fn write_request(
     })
 }
 
-/// Read adapter that re-arms the socket timeout and enforces the wall-clock
-/// deadline before EVERY read. `SO_RCVTIMEO` alone cannot bound a trickling
-/// peer: each delivered byte resets the socket timer, so `read_exact`,
-/// `read_until`, and chunk decoding could otherwise run for hours inside one
-/// nominally 120-second request (observed live against a stalled provider).
-struct DeadlineReader<'a> {
-    inner: &'a mut BufReader<Connection>,
-    deadline: &'a Deadline,
-}
-
-impl DeadlineReader<'_> {
-    fn arm(&mut self) -> io::Result<()> {
-        let remaining = self
-            .deadline
-            .remaining()
-            .map_err(|_| io::Error::from(ErrorKind::TimedOut))?;
-        self.inner
-            .get_mut()
-            .set_read_timeout(remaining)
-            .map_err(|_| io::Error::from(ErrorKind::Other))?;
-        Ok(())
-    }
-}
-
-impl Read for DeadlineReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.arm()?;
-        self.inner.read(buf)
-    }
-}
-
-impl BufRead for DeadlineReader<'_> {
-    fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        self.arm()?;
-        self.inner.fill_buf()
-    }
-
-    fn consume(&mut self, amt: usize) {
-        self.inner.consume(amt);
-    }
-}
-
 fn read_response(
     reader: &mut BufReader<Connection>,
     deadline: &Deadline,
 ) -> Result<HttpResponse, HttpClientError> {
-    let mut reader = DeadlineReader {
-        inner: reader,
-        deadline,
-    };
-    let (status, headers) = read_head(&mut reader)?;
+    let (status, headers) = read_head(reader, deadline)?;
     let body = if (100..200).contains(&status) || matches!(status, 204 | 304) {
         Vec::new()
     } else if header_contains(&headers, "transfer-encoding", "chunked") {
-        decode_chunked(&mut reader, BODY_CAP).map_err(|error| {
+        decode_chunked(reader, BODY_CAP).map_err(|error| {
             if let HttpClientError::Io { source, .. } = &error {
                 if is_timeout_error(source) {
                     return HttpClientError::DeadlineExceeded;
@@ -499,7 +436,7 @@ fn read_response(
         })?;
         body
     } else {
-        read_to_eof(&mut reader)?
+        read_to_eof(reader)?
     };
     Ok(HttpResponse {
         status,
@@ -509,7 +446,8 @@ fn read_response(
 }
 
 fn read_head(
-    reader: &mut DeadlineReader<'_>,
+    reader: &mut BufReader<Connection>,
+    deadline: &Deadline,
 ) -> Result<(u16, Vec<(String, String)>), HttpClientError> {
     let mut head = Vec::new();
     loop {
@@ -528,7 +466,7 @@ fn read_head(
             }
         })?;
         if read == 0 {
-            if reader.deadline.remaining().is_err() {
+            if deadline.remaining().is_err() {
                 return Err(HttpClientError::DeadlineExceeded);
             }
             return Err(HttpClientError::MalformedResponse {
@@ -591,7 +529,7 @@ fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), HttpClientErr
     Ok((status, headers))
 }
 
-fn read_to_eof(reader: &mut DeadlineReader<'_>) -> Result<Vec<u8>, HttpClientError> {
+fn read_to_eof(reader: &mut BufReader<Connection>) -> Result<Vec<u8>, HttpClientError> {
     let mut body = Vec::new();
     let mut buffer = [0_u8; 8192];
     loop {
@@ -654,35 +592,62 @@ impl Deadline {
             .filter(|duration| !duration.is_zero())
             .ok_or(HttpClientError::DeadlineExceeded)
     }
+
+    const fn at(&self) -> Instant {
+        self.at
+    }
+}
+
+/// A `TcpStream` that enforces one absolute wall deadline on EVERY raw
+/// read/write, re-arming `SO_RCVTIMEO`/`SO_SNDTIMEO` from the remaining budget
+/// each call. This is the only place the deadline can be enforced correctly for
+/// TLS: `rustls::StreamOwned::read` loops over `sock.read()` to assemble a
+/// record, and a trickling peer resets a socket-level timeout on every byte —
+/// so a timeout armed once above rustls never bounds the whole call. Anchoring
+/// to an absolute `Instant` makes each raw op fail closed once the deadline
+/// passes, regardless of how rustls or a `BufReader` internally loops.
+struct DeadlineStream {
+    inner: TcpStream,
+    deadline_at: Instant,
+}
+
+impl DeadlineStream {
+    fn new(inner: TcpStream, deadline: &Deadline) -> Self {
+        Self {
+            inner,
+            deadline_at: deadline.at(),
+        }
+    }
+
+    fn remaining(&self) -> io::Result<Duration> {
+        self.deadline_at
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::from(ErrorKind::TimedOut))
+    }
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.set_read_timeout(Some(self.remaining()?))?;
+        self.inner.read(buffer)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.inner.set_write_timeout(Some(self.remaining()?))?;
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 enum Connection {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
-}
-
-impl Connection {
-    fn set_read_timeout(&self, duration: Duration) -> Result<(), HttpClientError> {
-        match self {
-            Self::Plain(stream) => stream.set_read_timeout(Some(duration)),
-            Self::Tls(stream) => stream.sock.set_read_timeout(Some(duration)),
-        }
-        .map_err(|source| HttpClientError::Io {
-            during: "set read timeout",
-            source,
-        })
-    }
-
-    fn set_write_timeout(&self, duration: Duration) -> Result<(), HttpClientError> {
-        match self {
-            Self::Plain(stream) => stream.set_write_timeout(Some(duration)),
-            Self::Tls(stream) => stream.sock.set_write_timeout(Some(duration)),
-        }
-        .map_err(|source| HttpClientError::Io {
-            during: "set write timeout",
-            source,
-        })
-    }
+    Plain(DeadlineStream),
+    Tls(Box<StreamOwned<ClientConnection, DeadlineStream>>),
 }
 
 impl Read for Connection {
@@ -746,6 +711,96 @@ mod tests {
     fn rejects_https_ip_literal() {
         let error = ParsedUrl::parse("https://127.0.0.1/api").expect_err("IP literal rejected");
         assert!(matches!(error, HttpClientError::Url { .. }));
+    }
+
+    #[test]
+    fn deadline_stream_read_loop_cannot_outlive_the_absolute_deadline() {
+        // rustls assembles one TLS record by looping small sock.read() calls;
+        // a peer trickling bytes resets a socket-level timeout on every byte.
+        // This drives DeadlineStream exactly that way and proves the absolute
+        // deadline still fires — the property that makes the TLS path safe.
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::Builder::new()
+            .name("deadline-stream-trickle-server".to_string())
+            .spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                for _ in 0..10_000 {
+                    std::thread::sleep(Duration::from_millis(40));
+                    if stream
+                        .write_all(b"x")
+                        .and_then(|()| stream.flush())
+                        .is_err()
+                    {
+                        break; // client hung up — the intended outcome
+                    }
+                }
+            })
+            .expect("spawn trickle server");
+
+        let tcp = TcpStream::connect(addr).expect("connect");
+        let deadline = Deadline::new(Duration::from_secs(1)).expect("deadline");
+        let mut stream = DeadlineStream::new(tcp, &deadline);
+
+        let started = Instant::now();
+        let mut scratch = [0_u8; 1];
+        let mut total = 0_usize;
+        let error = loop {
+            match stream.read(&mut scratch) {
+                Ok(0) => {
+                    break io::Error::new(ErrorKind::UnexpectedEof, "peer closed early");
+                }
+                Ok(n) => {
+                    total += n;
+                    assert!(
+                        total < 10_000,
+                        "drained the whole trickle without timing out"
+                    );
+                }
+                Err(error) => break error,
+            }
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            is_timeout_error(&error),
+            "expected a timeout error, got {error:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "read loop ran {elapsed:?} against a 1s deadline"
+        );
+        drop(stream); // break the pipe so the trickler exits
+        let _ = server.join();
+    }
+
+    #[test]
+    fn deadline_stream_read_fails_closed_once_the_deadline_passed() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::Builder::new()
+            .name("deadline-stream-idle-server".to_string())
+            .spawn(move || {
+                let _accepted = listener.accept();
+                std::thread::sleep(Duration::from_millis(200));
+            })
+            .expect("spawn idle server");
+
+        let tcp = TcpStream::connect(addr).expect("connect");
+        // Already-past deadline: the very first read must fail without blocking.
+        let deadline = Deadline::new(Duration::from_millis(1)).expect("deadline");
+        std::thread::sleep(Duration::from_millis(5));
+        let mut stream = DeadlineStream::new(tcp, &deadline);
+        let mut scratch = [0_u8; 1];
+        let error = stream
+            .read(&mut scratch)
+            .expect_err("past-deadline read must fail");
+        assert!(is_timeout_error(&error), "expected timeout, got {error:?}");
+        let _ = server.join();
     }
 
     #[test]

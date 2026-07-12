@@ -1749,7 +1749,12 @@ pub(crate) fn run_relate_pass(
             .as_ref()
             .and_then(|semantics| semantics.relate_prefilter)
             .unwrap_or(RELATE_PREFILTER);
-        (op_env.root.clone(), cluster, prefilter, op_env.config.gateway.clone())
+        (
+            op_env.root.clone(),
+            cluster,
+            prefilter,
+            op_env.config.gateway.clone(),
+        )
     })?;
     let authority = authoritative_settlements()?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
@@ -2342,19 +2347,7 @@ pub(crate) fn infer_supersessions(
 }
 
 fn replacement_signal(normalized_text: &str) -> bool {
-    [
-        "moved",
-        "changed",
-        "now",
-        "no longer",
-        "replaced",
-        "instead",
-        "new process",
-        "as of",
-        "decided",
-    ]
-    .iter()
-    .any(|needle| normalized_text.contains(needle))
+    crate::lexicon::contains_replacement_signal(normalized_text)
 }
 
 fn claim_list_rows(

@@ -58,7 +58,11 @@ fn start_server(steps: Vec<Step>) -> (String, Arc<AtomicUsize>, JoinHandle<()>) 
                         stream.flush().expect("flush trickle head");
                         for _ in 0..max_bytes {
                             std::thread::sleep(interval);
-                            if stream.write_all(b"x").and_then(|()| stream.flush()).is_err() {
+                            if stream
+                                .write_all(b"x")
+                                .and_then(|()| stream.flush())
+                                .is_err()
+                            {
                                 break; // client gave up — the desired outcome
                             }
                         }
@@ -143,7 +147,6 @@ fn head_too_large() {
     assert!(matches!(error, HttpClientError::HeadTooLarge));
     handle.join().expect("server joins");
 }
-
 
 #[test]
 fn trickled_content_length_body_respects_deadline() {

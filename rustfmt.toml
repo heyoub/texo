@@ -1,4 +1,7 @@
 edition = "2021"
 max_width = 100
-group_imports = "StdExternalCrate"
+# group_imports (std/external/local grouping) is nightly-only; on the pinned
+# stable toolchain it silently no-ops, so it is omitted to keep `cargo fmt`
+# what is actually enforced. reorder_imports (stable, default) still orders
+# within each import block.
 reorder_modules = false

@@ -16,13 +16,43 @@ const SEP: char = '\u{1f}';
 /// Separator between heading-path frames.
 const HEADING_SEP: char = '\u{1e}';
 
+/// Process-and-thread-unique suffix so concurrent writers to the same content
+/// key never share a temp file. A shared fixed `.json.tmp` lets two writers
+/// (parallel judge workers, or two `texo relate` processes) `O_TRUNC`+write the
+/// same inode — interleaving bytes — then race the rename so the loser gets a
+/// spurious `ENOENT`. The final path is content-addressed, so the rename is
+/// still idempotent; only the staging file must be private.
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let thread = format!("{:?}", std::thread::current().id());
+    let stem = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    path.with_file_name(format!(
+        ".{stem}.tmp.{pid}.{}.{nonce}",
+        thread.trim_start_matches("ThreadId(").trim_end_matches(')')
+    ))
+}
+
 fn write_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec(value).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes)?;
+    let tmp = unique_tmp_path(path);
+    // Best-effort durability: flush the staging file before the rename so a
+    // crash cannot expose a half-written record under the final key.
+    let file = std::fs::File::create(&tmp)?;
+    {
+        use std::io::Write as _;
+        let mut writer = std::io::BufWriter::new(&file);
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+    }
+    file.sync_all()?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -289,5 +319,42 @@ mod tests {
             .expect("cached after overwrite");
         assert_eq!(proposer.inner.calls.get(), 1);
         let _removed = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_writes_to_one_key_never_corrupt_the_record() {
+        // Many threads write the SAME content key at once; the final file must
+        // be exactly one valid record and no writer may observe a torn read.
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("shared-key.json");
+        let verdict = RelationVerdict {
+            relation: ClaimRelation::Supersedes,
+            score: 1.0,
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let path = path.clone();
+                scope.spawn(move || {
+                    for _ in 0..32 {
+                        write_atomic(&path, &verdict).expect("atomic write");
+                        // Every observable state of the final path is a whole
+                        // record — the unique staging file guarantees it.
+                        let bytes = std::fs::read(&path).expect("read");
+                        let parsed: RelationVerdict =
+                            serde_json::from_slice(&bytes).expect("no torn record");
+                        assert_eq!(parsed.relation, ClaimRelation::Supersedes);
+                    }
+                });
+            }
+        });
+        // No staging files leak into the cache dir.
+        let leaked: Vec<_> = std::fs::read_dir(&dir)
+            .expect("readdir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leaked.is_empty(), "staging files leaked: {leaked:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

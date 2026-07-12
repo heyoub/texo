@@ -1,8 +1,8 @@
 //! Deterministic workspace view assembly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use batpak::coordinate::Region;
 use batpak::event::{Event, EventKind, EventPayload, EventSourced};
@@ -520,7 +520,9 @@ fn fold_event(
             entity.to_string(),
             match family {
                 CardFamily::Claim => (0, CachedCard::Claim(Arc::new(ClaimCard::default()))),
-                CardFamily::Conflict => (0, CachedCard::Conflict(Arc::new(ConflictCard::default()))),
+                CardFamily::Conflict => {
+                    (0, CachedCard::Conflict(Arc::new(ConflictCard::default())))
+                }
                 CardFamily::Source => (0, CachedCard::Source(Arc::new(SourceCard::default()))),
             },
         );

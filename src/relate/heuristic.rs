@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::claims::card::ClaimCard;
 use crate::claims::workspace::WorkspaceView;
 use crate::events::ids::{conflict_id_from_pair, ClaimId};
-use crate::extract::word_match::{contains_phrase, contains_word};
+use crate::extract::word_match::contains_word;
 
 const CONTRADICTION_SUBJECTS: &[&str] = &[
     "deploy-process",
@@ -14,17 +14,6 @@ const CONTRADICTION_SUBJECTS: &[&str] = &[
     "ownership",
 ];
 const SCHEDULE_DAYS: &[&str] = &["monday", "tuesday", "wednesday", "thursday", "friday"];
-const REPLACEMENT_KEYWORDS: &[&str] = &[
-    "moved",
-    "changed",
-    "now",
-    "no longer",
-    "replaced",
-    "instead",
-    "new process",
-    "as of",
-    "decided",
-];
 
 /// Read-only conflict report entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,9 +99,7 @@ pub fn detect_conflicts(view: &WorkspaceView) -> Result<ConflictReport, crate::e
 /// Returns true when text contains a replacement keyword.
 #[must_use]
 pub fn has_replacement_keyword(text: &str) -> bool {
-    REPLACEMENT_KEYWORDS
-        .iter()
-        .any(|keyword| contains_phrase(text, keyword))
+    crate::lexicon::contains_replacement_signal(text)
 }
 
 fn has_contradiction_signal(a: &ClaimCard, b: &ClaimCard, subject: &str) -> bool {
