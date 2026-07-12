@@ -43,9 +43,9 @@ description must say so explicitly.
 
 ## Gaps to close (code)
 
-1. ~~**Embed model has no override.**~~ **Done (Jul 4).** `OPENROUTER_EMBED_MODEL`
-   and `OPENROUTER_RERANK_MODEL` now wired through the same explicit → env →
-   default chain as the other roles.
+1. ~~**Embed model has no override.**~~ **Done (Jul 4; superseded by the Jul 12
+   gateway).** Every live role now resolves through the neutral `TEXO_LLM_*`
+   schema; the unused rerank and NLI roles were deleted.
 2. **Validate the pipeline on Qwen models.** Extractor + relater prompts
    demand strict JSON; verify with the config below. Oracle: the key-gated
    live tests + the Helios corpus (must stay 5/5).
@@ -60,14 +60,12 @@ description must say so explicitly.
      ingest (`texo extract` LLM path via `extractor_cmd`) → relate;
    - changed preferences get *superseded*, and the one-file UI at `/` shows
      the chain live (current, struck-through stale + what replaced it,
-     conflicts). Chat model via `OPENROUTER_CHAT_MODEL`; remaining work is
+     conflicts). Chat uses the shared model gateway; remaining work is
      validating the whole loop on Qwen models (gap 2).
 4. **Alibaba Cloud deployment.** Agent backend on ECS; deploy config/script in
    repo doubles as the judge-visible "uses Alibaba Cloud" code file.
-5. **Env-var naming (optional, optics).** The seam is generic OpenAI-compatible
-   but the vars are `OPENROUTER_*`. Consider neutral aliases (`TEXO_LLM_*`)
-   so the Qwen configuration doesn't read as another vendor's. Docs updated
-   either way. (SPEC.md "Surfaces" gains the agent when it lands.)
+5. ~~**Provider-neutral configuration.**~~ **Done (Jul 12).** The only schema is
+   `TEXO_LLM_*`; there are no provider-specific aliases or dual paths.
 
 Deliberately **not** in scope: ADR-002 code-awareness and the WASM roadmap
 item (both post-submission). The batpak 0.8.2 → 0.9.0 bump — originally
@@ -93,11 +91,11 @@ golden churn). No 0.9.0 primitives (lanes, `import_events`) are adopted yet.
   embedder + relater.
 
 ```sh
-export OPENROUTER_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-export OPENROUTER_API_KEY=sk-...              # DashScope/Qwen Cloud key
-export OPENROUTER_EXTRACTOR_MODEL=qwen3.7-max
-export OPENROUTER_RELATER_MODEL=qwen3.7-max
-export OPENROUTER_EMBED_MODEL=text-embedding-v4
+export TEXO_LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+export TEXO_LLM_API_KEY=sk-...                # DashScope/Qwen Cloud key
+export TEXO_LLM_PROPOSE_MODEL=qwen3.7-max
+export TEXO_LLM_RELATE_MODEL=qwen3.7-max
+export TEXO_LLM_EMBED_MODEL=text-embedding-v4
 ```
 
 (`qwen3.7-plus` for both LLM roles once validated, if cost matters; the
@@ -167,10 +165,10 @@ unless time allows.
 
 - **Jul 4:** license files added; docs generalized to OpenAI-compatible
   backends; this plan.
-- **Jul 4:** env overrides for the embedder and reranker models
-  (`OPENROUTER_EMBED_MODEL`, `OPENROUTER_RERANK_MODEL`) — the last two roles
-  whose models could only be set programmatically; model-precedence logic
-  factored pure (`pick_model`) and unit-tested.
+- **Jul 4:** provider-specific env overrides were added for model selection;
+  this transitional surface was deleted by the Jul 12 neutral gateway. The
+  historical precedence logic remained covered while the unused rerank role
+  was removed.
 - **Jul 4:** proposer self-assertion rule attempted (`PROPOSE_PROMPT_VERSION`
   3→4) and **reverted the same day** after the live integrated oracle dropped
   to 4/5 — see ROADMAP for the lesson (prompt changes are pipeline changes).

@@ -31,7 +31,7 @@ CORPUS=$(readlink -f "$CORPUS")
 # every texo invocation goes through here: keyless, timed, exit tolerated
 tx() { # tx <tag> <timeout> <args...>
   local tag=$1 to=$2; shift 2
-  env -u OPENROUTER_API_KEY -u TEXO_LLM_API_KEY \
+  env -u TEXO_LLM_API_KEY \
     /usr/bin/time -v -o "$RUN_DIR/$tag.time" \
     timeout "$to" "$BIN" "$@" > "$RUN_DIR/$tag.out" 2> "$RUN_DIR/$tag.err"
   echo $? > "$RUN_DIR/$tag.exit"

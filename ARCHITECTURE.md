@@ -18,31 +18,38 @@ checks. texo owns domain schema, projections, and user surfaces.
 
 ## Modules
 
-- `events`: eight v2 payloads, transition evidence, coordinate builders, and
-  stable domain IDs.
+- `events`: ten typed payload kinds, transition evidence, coordinate builders,
+  stable domain IDs, and durable relation judgment/deferral facts.
 - `claims`: `ClaimCard`, `ConflictCard`, `SourceCard`, `CompileLog`,
   `WorkspaceCard`, `SessionLog`, derived statuses, and `WorkspaceView`.
 - `extract`: markdown parser, heuristic extractor, LLM extractor, faithfulness
   gate, and content-addressed record-once caches.
-- `semantics`: OpenAI-compatible embedding, relation, NLI, rerank, proposer,
-  and chat builders behind the `openrouter` feature.
+- `gateway` and `semantics`: one provider-neutral configuration path for the
+  closed `Embed`, `Propose`, `Relate`, and `Chat` roles, plus OpenAI-compatible
+  transport adapters.
 - `ops`: syncbat operations, thread-local `OpEnv`, effect backend routing, and
   operation catalog.
 - `host`: workspace store opening, capability grants, invocation seam, and the
   `texo-canonical-v1` interface fingerprint.
 - `surfaces`: CLI, sync HTTP/1.1 server/client, SSE, OpenAI-compatible edge,
   bootstrap, and MCP stdio.
+- `agent_catalog`, `install`, and `hooks`: the five-tool progressive-disclosure
+  catalog, structural client adapters, managed guidance, and fixed advisory
+  read hooks.
+- `doctor` and `backup`: composed operator diagnostics and an evidence-backed
+  journal/config portability boundary.
 
 ## Operation Catalog
 
 The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 18 operations:
+contains 21 operations:
 
-`texo.workspace.init`, `texo.ingest.run`, `texo.claims.list`,
+`texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
+`texo.claims.list`, `texo.claims.search`,
 `texo.claim.explain`, `texo.claim.supersede`, `texo.staleness.check`,
 `texo.context.agent`, `texo.compile.run`, `texo.conflicts.list`,
 `texo.conflicts.commit`, `texo.conflict.resolve`, `texo.verify.run`,
-`texo.relate.run`, `texo.host.fingerprint`, `texo.agent.chat`,
+`texo.relate.run`, `texo.stats.read`, `texo.host.fingerprint`, `texo.agent.chat`,
 `texo.agent.memory`, `texo.agent.session.end`, and `texo.session.export`.
 
 ## Transports
@@ -52,8 +59,8 @@ contains 18 operations:
   cap, dual permit pools, contained worker panics, and static UI fallback.
 - SSE subscribes to BatPak store notifications and emits strict JSON signal
   frames with `id:` equal to global sequence.
-- MCP is line-delimited JSON-RPC 2.0 over locked stdin/stdout and exposes four
-  read-only tools.
+- MCP is line-delimited JSON-RPC 2.0 over locked stdin/stdout and exposes five
+  read-only, grant-described tools backed by the same typed operation catalog.
 - The model client is hand-rolled sync HTTP/1.1 with rustls/ring and
   webpki-roots behind the `openrouter` feature.
 

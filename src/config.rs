@@ -39,12 +39,6 @@ pub struct SemanticsConfig {
     /// Master switch; when `false` (the default) the pipeline is inert.
     #[serde(default)]
     pub enabled: bool,
-    /// Pinned revision/identifier for the embedding model.
-    #[serde(default)]
-    pub embed_model_revision: String,
-    /// Pinned revision/identifier for the NLI model.
-    #[serde(default)]
-    pub nli_model_revision: String,
     /// Cosine-similarity acceptance threshold; `texo relate` uses it as the
     /// cluster link threshold for candidate generation. Must sit at or below the
     /// corpus's lowest same-subject similarity (default 0.65; see the module
@@ -57,20 +51,14 @@ pub struct SemanticsConfig {
     /// correctness gate, so the only cost of a lower floor is judge calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relate_prefilter: Option<f32>,
-    /// Optional override for the semantic extractor model.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extractor_model: Option<String>,
 }
 
 impl Default for SemanticsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            embed_model_revision: String::new(),
-            nli_model_revision: String::new(),
             cosine_threshold: DEFAULT_COSINE_THRESHOLD,
             relate_prefilter: None,
-            extractor_model: None,
         }
     }
 }

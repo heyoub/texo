@@ -12,14 +12,18 @@ Git tracks code diffs. texo tracks claim diffs.
 ## Quickstart
 
 ```sh
-cargo run --bin texo -- init --workspace demo
-cargo run --bin texo -- ingest sample_sources
-cargo run --bin texo -- agent-context --out public/agent-context.json
-cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json
-cargo run --bin texo -- compile --out public
+texo install --workspace demo
+texo ingest README.md
+texo doctor --deep
 ```
 
-For a clean local run:
+`texo install` is idempotent. It writes the client-neutral MCP and advisory-hook
+manifests under `.texo/`, detects existing Codex, Claude Code, and Cursor
+project configuration, merges only Texo-owned entries, and adds one managed
+block to `AGENTS.md`. Preview it with `--dry-run --json`; remove only those
+managed entries with `texo uninstall`.
+
+From this source checkout, a complete clean demo is:
 
 ```sh
 just demo-fresh
@@ -34,13 +38,34 @@ Multi-workspace scopes live in `.texo/config.toml` under
 - `texo ingest <path>` records source and claim events.
 - `texo claims`, `texo agent-context`, `texo check-staleness <path>`,
   `texo conflicts`, and `texo verify` are replayed read surfaces.
-- `texo relate` runs the semantic relation pass when `OPENROUTER_API_KEY` is
+- `texo relate` runs the semantic relation pass when `TEXO_LLM_API_KEY` is
   present.
 - `texo compile --out public` writes the static onboarding trophy.
 - `texo serve` runs the sync HTTP memory-agent server.
 - `texo extract <doc.md>` runs the LLM extractor and writes NDJSON.
 - `texo session export <id>` writes a lane-journaled transcript to stdout.
 - `texo mcp` runs the read-only line-delimited MCP stdio server.
+- `texo ops list` and `texo ops describe <name>` discover the typed operation
+  surface without searching source code.
+- `texo doctor [--deep] [--fix]` composes config, store, projection, gateway,
+  and agent-install diagnostics. `--fix` touches only Texo-managed files.
+- `texo backup create <dest>` creates a fresh journal/config backup with
+  BatPak snapshot evidence; `texo backup verify <dest>` checks it offline.
+
+## Agent tools
+
+The MCP catalog stays deliberately small and progressively discloses detail:
+
+1. `get_agent_context` returns bounded current context and freshness evidence.
+2. `search_claims` performs bounded, cursor-based claim discovery.
+3. `explain_claim` expands one claim into provenance and transition evidence.
+4. `check_staleness` checks a workspace-relative document before it is trusted.
+5. `get_workspace_status` reports frontier, freshness, and settlement state.
+
+All five tools are read-only. Successful calls include concise text plus
+`structuredContent` with `schema`, `data`, `meta`, and `next_actions`; failures
+carry commit/retry/resume facts. Installed hooks are also fixed read-only Texo
+commands—never workspace-supplied shell commands.
 
 ## Single-Crate Map
 
@@ -82,7 +107,7 @@ relates, supersedes, and compiles it into
 [`examples/helios/onboarding.generated.md`](examples/helios/onboarding.generated.md).
 
 ```sh
-OPENROUTER_API_KEY=sk-... just demo-helios
+TEXO_LLM_API_KEY=sk-... just demo-helios
 ```
 
 Record-once caches live under `.texo/cache/`, so cached runs replay without

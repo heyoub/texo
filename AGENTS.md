@@ -40,7 +40,7 @@ ALWAYS prefer MCP graph tools over grep/glob/file-search for code discovery.
 - `just verify` - fmt-check, clippy, hygiene, cargo-deny, typos, full tests.
 - `just test-invariants` - projection, compile-fail, and BatPak-family spikes.
 - `just demo` / `just demo-fresh` - spec demo flow.
-- `just demo-helios` - semantic Helios run, requires `OPENROUTER_API_KEY`
+- `just demo-helios` - semantic Helios run, requires `TEXO_LLM_API_KEY`
   unless caches fully satisfy it.
 - `just drift` - informational texo-on-texo prose audit; always exits 0.
 - `cargo run --bin texo -- <command>` - the only runtime binary.

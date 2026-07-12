@@ -21,3 +21,9 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
   returned to callers.
 - Session turns stay in non-zero lanes until transcript ingest records lane-0
   source/claim events.
+- Agent integration is declarative and project-local: managed markers and
+  structural JSON/TOML merges only. Hooks invoke fixed read-only Texo commands;
+  workspace configuration never supplies executable hook commands.
+- Backups carry journal authority and config only. Caches, warm projections,
+  generated views, and client adapters are rebuilt rather than restored as
+  source truth.

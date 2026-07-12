@@ -18,7 +18,7 @@ use crate::install::ClientTarget;
 pub mod render;
 
 #[derive(Parser)]
-#[command(name = "texo", about = "Context version control for claims")]
+#[command(name = "texo", about = "Agent-ready claim memory in one local binary")]
 struct Cli {
     /// Workspace root (defaults to current directory).
     #[arg(long, global = true, default_value = ".")]

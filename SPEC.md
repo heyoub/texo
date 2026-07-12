@@ -23,6 +23,8 @@ All domain events are BatPak payloads in category `0xE`.
 | 6 | 1 | `ConflictResolvedV2` | `conflict:{conflict_id}` |
 | 7 | 1 | `WorkspaceInitializedV2` | `workspace-meta:{workspace_id}` |
 | 8 | 1 | `SessionTurnV1` | `session:{session_id}` on `session_lane(id)` |
+| 9 | 1 | `RelationJudgedV1` | provider-neutral logical relation pair |
+| 10 | 1 | `RelationDeferredV1` | provider-neutral logical relation pair |
 
 Claim and conflict state changes carry `TransitionRecordV1` evidence with a
 deterministic blake3 transition id and explicit causes.
@@ -41,7 +43,8 @@ deterministic blake3 transition id and explicit causes.
 
 - CLI: `init`, `ingest`, `claims`, `supersede`, `check-staleness`,
   `agent-context`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
-  `extract`, `session export`, `host fingerprint`, and `mcp`.
+  `extract`, `session export`, `host fingerprint`, `ops`, `install`,
+  `uninstall`, `hook`, `doctor`, `backup`, and `mcp`.
 - HTTP: `GET /`, `GET /api/host`, `POST /api/chat`, `GET /api/memory`,
   `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
   8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
@@ -49,8 +52,9 @@ deterministic blake3 transition id and explicit causes.
   keep-alive comments on quiet ticks, and resume via `Last-Event-ID` header
   or `lastEventId` query param replays workspace events after the cursor.
 - MCP: line-delimited JSON-RPC 2.0 stdio with `initialize`, `tools/list`, and
-  `tools/call` for four read-only tools: `check_staleness`,
-  `get_current_claims`, `get_agent_context`, and `explain_claim`.
+  `tools/call` for five read-only tools: `get_agent_context`, `search_claims`,
+  `explain_claim`, `check_staleness`, and `get_workspace_status`. Successful
+  calls carry structured content and bounded next actions.
 - Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
 ## Semantic Pipeline

@@ -14,3 +14,6 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 | INV-SESSION-LANES | Session turns are crash-durable in non-zero lanes and hidden from lane-0 memory until session-end ingest. | `tests/session_lanes.rs`, `tests/http_server.rs` |
 | INV-STALE-EXACT-LINE | Staleness diagnostics point at exact source lines. | `tests/staleness_courtroom.rs`, `tests/golden_staleness.rs` |
 | INV-AGENT-CONTEXT-FRONTIER | Agent/MCP context includes replay frontier, provenance, current claims, stale claims, and conflicts. | `tests/agent_context.rs`, `tests/mcp_stdio.rs`, `tests/golden_agent_context.rs` |
+| INV-AGENT-CATALOG-BOUNDED | MCP exposes exactly five read-only progressive-disclosure tools; search and hook inputs are bounded. | `tests/agent_catalog.rs`, `tests/mcp_stdio.rs`, `tests/advisory_hooks.rs` |
+| INV-INSTALL-OWNERSHIP | Install is idempotent and structurally merges only Texo-owned entries; uninstall preserves user config and journal data. | `tests/appliance_install.rs`, `src/install.rs` |
+| INV-BACKUP-AUTHORITY | Backups contain journal snapshot evidence plus config, exclude derived caches, verify offline without mutation, and fail closed on tampering. | `tests/backup.rs`, `src/backup.rs` |
