@@ -9,9 +9,9 @@ use crate::error::TexoError;
 use crate::events::coordinate::{
     coordinate_for_claim, coordinate_for_code_index, coordinate_for_conflict,
     coordinate_for_evidence, coordinate_for_onboarding_projection, coordinate_for_relation_pair,
-    coordinate_for_session, coordinate_for_source, coordinate_for_source_snapshot,
-    coordinate_for_workspace_meta, entity_for_session, entity_for_source_snapshot,
-    scope_for_workspace, session_lane,
+    coordinate_for_session, coordinate_for_source, coordinate_for_source_relation,
+    coordinate_for_source_snapshot, coordinate_for_workspace_meta, entity_for_session,
+    entity_for_source_snapshot, scope_for_workspace, session_lane,
 };
 use crate::events::ids::relation_pair_id;
 use crate::events::machines::{
@@ -21,7 +21,7 @@ use crate::events::payloads::{
     ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
     ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2,
     RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2,
-    SourceSnapshotRecordedV1, WorkspaceInitializedV2,
+    SourceSnapshotRecordedV1, SourceSnapshotRelationV1, WorkspaceInitializedV2,
 };
 use crate::ops::env::{self, OpEnv, ReceiptNote};
 
@@ -285,6 +285,26 @@ fn append_domain_event(
             &[payload.workspace_id.as_str(), payload.index_id.as_str()],
         );
         let options = code_index_append_options(op_env, key, payload.snapshot_id.as_str());
+        let receipt = op_env
+            .store
+            .append_typed_with_options(&coordinate, &payload, options)?;
+        verify_and_note(op_env, kind, &receipt)
+    } else if kind == <SourceSnapshotRelationV1 as EventPayload>::KIND {
+        let payload = decode::<SourceSnapshotRelationV1>(payload_bytes)?;
+        let coordinate = coordinate_for_source_relation(
+            payload.workspace_id.as_str(),
+            payload.left_snapshot_id.as_str(),
+            payload.right_snapshot_id.as_str(),
+        )?;
+        let key = IdempotencyKey::for_operation(
+            "texo.source.snapshot.relation.v1",
+            &[
+                payload.workspace_id.as_str(),
+                payload.left_snapshot_id.as_str(),
+                payload.right_snapshot_id.as_str(),
+            ],
+        );
+        let options = code_index_append_options(op_env, key, payload.right_snapshot_id.as_str());
         let receipt = op_env
             .store
             .append_typed_with_options(&coordinate, &payload, options)?;

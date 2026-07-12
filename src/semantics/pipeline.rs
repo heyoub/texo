@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::events::ids::{conflict_id_from_pair, ClaimId, ConflictId, SourceId};
+use crate::knowledge::{SourceSnapshotId, TemporalRelation};
 use crate::relate::settlement::{
     HeldDecision, PairFailureView, RelationFailureClass, UnresolvedPair,
 };
@@ -272,6 +273,83 @@ pub struct RelateThresholds {
     pub prefilter: f32,
 }
 
+/// Frozen source-order evidence used to orient semantic claim pairs.
+///
+/// Claims without Git evidence retain journal observation order. Once either
+/// claim is snapshot-backed, missing or incomparable ancestry is explicit and
+/// blocks a live judgment instead of guessing from ingest order.
+#[derive(Debug, Clone, Default)]
+pub struct RelateTemporalPolicy {
+    claim_snapshots: BTreeMap<String, String>,
+    snapshot_relations: BTreeMap<(String, String), TemporalRelation>,
+}
+
+impl RelateTemporalPolicy {
+    /// Bind a semantic claim to the frozen source snapshot containing its
+    /// latest accepted evidence occurrence.
+    pub fn bind_claim(&mut self, claim_id: &ClaimId, snapshot_id: &SourceSnapshotId) {
+        self.claim_snapshots
+            .insert(claim_id.to_string(), snapshot_id.to_string());
+    }
+
+    /// Add one replayed directed source-order fact.
+    pub fn insert_relation(
+        &mut self,
+        left: &SourceSnapshotId,
+        right: &SourceSnapshotId,
+        relation: TemporalRelation,
+    ) {
+        self.snapshot_relations
+            .entry((left.to_string(), right.to_string()))
+            .or_insert(relation);
+    }
+
+    /// Add one replayed directed source-order fact by its already-validated
+    /// durable identifiers.
+    pub(crate) fn insert_relation_ids(
+        &mut self,
+        left: &str,
+        right: &str,
+        relation: TemporalRelation,
+    ) {
+        self.snapshot_relations
+            .entry((left.to_string(), right.to_string()))
+            .or_insert(relation);
+    }
+
+    fn compare_claims(&self, left: &ClaimId, right: &ClaimId) -> Option<TemporalRelation> {
+        let left = self.claim_snapshots.get(left.as_str());
+        let right = self.claim_snapshots.get(right.as_str());
+        match (left, right) {
+            (None, None) => None,
+            (Some(left), Some(right)) if left == right => Some(TemporalRelation::Same),
+            (Some(left), Some(right)) => Some(
+                self.snapshot_relations
+                    .get(&(left.clone(), right.clone()))
+                    .copied()
+                    .or_else(|| {
+                        self.snapshot_relations
+                            .get(&(right.clone(), left.clone()))
+                            .copied()
+                            .map(invert_temporal_relation)
+                    })
+                    .unwrap_or(TemporalRelation::Unknown),
+            ),
+            (Some(_), None) | (None, Some(_)) => Some(TemporalRelation::Unknown),
+        }
+    }
+}
+
+const fn invert_temporal_relation(relation: TemporalRelation) -> TemporalRelation {
+    match relation {
+        TemporalRelation::Before => TemporalRelation::After,
+        TemporalRelation::After => TemporalRelation::Before,
+        TemporalRelation::Same => TemporalRelation::Same,
+        TemporalRelation::Concurrent => TemporalRelation::Concurrent,
+        TemporalRelation::Unknown => TemporalRelation::Unknown,
+    }
+}
+
 /// Both relations the semantic pipeline derives, in a single pass.
 #[derive(Debug, Default)]
 pub struct RelatedClaims {
@@ -388,6 +466,7 @@ struct PendingPair {
     new_idx: usize,
     older: ClaimId,
     newer: ClaimId,
+    temporal_failure: Option<RelationFailureClass>,
 }
 
 /// Verdict-acquisition result for one pending pair. Clone so a coalesced text
@@ -414,6 +493,8 @@ fn prepare_pairs(
     claims: &[(ClaimId, ClaimView)],
     embedder: &dyn Embedder,
     thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    temporal: &RelateTemporalPolicy,
 ) -> Result<Option<Vec<PendingPair>>, PipelineError> {
     if claims.len() < 2 {
         return Ok(None);
@@ -431,13 +512,8 @@ fn prepare_pairs(
                 if cosine_similarity(&embeddings[i], &embeddings[j]) < thresholds.prefilter {
                     continue;
                 }
-                // Order the pair oldest -> newest; index breaks sequence ties.
-                let (old_idx, new_idx) =
-                    if (sequence_rank(&claims[i].1), i) <= (sequence_rank(&claims[j].1), j) {
-                        (i, j)
-                    } else {
-                        (j, i)
-                    };
+                let (old_idx, new_idx, temporal_failure) =
+                    order_pair(claims, i, j, settled, temporal);
                 if claims[old_idx].1.normalized_text == claims[new_idx].1.normalized_text {
                     continue;
                 }
@@ -446,11 +522,52 @@ fn prepare_pairs(
                     new_idx,
                     older: claims[old_idx].0.clone(),
                     newer: claims[new_idx].0.clone(),
+                    temporal_failure,
                 });
             }
         }
     }
     Ok(Some(pending))
+}
+
+fn order_pair(
+    claims: &[(ClaimId, ClaimView)],
+    left: usize,
+    right: usize,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    temporal: &RelateTemporalPolicy,
+) -> (usize, usize, Option<RelationFailureClass>) {
+    let left_id = &claims[left].0;
+    let right_id = &claims[right].0;
+    if settled.contains_key(&(left_id.clone(), right_id.clone())) {
+        return (left, right, None);
+    }
+    if settled.contains_key(&(right_id.clone(), left_id.clone())) {
+        return (right, left, None);
+    }
+    let sequence_order = || {
+        if (sequence_rank(&claims[left].1), left) <= (sequence_rank(&claims[right].1), right) {
+            (left, right)
+        } else {
+            (right, left)
+        }
+    };
+    match temporal.compare_claims(left_id, right_id) {
+        None | Some(TemporalRelation::Same) => {
+            let (old, new) = sequence_order();
+            (old, new, None)
+        }
+        Some(TemporalRelation::Before) => (left, right, None),
+        Some(TemporalRelation::After) => (right, left, None),
+        Some(TemporalRelation::Concurrent) => {
+            let (old, new) = sequence_order();
+            (old, new, Some(RelationFailureClass::TemporalConcurrent))
+        }
+        Some(TemporalRelation::Unknown) => {
+            let (old, new) = sequence_order();
+            (old, new, Some(RelationFailureClass::TemporalUnknown))
+        }
+    }
 }
 
 /// Acquire one pair's verdict on the calling thread: journal authority first,
@@ -469,6 +586,14 @@ fn acquire_sequential(
         // Explicit authority supersession is the future hook; model/config
         // changes never re-judge here.
         return PairOutcome::Judged(*verdict, true);
+    }
+    if let Some(class) = pair.temporal_failure {
+        return PairOutcome::Failed(PairFailureView {
+            class,
+            endpoint: None,
+            status: None,
+            attempts: 0,
+        });
     }
     if started.elapsed() >= budget {
         return PairOutcome::Failed(budget_exhausted());
@@ -494,8 +619,10 @@ fn reduce_outcomes(
     claims: &[(ClaimId, ClaimView)],
     pending: Vec<PendingPair>,
     outcomes: Vec<PairOutcome>,
+    temporal: &RelateTemporalPolicy,
 ) -> RelateOutcome {
     let mut winners: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut ambiguous_winners = BTreeSet::new();
     let mut conflict_pairs: Vec<(usize, usize)> = Vec::new();
     let mut judgments = Vec::new();
     let mut unresolved = Vec::new();
@@ -521,10 +648,15 @@ fn reduce_outcomes(
             ClaimRelation::Supersedes => {
                 let better = match winners.get(&pair.old_idx) {
                     None => true,
-                    Some(&cur) => {
-                        (sequence_rank(&claims[pair.new_idx].1), pair.new_idx)
-                            > (sequence_rank(&claims[cur].1), cur)
-                    }
+                    Some(&cur) => match compare_successors(claims, cur, pair.new_idx, temporal) {
+                        SuccessorOrder::Candidate => true,
+                        SuccessorOrder::Current => false,
+                        SuccessorOrder::Ambiguous => {
+                            ambiguous_winners.insert(pair.old_idx);
+                            (sequence_rank(&claims[pair.new_idx].1), pair.new_idx)
+                                > (sequence_rank(&claims[cur].1), cur)
+                        }
+                    },
                 };
                 if better {
                     winners.insert(pair.old_idx, pair.new_idx);
@@ -540,10 +672,15 @@ fn reduce_outcomes(
         }
     }
 
-    let tainted = unresolved
+    let mut tainted = unresolved
         .iter()
         .flat_map(|pair| [pair.old_claim.clone(), pair.new_claim.clone()])
         .collect::<BTreeSet<_>>();
+    tainted.extend(
+        ambiguous_winners
+            .into_iter()
+            .map(|idx| claims[idx].0.clone()),
+    );
     let mut held = Vec::new();
     let mut superseded = HashSet::new();
     let mut supersessions = Vec::new();
@@ -615,6 +752,34 @@ fn reduce_outcomes(
     }
 }
 
+enum SuccessorOrder {
+    Current,
+    Candidate,
+    Ambiguous,
+}
+
+fn compare_successors(
+    claims: &[(ClaimId, ClaimView)],
+    current: usize,
+    candidate: usize,
+    temporal: &RelateTemporalPolicy,
+) -> SuccessorOrder {
+    match temporal.compare_claims(&claims[current].0, &claims[candidate].0) {
+        None | Some(TemporalRelation::Same) => {
+            if (sequence_rank(&claims[candidate].1), candidate)
+                > (sequence_rank(&claims[current].1), current)
+            {
+                SuccessorOrder::Candidate
+            } else {
+                SuccessorOrder::Current
+            }
+        }
+        Some(TemporalRelation::Before) => SuccessorOrder::Candidate,
+        Some(TemporalRelation::After) => SuccessorOrder::Current,
+        Some(TemporalRelation::Concurrent | TemporalRelation::Unknown) => SuccessorOrder::Ambiguous,
+    }
+}
+
 /// Relate claims while reusing journal-authoritative verdicts and enforcing a
 /// global wall-clock budget. Verdicts are acquired sequentially in pair order.
 ///
@@ -628,15 +793,39 @@ pub fn relate_claims_with_settled(
     settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
     budget: Duration,
 ) -> Result<RelateOutcome, PipelineError> {
+    relate_claims_with_settled_temporal(
+        claims,
+        embedder,
+        relater,
+        thresholds,
+        settled,
+        &RelateTemporalPolicy::default(),
+        budget,
+    )
+}
+
+/// Relate claims with journal authority and replayed source-order evidence.
+///
+/// # Errors
+/// Embedding failures remain fatal because no candidate substrate exists.
+pub fn relate_claims_with_settled_temporal(
+    claims: &[(ClaimId, ClaimView)],
+    embedder: &dyn Embedder,
+    relater: &dyn ClaimRelater,
+    thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    temporal: &RelateTemporalPolicy,
+    budget: Duration,
+) -> Result<RelateOutcome, PipelineError> {
     let started = Instant::now();
-    let Some(pending) = prepare_pairs(claims, embedder, thresholds)? else {
+    let Some(pending) = prepare_pairs(claims, embedder, thresholds, settled, temporal)? else {
         return Ok(RelateOutcome::default());
     };
     let outcomes = pending
         .iter()
         .map(|pair| acquire_sequential(claims, pair, relater, settled, started, budget))
         .collect::<Vec<_>>();
-    Ok(reduce_outcomes(claims, pending, outcomes))
+    Ok(reduce_outcomes(claims, pending, outcomes, temporal))
 }
 
 /// Like [`relate_claims_with_settled`], but live judge calls fan out across
@@ -658,8 +847,51 @@ pub fn relate_claims_settled_parallel(
     budget: Duration,
     concurrency: usize,
 ) -> Result<RelateOutcome, PipelineError> {
+    relate_claims_settled_parallel_temporal(
+        claims,
+        embedder,
+        relater,
+        thresholds,
+        settled,
+        ParallelRelateOptions {
+            temporal: &RelateTemporalPolicy::default(),
+            budget,
+            concurrency,
+        },
+    )
+}
+
+/// Runtime controls for parallel semantic settlement.
+#[derive(Debug, Clone, Copy)]
+pub struct ParallelRelateOptions<'a> {
+    /// Replayed source-order policy.
+    pub temporal: &'a RelateTemporalPolicy,
+    /// Global wall-clock budget.
+    pub budget: Duration,
+    /// Maximum live judge workers.
+    pub concurrency: usize,
+}
+
+/// Parallel relation acquisition with journal authority and replayed
+/// source-order evidence.
+///
+/// # Errors
+/// Embedding failures remain fatal because no candidate substrate exists.
+pub fn relate_claims_settled_parallel_temporal(
+    claims: &[(ClaimId, ClaimView)],
+    embedder: &dyn Embedder,
+    relater: &(dyn ClaimRelater + Sync),
+    thresholds: RelateThresholds,
+    settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    options: ParallelRelateOptions<'_>,
+) -> Result<RelateOutcome, PipelineError> {
+    let ParallelRelateOptions {
+        temporal,
+        budget,
+        concurrency,
+    } = options;
     let started = Instant::now();
-    let Some(pending) = prepare_pairs(claims, embedder, thresholds)? else {
+    let Some(pending) = prepare_pairs(claims, embedder, thresholds, settled, temporal)? else {
         return Ok(RelateOutcome::default());
     };
     if concurrency <= 1 {
@@ -667,7 +899,7 @@ pub fn relate_claims_settled_parallel(
             .iter()
             .map(|pair| acquire_sequential(claims, pair, relater, settled, started, budget))
             .collect::<Vec<_>>();
-        return Ok(reduce_outcomes(claims, pending, outcomes));
+        return Ok(reduce_outcomes(claims, pending, outcomes, temporal));
     }
 
     let mut outcomes: Vec<Option<PairOutcome>> = Vec::with_capacity(pending.len());
@@ -684,6 +916,15 @@ pub fn relate_claims_settled_parallel(
     for (idx, pair) in pending.iter().enumerate() {
         if let Some(verdict) = settled.get(&(pair.older.clone(), pair.newer.clone())) {
             outcomes[idx] = Some(PairOutcome::Judged(*verdict, true));
+            continue;
+        }
+        if let Some(class) = pair.temporal_failure {
+            outcomes[idx] = Some(PairOutcome::Failed(PairFailureView {
+                class,
+                endpoint: None,
+                status: None,
+                attempts: 0,
+            }));
             continue;
         }
         let texts = (
@@ -750,7 +991,7 @@ pub fn relate_claims_settled_parallel(
         .into_iter()
         .map(|slot| slot.unwrap_or(PairOutcome::Failed(budget_exhausted())))
         .collect::<Vec<_>>();
-    Ok(reduce_outcomes(claims, pending, outcomes))
+    Ok(reduce_outcomes(claims, pending, outcomes, temporal))
 }
 
 fn unresolved_pair(
@@ -1849,9 +2090,15 @@ mod tests {
         )
         .expect("sequential");
 
-        let pending = prepare_pairs(&claims, &embedder, th(0.9, 0.6))
-            .expect("prepare")
-            .expect("non-empty candidates");
+        let pending = prepare_pairs(
+            &claims,
+            &embedder,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            &RelateTemporalPolicy::default(),
+        )
+        .expect("prepare")
+        .expect("non-empty candidates");
         let mut seen = BTreeSet::new();
         let ordered_pairs = pending
             .iter()
@@ -1890,5 +2137,156 @@ mod tests {
             (0..representative_calls).rev().collect::<Vec<_>>(),
             "test harness must actually force reverse completion order"
         );
+    }
+
+    #[test]
+    fn git_ancestry_orients_pairs_instead_of_ingest_sequence() {
+        let claims = vec![
+            claim(
+                "claim_aaaaaaaaaaaa",
+                "storage",
+                "old storage uses postgres",
+                20,
+            ),
+            claim(
+                "claim_bbbbbbbbbbbb",
+                "storage",
+                "new storage uses batpak",
+                10,
+            ),
+        ];
+        let embedder = FixedEmbedder::new(vec![("storage", vec![1.0, 0.0])], 2);
+        let relater = ScriptedRelater::new(vec![(
+            "old storage",
+            "new storage",
+            ClaimRelation::Supersedes,
+        )]);
+        let left = SourceSnapshotId::derive("ancestor");
+        let right = SourceSnapshotId::derive("descendant");
+        let mut temporal = RelateTemporalPolicy::default();
+        temporal.bind_claim(&claims[0].0, &left);
+        temporal.bind_claim(&claims[1].0, &right);
+        temporal.insert_relation(&left, &right, TemporalRelation::Before);
+
+        let out = relate_claims_with_settled_temporal(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.6),
+            &BTreeMap::new(),
+            &temporal,
+            Duration::MAX,
+        )
+        .expect("relate");
+
+        assert_eq!(
+            out.supersessions,
+            vec![(
+                claims[0].0.clone(),
+                claims[1].0.clone(),
+                "superseded by x.md:10".to_string(),
+            )]
+        );
+        assert_eq!(out.related.judgments[0].older_claim, claims[0].0);
+        assert_eq!(out.related.judgments[0].newer_claim, claims[1].0);
+    }
+
+    #[test]
+    fn incomparable_or_missing_source_order_never_calls_the_judge() {
+        for (relation, expected) in [
+            (
+                Some(TemporalRelation::Concurrent),
+                RelationFailureClass::TemporalConcurrent,
+            ),
+            (None, RelationFailureClass::TemporalUnknown),
+        ] {
+            let claims = vec![
+                claim(
+                    "claim_aaaaaaaaaaaa",
+                    "storage",
+                    "old storage uses postgres",
+                    1,
+                ),
+                claim(
+                    "claim_bbbbbbbbbbbb",
+                    "storage",
+                    "new storage uses batpak",
+                    2,
+                ),
+            ];
+            let embedder = FixedEmbedder::new(vec![("storage", vec![1.0, 0.0])], 2);
+            let relater = CountingRelater::new();
+            let left = SourceSnapshotId::derive("left");
+            let right = SourceSnapshotId::derive("right");
+            let mut temporal = RelateTemporalPolicy::default();
+            temporal.bind_claim(&claims[0].0, &left);
+            temporal.bind_claim(&claims[1].0, &right);
+            if let Some(relation) = relation {
+                temporal.insert_relation(&left, &right, relation);
+            }
+
+            let out = relate_claims_settled_parallel_temporal(
+                &claims,
+                &embedder,
+                &relater,
+                th(0.9, 0.6),
+                &BTreeMap::new(),
+                ParallelRelateOptions {
+                    temporal: &temporal,
+                    budget: Duration::MAX,
+                    concurrency: 4,
+                },
+            )
+            .expect("relate");
+
+            assert_eq!(relater.count(), 0);
+            assert!(out.related.judgments.is_empty());
+            assert_eq!(out.unresolved.len(), 1);
+            assert_eq!(out.unresolved[0].failure.class, expected);
+            assert!(out.supersessions.is_empty() && out.conflicts.is_empty());
+        }
+    }
+
+    #[test]
+    fn journal_authority_keeps_its_original_pair_direction() {
+        let claims = vec![
+            claim("claim_aaaaaaaaaaaa", "storage", "storage alpha", 1),
+            claim("claim_bbbbbbbbbbbb", "storage", "storage beta", 2),
+        ];
+        let embedder = FixedEmbedder::new(vec![("storage", vec![1.0, 0.0])], 2);
+        let relater = CountingRelater::new();
+        let left = SourceSnapshotId::derive("left");
+        let right = SourceSnapshotId::derive("right");
+        let mut temporal = RelateTemporalPolicy::default();
+        temporal.bind_claim(&claims[0].0, &left);
+        temporal.bind_claim(&claims[1].0, &right);
+        temporal.insert_relation(&left, &right, TemporalRelation::After);
+        let mut settled = BTreeMap::new();
+        settled.insert(
+            (claims[0].0.clone(), claims[1].0.clone()),
+            RelationVerdict {
+                relation: ClaimRelation::Unrelated,
+                score: 1.0,
+            },
+        );
+
+        let out = relate_claims_settled_parallel_temporal(
+            &claims,
+            &embedder,
+            &relater,
+            th(0.9, 0.6),
+            &settled,
+            ParallelRelateOptions {
+                temporal: &temporal,
+                budget: Duration::MAX,
+                concurrency: 4,
+            },
+        )
+        .expect("relate");
+
+        assert_eq!(relater.count(), 0);
+        assert_eq!(out.related.judgments[0].older_claim, claims[0].0);
+        assert_eq!(out.related.judgments[0].newer_claim, claims[1].0);
+        assert!(out.related.judgments[0].reused_authority);
     }
 }

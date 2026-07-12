@@ -29,6 +29,7 @@ All domain events are BatPak payloads in category `0xE`.
 | 12 | 1 | `EvidenceOccurrenceRecordedV1` | `evidence:{occurrence_id}` |
 | 13 | 1 | `ClaimEvidenceLinkedV1` | `claim:{claim_id}` |
 | 14 | 1 | `CodeIndexRecordedV1` | `code-index:{index_id}` |
+| 15 | 1 | `SourceSnapshotRelationV1` | directed source-snapshot pair |
 
 Claim and conflict state changes carry `TransitionRecordV1` evidence with a
 deterministic blake3 transition id and explicit causes.

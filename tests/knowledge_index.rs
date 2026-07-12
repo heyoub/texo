@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use texo::events::coordinate::scope_for_workspace;
 use texo::events::payloads::{
     ClaimEvidenceLinkedV1, CodeIndexRecordedV1, EvidenceOccurrenceRecordedV1,
-    SourceSnapshotRecordedV1,
+    SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
 };
 use texo::host::TexoHost;
 
@@ -34,6 +34,19 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
     Ok(())
 }
 
+fn git_stdout(root: &Path, args: &[&str]) -> TestResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned().into())
+    }
+}
+
 fn initialized_repository() -> TestResult<(TempDir, TexoHost)> {
     let root = TempDir::new()?;
     git(root.path(), &["init", "-q"])?;
@@ -52,7 +65,7 @@ fn initialized_repository() -> TestResult<(TempDir, TexoHost)> {
         root.path().join("src/lib.rs"),
         "pub fn deploy() { helper(); }\nfn helper() {}\n",
     )?;
-    git(root.path(), &["add", "."])?;
+    git(root.path(), &["add", "docs/decision.md", "src/lib.rs"])?;
     git(root.path(), &["commit", "-qm", "initial"])?;
 
     let mut host = TexoHost::open(root.path(), "demo", 1_700_000_000_000)?;
@@ -354,5 +367,142 @@ fn code_index_is_causally_bound_and_symbol_triangulation_degrades_on_deletion() 
         .is_some_and(|rows| rows
             .iter()
             .any(|row| row["kind"] == "code_index_unavailable")));
+    Ok(())
+}
+
+#[test]
+fn indexing_records_pairwise_git_dag_relations_for_replay() -> TestResult {
+    let (root, mut host) = initialized_repository()?;
+    let first = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_002_u64}),
+    )?;
+    let first_commit = git_stdout(root.path(), &["rev-parse", "HEAD"])?;
+
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn deploy() { helper(); }\nfn helper() {}\nfn linear() {}\n",
+    )?;
+    git(root.path(), &["add", "src/lib.rs"])?;
+    git(root.path(), &["commit", "-qm", "linear"])?;
+    let second = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_003_u64}),
+    )?;
+    assert_eq!(second["relations_recorded"], 1);
+
+    git(
+        root.path(),
+        &["checkout", "-qb", "concurrent", &first_commit],
+    )?;
+    std::fs::write(root.path().join("src/branch.rs"), "pub fn branch() {}\n")?;
+    git(root.path(), &["add", "src/branch.rs"])?;
+    git(root.path(), &["commit", "-qm", "concurrent"])?;
+    let third = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_004_u64}),
+    )?;
+    assert_eq!(third["relations_recorded"], 2);
+
+    let region = Region::scope(scope_for_workspace("demo"));
+    let mut relations = Vec::new();
+    for entry in host.store().query_entries_after(&region, None, 256) {
+        if entry.event_kind() != <SourceSnapshotRelationV1 as EventPayload>::KIND {
+            continue;
+        }
+        let raw = host.store().read_raw(entry.event_id())?;
+        relations.push(batpak::encoding::from_bytes::<SourceSnapshotRelationV1>(
+            &raw.event.payload,
+        )?);
+    }
+    let first_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(first["snapshot_id"].clone())?;
+    let second_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(second["snapshot_id"].clone())?;
+    let third_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(third["snapshot_id"].clone())?;
+    assert!(relations.iter().any(|relation| {
+        relation.left_snapshot_id == first_id
+            && relation.right_snapshot_id == second_id
+            && relation.relation == texo::knowledge::TemporalRelation::Before
+    }));
+    assert!(relations.iter().any(|relation| {
+        relation.left_snapshot_id == second_id
+            && relation.right_snapshot_id == third_id
+            && relation.relation == texo::knowledge::TemporalRelation::Concurrent
+    }));
+    let frontier = host
+        .store()
+        .query_entries_after(&region, None, 256)
+        .last()
+        .map(batpak::store::IndexEntry::global_sequence)
+        .ok_or("workspace frontier")?;
+    let replayed =
+        texo::claims::temporal::assemble_through(&host.store(), host.workspace_id(), frontier)?;
+    assert_eq!(
+        replayed.compare(&first_id, &second_id),
+        texo::knowledge::TemporalRelation::Before
+    );
+    assert_eq!(
+        replayed.compare(&second_id, &first_id),
+        texo::knowledge::TemporalRelation::After
+    );
+    assert_eq!(
+        replayed.compare(&second_id, &third_id),
+        texo::knowledge::TemporalRelation::Concurrent
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_overlays_preserve_partial_order_without_false_ancestry() -> TestResult {
+    let (root, mut host) = initialized_repository()?;
+    let first = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_002_u64}),
+    )?;
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn deploy() { helper(); }\nfn helper() {}\nfn overlay_one() {}\n",
+    )?;
+    let second = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_003_u64}),
+    )?;
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        "pub fn deploy() { helper(); }\nfn helper() {}\nfn overlay_two() {}\n",
+    )?;
+    let third = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms": 1_700_000_000_004_u64}),
+    )?;
+
+    let first_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(first["snapshot_id"].clone())?;
+    let second_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(second["snapshot_id"].clone())?;
+    let third_id: texo::knowledge::SourceSnapshotId =
+        serde_json::from_value(third["snapshot_id"].clone())?;
+    let region = Region::scope(scope_for_workspace("demo"));
+    let frontier = host
+        .store()
+        .query_entries_after(&region, None, 256)
+        .last()
+        .map(batpak::store::IndexEntry::global_sequence)
+        .ok_or("workspace frontier")?;
+    let replayed =
+        texo::claims::temporal::assemble_through(&host.store(), host.workspace_id(), frontier)?;
+
+    assert_eq!(
+        replayed.compare(&first_id, &second_id),
+        texo::knowledge::TemporalRelation::Before,
+        "a clean base is causally before its frozen overlay"
+    );
+    assert_eq!(
+        replayed.compare(&second_id, &third_id),
+        texo::knowledge::TemporalRelation::Concurrent,
+        "distinct overlays on one base are alternatives, not a time sequence"
+    );
     Ok(())
 }

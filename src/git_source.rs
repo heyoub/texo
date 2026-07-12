@@ -8,7 +8,7 @@ use crate::error::TexoError;
 use crate::events::ids::blake3_bytes_hex;
 use crate::knowledge::{
     AnalysisQuality, CoverageGap, CoverageGapKind, GitObjectFormat, GitObjectId, KnowledgeCoverage,
-    RepositoryId, SourceSnapshotId,
+    RepositoryId, SourceSnapshotId, TemporalRelation,
 };
 
 const CAPTURE_SCHEMA: &str = "texo.git-capture.v1";
@@ -88,6 +88,101 @@ pub struct GitCapture {
     pub deleted: Vec<DeletedSource>,
     /// Honest bounded coverage.
     pub coverage: KnowledgeCoverage,
+}
+
+/// Durable comparison result for two Git revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitComparison {
+    /// Ancestry relation from `left` to `right`.
+    pub relation: TemporalRelation,
+    /// Typed reason the relation remained unknown.
+    pub gap: Option<CoverageGapKind>,
+}
+
+/// Compare two commits by bounded parent traversal without consulting dates.
+///
+/// # Errors
+/// Returns a source error for an untrusted repository or malformed object id.
+pub fn compare_commits(
+    root: &Path,
+    left: &GitObjectId,
+    right: &GitObjectId,
+    max_commits: usize,
+) -> Result<GitComparison, TexoError> {
+    if left == right {
+        return Ok(GitComparison {
+            relation: TemporalRelation::Same,
+            gap: None,
+        });
+    }
+    let repo = gix::open_opts(root, gix::open::Options::isolated().bail_if_untrusted(true))
+        .map_err(|error| git_error(root, error))?;
+    match ancestor_of(&repo, left, right, max_commits)? {
+        AncestorResult::Found => Ok(GitComparison {
+            relation: TemporalRelation::Before,
+            gap: None,
+        }),
+        AncestorResult::Unknown(kind) => Ok(GitComparison {
+            relation: TemporalRelation::Unknown,
+            gap: Some(kind),
+        }),
+        AncestorResult::NotFound => match ancestor_of(&repo, right, left, max_commits)? {
+            AncestorResult::Found => Ok(GitComparison {
+                relation: TemporalRelation::After,
+                gap: None,
+            }),
+            AncestorResult::NotFound => Ok(GitComparison {
+                relation: TemporalRelation::Concurrent,
+                gap: None,
+            }),
+            AncestorResult::Unknown(kind) => Ok(GitComparison {
+                relation: TemporalRelation::Unknown,
+                gap: Some(kind),
+            }),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AncestorResult {
+    Found,
+    NotFound,
+    Unknown(CoverageGapKind),
+}
+
+fn ancestor_of(
+    repo: &gix::Repository,
+    ancestor: &GitObjectId,
+    descendant: &GitObjectId,
+    max_commits: usize,
+) -> Result<AncestorResult, TexoError> {
+    let ancestor = parse_object_id(ancestor)?;
+    let descendant = parse_object_id(descendant)?;
+    let mut pending = vec![descendant];
+    let mut seen = BTreeSet::new();
+    while let Some(commit_id) = pending.pop() {
+        if commit_id == ancestor {
+            return Ok(AncestorResult::Found);
+        }
+        if !seen.insert(commit_id.to_string()) {
+            continue;
+        }
+        if seen.len() > max_commits {
+            return Ok(AncestorResult::Unknown(CoverageGapKind::BudgetExceeded));
+        }
+        let Ok(commit) = repo.find_commit(commit_id) else {
+            return Ok(AncestorResult::Unknown(CoverageGapKind::ShallowHistory));
+        };
+        pending.extend(commit.parent_ids().map(gix::Id::detach));
+    }
+    Ok(AncestorResult::NotFound)
+}
+
+fn parse_object_id(id: &GitObjectId) -> Result<gix::ObjectId, TexoError> {
+    gix::ObjectId::from_hex(id.hex.as_bytes()).map_err(|error| TexoError::Source {
+        path: ".git/objects".to_string(),
+        detail: error.to_string(),
+    })
 }
 
 /// Capture a trusted local repository without executing Git filters or hooks.

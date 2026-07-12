@@ -57,6 +57,11 @@ pub fn entity_for_code_index(index_id: &str) -> String {
     format!("code-index:{index_id}")
 }
 
+/// Entity string for one directional frozen-snapshot comparison.
+pub fn entity_for_source_relation(left_snapshot_id: &str, right_snapshot_id: &str) -> String {
+    format!("source-relation:{left_snapshot_id}:{right_snapshot_id}")
+}
+
 /// Build a claim coordinate.
 ///
 /// # Errors
@@ -199,6 +204,21 @@ pub fn coordinate_for_code_index(
     )
 }
 
+/// Build a frozen source-snapshot relation coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_source_relation(
+    workspace_id: &str,
+    left_snapshot_id: &str,
+    right_snapshot_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_source_relation(left_snapshot_id, right_snapshot_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
 /// Deterministically map a session id to a non-zero `BatPak` lane.
 pub fn session_lane(session_id: &str) -> u32 {
     let hash = blake3::hash(session_id.as_bytes());
@@ -228,6 +248,10 @@ mod tests {
             entity_for_code_index("code_index_abc"),
             "code-index:code_index_abc"
         );
+        assert_eq!(
+            entity_for_source_relation("snapshot_a", "snapshot_b"),
+            "source-relation:snapshot_a:snapshot_b"
+        );
     }
 
     #[test]
@@ -243,6 +267,8 @@ mod tests {
                 .expect("source snapshot coordinate"),
             coordinate_for_evidence("demo", "evidence_abc").expect("evidence coordinate"),
             coordinate_for_code_index("demo", "code_index_abc").expect("code index coordinate"),
+            coordinate_for_source_relation("demo", "snapshot_a", "snapshot_b")
+                .expect("source relation coordinate"),
         ];
 
         for coord in coords {

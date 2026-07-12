@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-use texo::git_source::{capture, CaptureLimits, CapturedLayer};
-use texo::knowledge::{CoverageGapKind, RepositoryId};
+use texo::git_source::{capture, compare_commits, CaptureLimits, CapturedLayer};
+use texo::knowledge::{CoverageGapKind, RepositoryId, TemporalRelation};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -24,6 +24,19 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
         .into());
     }
     Ok(())
+}
+
+fn git_stdout(root: &Path, args: &[&str]) -> TestResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned().into())
+    }
 }
 
 fn repository() -> TestResult<TempDir> {
@@ -147,5 +160,46 @@ fn worktree_symbolic_link_is_never_followed() -> TestResult {
         .sources
         .iter()
         .any(|source| source.path == "src/link.rs"));
+    Ok(())
+}
+
+#[test]
+fn git_dag_comparison_never_uses_commit_timestamps_as_order() -> TestResult {
+    let root = repository()?;
+    let base = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    let base_branch = git_stdout(root.path(), &["branch", "--show-current"])?;
+
+    git(root.path(), &["checkout", "-qb", "left"])?;
+    std::fs::write(root.path().join("src/left.rs"), "pub fn left() {}\n")?;
+    git(root.path(), &["add", "."])?;
+    git(root.path(), &["commit", "-qm", "left"])?;
+    let left = capture(root.path(), repo_id(), CaptureLimits::default())?;
+
+    git(root.path(), &["checkout", "-q", &base_branch])?;
+    git(root.path(), &["checkout", "-qb", "right"])?;
+    std::fs::write(root.path().join("src/right.rs"), "pub fn right() {}\n")?;
+    git(root.path(), &["add", "."])?;
+    git(root.path(), &["commit", "-qm", "right"])?;
+    let right = capture(root.path(), repo_id(), CaptureLimits::default())?;
+
+    assert_eq!(
+        compare_commits(root.path(), &base.base_commit, &left.base_commit, 100)?.relation,
+        TemporalRelation::Before
+    );
+    assert_eq!(
+        compare_commits(root.path(), &left.base_commit, &base.base_commit, 100)?.relation,
+        TemporalRelation::After
+    );
+    assert_eq!(
+        compare_commits(root.path(), &left.base_commit, &right.base_commit, 100)?.relation,
+        TemporalRelation::Concurrent
+    );
+    assert_eq!(
+        compare_commits(root.path(), &right.base_commit, &right.base_commit, 0)?.relation,
+        TemporalRelation::Same
+    );
+    let bounded = compare_commits(root.path(), &base.base_commit, &left.base_commit, 0)?;
+    assert_eq!(bounded.relation, TemporalRelation::Unknown);
+    assert_eq!(bounded.gap, Some(CoverageGapKind::BudgetExceeded));
     Ok(())
 }

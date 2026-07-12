@@ -11,6 +11,7 @@ use crate::events::machines::{
 use crate::knowledge::{
     CodeIndexFormat, CodeIndexId, EvidenceLinkMethod, EvidenceOccurrence, EvidenceOccurrenceId,
     EvidenceStance, GitObjectId, KnowledgeCoverage, RepositoryId, SourceSnapshotId,
+    TemporalRelation,
 };
 use crate::relate::settlement::{RelationFailureClass, SettledRelation};
 
@@ -299,6 +300,28 @@ pub struct CodeIndexRecordedV1 {
     /// Bounded index coverage and omissions.
     pub coverage: KnowledgeCoverage,
     /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// One replayable Git-ancestry comparison between frozen source snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 15, version = 1)]
+pub struct SourceSnapshotRelationV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Repository whose object DAG supplied the comparison.
+    pub repository_id: RepositoryId,
+    /// Previously recorded snapshot.
+    pub left_snapshot_id: SourceSnapshotId,
+    /// Newly recorded snapshot.
+    pub right_snapshot_id: SourceSnapshotId,
+    /// Commit underlying the left snapshot.
+    pub left_commit: GitObjectId,
+    /// Commit underlying the right snapshot.
+    pub right_commit: GitObjectId,
+    /// Ancestry relation from left to right.
+    pub relation: TemporalRelation,
+    /// Observation wall-clock time in milliseconds; never an ordering input.
     pub observed_at_ms: u64,
 }
 
@@ -678,6 +701,16 @@ mod tests {
             method: EvidenceLinkMethod::Deterministic,
             observed_at_ms: 18,
         })?;
+        assert_round_trip(&SourceSnapshotRelationV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: RepositoryId::derive("repository"),
+            left_snapshot_id: snapshot_id.clone(),
+            right_snapshot_id: SourceSnapshotId::derive("snapshot-next"),
+            left_commit: GitObjectId::new(GitObjectFormat::Sha1, "a".repeat(40))?,
+            right_commit: GitObjectId::new(GitObjectFormat::Sha1, "b".repeat(40))?,
+            relation: TemporalRelation::Before,
+            observed_at_ms: 19,
+        })?;
         assert_round_trip(&CodeIndexRecordedV1 {
             workspace_id,
             snapshot_id,
@@ -686,7 +719,7 @@ mod tests {
             analyzer_fingerprint: "tree-sitter-rust:1".to_string(),
             artifact_digest_hex: "f".repeat(64),
             coverage,
-            observed_at_ms: 19,
+            observed_at_ms: 20,
         })
     }
 }

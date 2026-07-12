@@ -19,6 +19,7 @@ use syncbat::{CoreBuilder, HandlerError, HandlerResult, OperationRegisterItem};
 use crate::claims::card::ClaimCard;
 use crate::claims::conflict::ConflictCard;
 use crate::claims::evidence::{assemble_through as assemble_evidence_through, EvidenceProjection};
+use crate::claims::temporal::{assemble_through as assemble_temporal_through, TemporalProjection};
 use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
 use crate::claims::workspace::{assemble, assemble_through, ClaimView, WorkspaceView};
 use crate::code_index::{
@@ -39,24 +40,26 @@ use crate::events::payloads::{
     ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
     ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1, OnboardingCompiledV2,
     RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2,
-    SourceSnapshotRecordedV1, WorkspaceInitializedV2,
+    SourceSnapshotRecordedV1, SourceSnapshotRelationV1, WorkspaceInitializedV2,
 };
 use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
-use crate::git_source::{capture as capture_git, CaptureLimits, CapturedLayer, CapturedSource};
+use crate::git_source::{
+    capture as capture_git, compare_commits, CaptureLimits, CapturedLayer, CapturedSource,
+};
 use crate::knowledge::{
     AnalysisQuality, AnswerState, ByteRange, ClaimEvidence, CodeIndexArtifact, CodeIndexId,
     CodeOccurrence, CoverageGap, CoverageGapKind, EvidenceLinkMethod, EvidenceOccurrence,
     EvidenceOccurrenceId, EvidenceSourceKind, EvidenceStance, KnowledgeCoverage, LineRange,
-    RepositoryId, SnapshotDescriptor, SnapshotRead, SnapshotToken, TriangulationTarget,
-    UncertaintyReason, MAX_EVIDENCE_EXCERPT_BYTES,
+    RepositoryId, SnapshotDescriptor, SnapshotRead, SnapshotToken, TemporalRelation,
+    TriangulationTarget, UncertaintyReason, MAX_EVIDENCE_EXCERPT_BYTES,
 };
 use crate::ops::env::{self, ReceiptNote};
 use crate::relate::heuristic;
 use crate::semantics::pipeline::{
     receipt_view, ClaimStatus as SemanticClaimStatus, ClaimView as SemanticClaimView,
-    RelateThresholds,
+    ParallelRelateOptions, RelateTemporalPolicy, RelateThresholds,
 };
 
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
@@ -65,6 +68,8 @@ const RELATE_PREFILTER: f32 = 0.60;
 const MAX_INLINE_SOURCE_FAILURES: usize = 256;
 const MAX_SOURCE_FAILURE_DETAIL_CHARS: usize = 512;
 const MAX_TRIANGULATION_CODE_OCCURRENCES: usize = 200;
+const MAX_TEMPORAL_SNAPSHOT_COMPARISONS: usize = 1_024;
+const MAX_GIT_ANCESTRY_WALK: usize = 100_000;
 #[cfg(feature = "openrouter")]
 const ENV_RELATE_CACHE: &str = "TEXO_RELATE_CACHE";
 #[cfg(feature = "openrouter")]
@@ -628,7 +633,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.verify.run.input.v2",
     output_schema = "texo.verify.run.output.v2",
     receipt_kind = "receipt.texo.verify.run.v2",
-    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
+    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e", "evt.e00f"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -1074,7 +1079,7 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.knowledge.index.input.v1",
     output_schema = "texo.knowledge.index.output.v1",
     receipt_kind = "receipt.texo.knowledge.index.v1",
-    appends_events = ["evt.e00b", "evt.e00c", "evt.e00d"],
+    appends_events = ["evt.e00b", "evt.e00c", "evt.e00d", "evt.e00f"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -1089,7 +1094,8 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
         let workspace = WorkspaceId::new(workspace_id.clone())?;
-        let repository_id = latest_source_snapshot(Some(view.frontier))?.map_or_else(
+        let previous_snapshots = source_snapshots_through(Some(view.frontier))?;
+        let repository_id = previous_snapshots.last().cloned().map_or_else(
             || {
                 let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
                 RepositoryId::derive(&format!(
@@ -1111,6 +1117,7 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 sources_captured: capture.sources.len(),
                 evidence_recorded: 0,
                 claims_linked: 0,
+                relations_recorded: 0,
                 already_indexed: true,
                 coverage: capture.coverage,
                 receipts: Vec::new(),
@@ -1134,6 +1141,13 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             capture.coverage.analysis_quality = AnalysisQuality::Syntactic;
         }
         capture.coverage.occurrences = u64::try_from(planned.rows.len()).unwrap_or(u64::MAX);
+        let relations = plan_and_attach_snapshot_relations(
+            &root,
+            &workspace,
+            &mut capture,
+            &previous_snapshots,
+            input.observed_at_ms,
+        )?;
         let snapshot = SourceSnapshotRecordedV1 {
             workspace_id: workspace.clone(),
             repository_id: capture.repository_id,
@@ -1151,6 +1165,7 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             &workspace,
             &snapshot,
             &planned.rows,
+            &relations,
             input.observed_at_ms,
         )?;
         Ok(KnowledgeIndexOutput {
@@ -1161,6 +1176,7 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             sources_captured: capture.sources.len(),
             evidence_recorded: planned.rows.len(),
             claims_linked: planned.rows.len(),
+            relations_recorded: relations.len(),
             already_indexed: false,
             coverage: capture.coverage,
             receipts,
@@ -1326,7 +1342,7 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     })
 }
 
-const DOMAIN_KINDS: [EventKind; 14] = [
+const DOMAIN_KINDS: [EventKind; 15] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
     <ClaimSupersededV2 as EventPayload>::KIND,
@@ -1341,6 +1357,7 @@ const DOMAIN_KINDS: [EventKind; 14] = [
     <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
     <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
     <crate::events::payloads::CodeIndexRecordedV1 as EventPayload>::KIND,
+    <SourceSnapshotRelationV1 as EventPayload>::KIND,
 ];
 
 /// Return the operation registration items.
@@ -1450,6 +1467,7 @@ struct KnowledgeIndexOutput {
     sources_captured: usize,
     evidence_recorded: usize,
     claims_linked: usize,
+    relations_recorded: usize,
     already_indexed: bool,
     coverage: KnowledgeCoverage,
     receipts: Vec<ReceiptNote>,
@@ -2241,10 +2259,16 @@ fn status_coverage(
 fn latest_source_snapshot(
     frontier: Option<u64>,
 ) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
+    Ok(source_snapshots_through(frontier)?.pop())
+}
+
+fn source_snapshots_through(
+    frontier: Option<u64>,
+) -> Result<Vec<SourceSnapshotRecordedV1>, TexoError> {
     env::with(|op_env| {
         let region = Region::scope(scope_for_workspace(&op_env.workspace_id));
         let mut after = None;
-        let mut latest = None;
+        let mut snapshots = Vec::new();
         'pages: loop {
             let page = op_env.store.query_entries_after(&region, after, 256);
             if page.is_empty() {
@@ -2256,7 +2280,7 @@ fn latest_source_snapshot(
                 }
                 if entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND {
                     let raw = op_env.store.read_raw(entry.event_id())?;
-                    latest = Some(
+                    snapshots.push(
                         batpak::encoding::from_bytes::<SourceSnapshotRecordedV1>(
                             &raw.event.payload,
                         )
@@ -2269,12 +2293,144 @@ fn latest_source_snapshot(
             }
             after = page.last().map(batpak::store::IndexEntry::global_sequence);
         }
-        Ok::<_, TexoError>(latest)
+        Ok::<_, TexoError>(snapshots)
     })?
+}
+
+fn plan_snapshot_relations(
+    root: &Path,
+    workspace_id: &WorkspaceId,
+    capture: &crate::git_source::GitCapture,
+    previous: &[SourceSnapshotRecordedV1],
+    observed_at_ms: u64,
+) -> Result<(Vec<SourceSnapshotRelationV1>, Vec<CoverageGap>), TexoError> {
+    let skipped = previous
+        .len()
+        .saturating_sub(MAX_TEMPORAL_SNAPSHOT_COMPARISONS);
+    let mut gaps = Vec::new();
+    if skipped > 0 {
+        gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::BudgetExceeded,
+        });
+    }
+    let mut relations = Vec::new();
+    for prior in previous.iter().skip(skipped) {
+        if prior.snapshot_id == capture.snapshot_id {
+            continue;
+        }
+        let comparison = if prior.repository_id == capture.repository_id {
+            overlay_aware_comparison(root, prior, capture)?
+        } else {
+            crate::git_source::GitComparison {
+                relation: TemporalRelation::Unknown,
+                gap: Some(CoverageGapKind::MissingObject),
+            }
+        };
+        if let Some(kind) = comparison.gap {
+            let gap = CoverageGap { path: None, kind };
+            if !gaps.contains(&gap) {
+                gaps.push(gap);
+            }
+        }
+        relations.push(SourceSnapshotRelationV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: capture.repository_id.clone(),
+            left_snapshot_id: prior.snapshot_id.clone(),
+            right_snapshot_id: capture.snapshot_id.clone(),
+            left_commit: prior.base_commit.clone(),
+            right_commit: capture.base_commit.clone(),
+            relation: comparison.relation,
+            observed_at_ms,
+        });
+    }
+    Ok((relations, gaps))
+}
+
+fn overlay_aware_comparison(
+    root: &Path,
+    prior: &SourceSnapshotRecordedV1,
+    capture: &crate::git_source::GitCapture,
+) -> Result<crate::git_source::GitComparison, TexoError> {
+    use crate::git_source::GitComparison;
+
+    if prior.base_commit == capture.base_commit {
+        return Ok(GitComparison {
+            relation: match (prior.dirty, capture.dirty) {
+                (false, true) => TemporalRelation::Before,
+                (true, false) => TemporalRelation::After,
+                (true, true) => TemporalRelation::Concurrent,
+                (false, false) => TemporalRelation::Same,
+            },
+            gap: None,
+        });
+    }
+    let comparison = compare_commits(
+        root,
+        &prior.base_commit,
+        &capture.base_commit,
+        MAX_GIT_ANCESTRY_WALK,
+    )?;
+    let relation = match comparison.relation {
+        TemporalRelation::Before if prior.dirty => TemporalRelation::Concurrent,
+        TemporalRelation::After if capture.dirty => TemporalRelation::Concurrent,
+        TemporalRelation::Same => TemporalRelation::Same,
+        TemporalRelation::Before => TemporalRelation::Before,
+        TemporalRelation::After => TemporalRelation::After,
+        TemporalRelation::Concurrent => TemporalRelation::Concurrent,
+        TemporalRelation::Unknown => TemporalRelation::Unknown,
+    };
+    Ok(GitComparison {
+        relation,
+        gap: comparison.gap,
+    })
+}
+
+fn plan_and_attach_snapshot_relations(
+    root: &Path,
+    workspace_id: &WorkspaceId,
+    capture: &mut crate::git_source::GitCapture,
+    previous: &[SourceSnapshotRecordedV1],
+    observed_at_ms: u64,
+) -> Result<Vec<SourceSnapshotRelationV1>, TexoError> {
+    let (relations, gaps) =
+        plan_snapshot_relations(root, workspace_id, capture, previous, observed_at_ms)?;
+    for gap in gaps {
+        if capture.coverage.gaps.len() < 256 && !capture.coverage.gaps.contains(&gap) {
+            capture.coverage.gaps.push(gap);
+        }
+    }
+    Ok(relations)
 }
 
 fn evidence_projection_through(frontier: u64) -> Result<EvidenceProjection, TexoError> {
     env::with(|op_env| assemble_evidence_through(&op_env.store, &op_env.workspace_id, frontier))?
+}
+
+fn temporal_projection_through(frontier: u64) -> Result<TemporalProjection, TexoError> {
+    env::with(|op_env| assemble_temporal_through(&op_env.store, &op_env.workspace_id, frontier))?
+}
+
+fn semantic_temporal_policy(
+    view: &WorkspaceView,
+    claims: &[(ClaimId, SemanticClaimView)],
+) -> Result<RelateTemporalPolicy, TexoError> {
+    let evidence = evidence_projection_through(view.frontier)?;
+    let relations = temporal_projection_through(view.frontier)?;
+    let mut policy = RelateTemporalPolicy::default();
+    for (claim_id, _) in claims {
+        if let Some(latest) = evidence
+            .for_claim(claim_id.as_str())
+            .iter()
+            .max_by_key(|item| item.link_sequence)
+        {
+            policy.bind_claim(claim_id, &latest.occurrence.snapshot_id);
+        }
+    }
+    for (left, right, relation) in relations.facts() {
+        policy.insert_relation_ids(left, right, relation);
+    }
+    Ok(policy)
 }
 
 fn triangulate_from_view(
@@ -2684,6 +2840,7 @@ fn append_knowledge_plan(
     workspace_id: &WorkspaceId,
     snapshot: &SourceSnapshotRecordedV1,
     rows: &[(EvidenceOccurrence, ClaimEvidenceLinkedV1)],
+    relations: &[SourceSnapshotRelationV1],
     observed_at_ms: u64,
 ) -> Result<Vec<ReceiptNote>, TexoError> {
     append_json(
@@ -2708,6 +2865,14 @@ fn append_knowledge_plan(
             cx,
             <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
             link,
+        )?;
+    }
+    for relation in relations {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <SourceSnapshotRelationV1 as EventPayload>::KIND,
+            relation,
         )?;
     }
     take_receipts()
@@ -3149,6 +3314,7 @@ pub(crate) fn run_relate_pass(
         )
     })?;
     let authority = authoritative_settlements(None)?;
+    let temporal = semantic_temporal_policy(&view, &claims)?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -3160,6 +3326,7 @@ pub(crate) fn run_relate_pass(
         &claims,
         RelateThresholds { cluster, prefilter },
         &authority.verdicts,
+        &temporal,
         std::time::Duration::from_secs(budget_secs),
     )?;
     for (pair, cache_key) in &authority.cache_keys {
@@ -3380,11 +3547,12 @@ fn relate_with_backends(
     claims: &[(ClaimId, SemanticClaimView)],
     thresholds: RelateThresholds,
     settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    temporal: &RelateTemporalPolicy,
     budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     use crate::extract::cache::CachingRelater;
     use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
-    use crate::semantics::pipeline::relate_claims_settled_parallel;
+    use crate::semantics::pipeline::relate_claims_settled_parallel_temporal;
     use crate::semantics::ClaimRelater as _;
 
     let embedder = OpenRouterEmbedder::new(None, gateway).map_err(semantic_error)?;
@@ -3403,14 +3571,17 @@ fn relate_with_backends(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
         .clamp(1, 16);
-    let relation_output = relate_claims_settled_parallel(
+    let relation_output = relate_claims_settled_parallel_temporal(
         claims,
         &embedder,
         &caching_relater,
         thresholds,
         settled,
-        budget,
-        concurrency,
+        ParallelRelateOptions {
+            temporal,
+            budget,
+            concurrency,
+        },
     )
     .map_err(semantic_error)?;
     let cache_keys = relate_cache_keys(&caching_relater, claims, &relation_output);
@@ -3428,6 +3599,7 @@ fn relate_with_backends(
     _claims: &[(ClaimId, SemanticClaimView)],
     _thresholds: RelateThresholds,
     _settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    _temporal: &RelateTemporalPolicy,
     _budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     Err(TexoError::Semantics {
