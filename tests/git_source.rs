@@ -151,15 +151,181 @@ fn worktree_symbolic_link_is_never_followed() -> TestResult {
     let outside = TempDir::new()?;
     let secret = outside.path().join("secret.rs");
     std::fs::write(&secret, b"do not read")?;
-    symlink(&secret, root.path().join("src/link.rs"))?;
+    std::fs::remove_file(root.path().join("src/lib.rs"))?;
+    symlink(&secret, root.path().join("src/lib.rs"))?;
     let capture = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    assert!(capture.dirty);
     assert!(capture.coverage.gaps.iter().any(|gap| {
-        gap.path.as_deref() == Some("src/link.rs") && gap.kind == CoverageGapKind::Symlink
+        gap.path.as_deref() == Some("src/lib.rs") && gap.kind == CoverageGapKind::Symlink
     }));
     assert!(!capture
         .sources
         .iter()
-        .any(|source| source.path == "src/link.rs"));
+        .any(|source| source.path == "src/lib.rs"));
+    Ok(())
+}
+
+#[test]
+fn lfs_pointers_and_gitlinks_are_explicit_omissions() -> TestResult {
+    let root = repository()?;
+    std::fs::write(
+        root.path().join("src/large.rs"),
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:0000\nsize 42\n",
+    )?;
+    git(root.path(), &["add", "src/large.rs"])?;
+    let head = git_stdout(root.path(), &["rev-parse", "HEAD"])?;
+    git(
+        root.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},vendor.rs"),
+        ],
+    )?;
+    git(root.path(), &["commit", "-qm", "special entries"])?;
+
+    let captured = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    assert!(captured.coverage.gaps.iter().any(|gap| {
+        gap.path.as_deref() == Some("src/large.rs") && gap.kind == CoverageGapKind::LfsPointer
+    }));
+    assert!(captured.coverage.gaps.iter().any(|gap| {
+        gap.path.as_deref() == Some("vendor.rs") && gap.kind == CoverageGapKind::Gitlink
+    }));
+    assert!(!captured
+        .sources
+        .iter()
+        .any(|source| source.path == "src/large.rs" || source.path == "vendor.rs"));
+    Ok(())
+}
+
+#[test]
+fn unresolved_conflict_excludes_stale_base_bytes() -> TestResult {
+    let root = repository()?;
+    let base_branch = git_stdout(root.path(), &["branch", "--show-current"])?;
+    git(root.path(), &["checkout", "-qb", "left"])?;
+    std::fs::write(root.path().join("docs/decision.md"), b"Deploy Monday.\n")?;
+    git(root.path(), &["commit", "-qam", "left"])?;
+    git(root.path(), &["checkout", "-q", &base_branch])?;
+    std::fs::write(root.path().join("docs/decision.md"), b"Deploy Tuesday.\n")?;
+    git(root.path(), &["commit", "-qam", "right"])?;
+    let merge = Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args(["merge", "--no-edit", "left"])
+        .output()?;
+    assert!(!merge.status.success(), "fixture must leave a conflict");
+
+    let captured = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    assert!(captured.dirty);
+    assert!(captured.coverage.gaps.iter().any(|gap| {
+        gap.path.as_deref() == Some("docs/decision.md")
+            && gap.kind == CoverageGapKind::WorktreeConflict
+    }));
+    assert!(!captured
+        .sources
+        .iter()
+        .any(|source| source.path == "docs/decision.md"));
+    Ok(())
+}
+
+#[test]
+fn equivalent_checkouts_and_ref_rewrites_keep_content_identity() -> TestResult {
+    let root = repository()?;
+    let first = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    let outside = TempDir::new()?;
+    let clone = outside.path().join("clone");
+    let cloned = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(root.path())
+        .arg(&clone)
+        .output()?;
+    assert!(cloned.status.success());
+    let cloned = capture(&clone, repo_id(), CaptureLimits::default())?;
+    assert_eq!(cloned.snapshot_id, first.snapshot_id);
+    assert_eq!(cloned.index_digest_hex, first.index_digest_hex);
+
+    std::fs::write(root.path().join("src/later.rs"), b"pub fn later() {}\n")?;
+    git(root.path(), &["add", "."])?;
+    git(root.path(), &["commit", "-qm", "later"])?;
+    git(root.path(), &["reset", "--hard", "HEAD^"])?;
+    let rewritten = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    assert_eq!(rewritten.snapshot_id, first.snapshot_id);
+    assert_eq!(rewritten.index_digest_hex, first.index_digest_hex);
+    Ok(())
+}
+
+#[test]
+fn shallow_history_is_unknown_instead_of_concurrent() -> TestResult {
+    let root = repository()?;
+    let oldest = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    for index in 0..2 {
+        std::fs::write(
+            root.path().join(format!("src/step{index}.rs")),
+            format!("pub fn step{index}() {{}}\n"),
+        )?;
+        git(root.path(), &["add", "."])?;
+        git(root.path(), &["commit", "-qm", "step"])?;
+    }
+    let outside = TempDir::new()?;
+    let shallow = outside.path().join("shallow");
+    let url = format!("file://{}", root.path().display());
+    let cloned = Command::new("git")
+        .args(["clone", "-q", "--depth=1", &url])
+        .arg(&shallow)
+        .output()?;
+    assert!(cloned.status.success());
+    let newest = capture(&shallow, repo_id(), CaptureLimits::default())?;
+    let comparison = compare_commits(&shallow, &oldest.base_commit, &newest.base_commit, 100)?;
+    assert_eq!(comparison.relation, TemporalRelation::Unknown);
+    assert_eq!(comparison.gap, Some(CoverageGapKind::ShallowHistory));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_committed_paths_surface_unsupported_encoding() -> TestResult {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let root = repository()?;
+    let relative = std::path::PathBuf::from(OsString::from_vec(b"src/\xffinvalid.rs".to_vec()));
+    std::fs::write(root.path().join(&relative), b"pub fn hidden() {}\n")?;
+    let added = Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .arg("add")
+        .arg("--")
+        .arg(&relative)
+        .output()?;
+    assert!(added.status.success());
+    git(root.path(), &["commit", "-qm", "invalid path"])?;
+    let captured = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    assert!(captured
+        .coverage
+        .gaps
+        .iter()
+        .any(|gap| gap.kind == CoverageGapKind::UnsupportedEncoding));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn malformed_head_object_fails_closed() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = repository()?;
+    let head = git_stdout(root.path(), &["rev-parse", "HEAD"])?;
+    let object = root
+        .path()
+        .join(".git/objects")
+        .join(&head[..2])
+        .join(&head[2..]);
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::write(object, b"not a zlib Git object")?;
+    let error = capture(root.path(), repo_id(), CaptureLimits::default())
+        .expect_err("corrupt authority object must not produce a capture");
+    assert!(error.to_string().contains("git capture"));
     Ok(())
 }
 

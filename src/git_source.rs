@@ -74,7 +74,7 @@ pub struct GitCapture {
     pub base_commit: GitObjectId,
     /// Tree referenced by `base_commit`.
     pub base_tree: GitObjectId,
-    /// Digest of the exact Git index file, or the empty-byte digest.
+    /// Digest of semantic index entries, excluding volatile filesystem stats.
     pub index_digest_hex: String,
     /// Digest of sorted worktree overlay entries and exact bytes.
     pub overlay_digest_hex: String,
@@ -209,22 +209,24 @@ pub fn capture(
     let commit = repo.head_commit().map_err(|error| git_error(root, error))?;
     let base_commit = git_object_id(commit.id.to_string())?;
     let tree = commit.tree().map_err(|error| git_error(root, error))?;
+    let resolved_tree_id = tree.id;
     let base_tree = git_object_id(tree.id.to_string())?;
     let mut accumulator = CaptureAccumulator::new(limits);
     capture_committed(&repo, &tree, &mut accumulator)?;
-    let overlay = capture_overlay(&repo, work_dir, &mut accumulator)?;
-    let index_digest_hex = fs::read(repo.index_path())
-        .map_or_else(
-            |error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    Ok(blake3_bytes_hex(&[]))
-                } else {
-                    Err(error)
-                }
-            },
-            |bytes| Ok(blake3_bytes_hex(&bytes)),
-        )
-        .map_err(TexoError::Io)?;
+    let index = repo
+        .index_or_empty()
+        .map_err(|error| git_error(work_dir, error))?;
+    let index_digest_hex = semantic_index_digest(&index);
+    let overlay = capture_overlay(&repo, &index, resolved_tree_id, work_dir, &mut accumulator)?;
+    let ending_index = repo
+        .index_or_empty()
+        .map_err(|error| git_error(work_dir, error))?;
+    if semantic_index_digest(&ending_index) != index_digest_hex {
+        return Err(TexoError::Source {
+            path: repo.index_path().display().to_string(),
+            detail: "Git index changed while the snapshot was being captured".to_string(),
+        });
+    }
     let overlay_digest_hex = overlay_digest(&overlay);
     let snapshot_material = format!(
         "{CAPTURE_SCHEMA}\u{1f}{repository_id}\u{1f}{}\u{1f}{}\u{1f}{index_digest_hex}\u{1f}{overlay_digest_hex}",
@@ -278,6 +280,7 @@ fn capture_committed(
             .map_err(|error| git_error(repo.git_dir(), error))?;
         if entry.mode.is_link() {
             accumulator.gap(Some(path.clone()), CoverageGapKind::Symlink);
+            continue;
         }
         accumulator.insert(
             path,
@@ -289,19 +292,31 @@ fn capture_committed(
     Ok(())
 }
 
+fn semantic_index_digest(index: &gix::worktree::Index) -> String {
+    let mut material = b"texo.git-index.v1".to_vec();
+    for entry in index.entries() {
+        let path = entry.path(index);
+        material.extend_from_slice(&u64::try_from(path.len()).unwrap_or(u64::MAX).to_be_bytes());
+        material.extend_from_slice(path.as_ref());
+        material.extend_from_slice(entry.id.as_bytes());
+        material.extend_from_slice(&entry.mode.bits().to_be_bytes());
+        material.extend_from_slice(&entry.stage_raw().to_be_bytes());
+    }
+    blake3_bytes_hex(&material)
+}
+
 fn capture_overlay(
     repo: &gix::Repository,
+    index: &gix::worktree::Index,
+    resolved_tree_id: gix::ObjectId,
     work_dir: &Path,
     accumulator: &mut CaptureAccumulator,
 ) -> Result<BTreeMap<String, OverlayDigestEntry>, TexoError> {
-    let index = repo
-        .index_or_empty()
-        .map_err(|error| git_error(work_dir, error))?;
     let conflict_paths = index
         .entries()
         .iter()
         .filter(|entry| entry.stage_raw() != 0)
-        .filter_map(|entry| std::str::from_utf8(entry.path(&index)).ok())
+        .filter_map(|entry| std::str::from_utf8(entry.path(index)).ok())
         .map(ToOwned::to_owned)
         .collect::<BTreeSet<_>>();
     for path in &conflict_paths {
@@ -312,9 +327,17 @@ fn capture_overlay(
     let status = repo
         .status(gix::progress::Discard)
         .map_err(|error| git_error(work_dir, error))?
+        .head_tree(resolved_tree_id)
         .untracked_files(gix::status::UntrackedFiles::Files)
         .into_iter(Vec::<gix::bstr::BString>::new())
         .map_err(|error| git_error(work_dir, error))?;
+    for path in conflict_paths
+        .iter()
+        .filter(|path| source_path_is_in_scope(path) && safe_relative_path(Path::new(path)))
+    {
+        accumulator.omit(path);
+        overlay.insert(path.clone(), OverlayDigestEntry::Omitted("conflict"));
+    }
     for item in status {
         let item = item.map_err(|error| git_error(work_dir, error))?;
         let path = match std::str::from_utf8(item.location().as_ref()) {
@@ -341,14 +364,18 @@ fn capture_overlay(
             Err(error) => return Err(error.into()),
         };
         if metadata.file_type().is_symlink() {
-            accumulator.gap(Some(path), CoverageGapKind::Symlink);
+            accumulator.omit(&path);
+            accumulator.gap(Some(path.clone()), CoverageGapKind::Symlink);
+            overlay.insert(path, OverlayDigestEntry::Omitted("symlink"));
             continue;
         }
         if !metadata.is_file() {
             continue;
         }
         if metadata.len() > accumulator.limits.max_file_bytes {
-            accumulator.gap(Some(path), CoverageGapKind::SourceTooLarge);
+            accumulator.omit(&path);
+            accumulator.gap(Some(path.clone()), CoverageGapKind::SourceTooLarge);
+            overlay.insert(path, OverlayDigestEntry::Omitted("source-too-large"));
             continue;
         }
         let bytes = fs::read(&full)?;
@@ -369,6 +396,7 @@ fn capture_overlay(
 enum OverlayDigestEntry {
     Bytes(String),
     Deleted,
+    Omitted(&'static str),
 }
 
 fn overlay_digest(entries: &BTreeMap<String, OverlayDigestEntry>) -> String {
@@ -381,6 +409,7 @@ fn overlay_digest(entries: &BTreeMap<String, OverlayDigestEntry>) -> String {
         match entry {
             OverlayDigestEntry::Bytes(digest) => material.extend_from_slice(digest.as_bytes()),
             OverlayDigestEntry::Deleted => material.extend_from_slice(b"deleted"),
+            OverlayDigestEntry::Omitted(kind) => material.extend_from_slice(kind.as_bytes()),
         }
     }
     blake3_bytes_hex(&material)
@@ -418,11 +447,13 @@ impl CaptureAccumulator {
     ) {
         self.sources_examined = self.sources_examined.saturating_add(1);
         if bytes.starts_with(LFS_HEADER) {
+            self.omit(&path);
             self.gap(Some(path), CoverageGapKind::LfsPointer);
             return;
         }
         let bytes_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if bytes_len > self.limits.max_file_bytes {
+            self.omit(&path);
             self.gap(Some(path), CoverageGapKind::SourceTooLarge);
             return;
         }
@@ -436,6 +467,7 @@ impl CaptureAccumulator {
         if self.sources.len() >= self.limits.max_files && !self.sources.contains_key(&path)
             || next_total > self.limits.max_total_bytes
         {
+            self.omit(&path);
             self.truncated = true;
             self.gap(Some(path), CoverageGapKind::BudgetExceeded);
             return;
@@ -454,12 +486,16 @@ impl CaptureAccumulator {
     }
 
     fn remove(&mut self, path: &str) {
+        self.omit(path);
+        self.deleted.insert(path.to_string());
+    }
+
+    fn omit(&mut self, path: &str) {
         if let Some(source) = self.sources.remove(path) {
             self.total_bytes = self
                 .total_bytes
                 .saturating_sub(u64::try_from(source.bytes.len()).unwrap_or(u64::MAX));
         }
-        self.deleted.insert(path.to_string());
     }
 
     fn gap(&mut self, path: Option<String>, kind: CoverageGapKind) {

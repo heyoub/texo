@@ -8,7 +8,9 @@ use protobuf::{EnumOrUnknown, Message};
 use tempfile::TempDir;
 use texo::code_index::{build, load, persist, CodeIndexLimits, ARTIFACT_SCHEMA};
 use texo::git_source::{capture, CaptureLimits};
-use texo::knowledge::{AnalysisQuality, CodeIndexFormat, CodeOccurrenceRole, RepositoryId};
+use texo::knowledge::{
+    AnalysisQuality, CodeIndexFormat, CodeOccurrenceRole, CoverageGapKind, RepositoryId,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -232,5 +234,85 @@ fn one_index_command_freezes_source_and_builds_code_intelligence() -> TestResult
     assert_eq!(value["schema"], "texo.index.v2");
     assert_eq!(value["source"]["snapshot_id"], value["code"]["snapshot_id"]);
     assert_eq!(value["code"]["format"], "syntax");
+    Ok(())
+}
+
+#[test]
+fn malformed_scip_and_unsupported_source_bytes_fail_honestly() -> TestResult {
+    let root = repository()?;
+    let initial_capture = capture(
+        root.path(),
+        RepositoryId::derive("malformed-index-test"),
+        CaptureLimits::default(),
+    )?;
+    assert!(build(
+        &initial_capture,
+        Some(b"not protobuf"),
+        CodeIndexLimits::default()
+    )
+    .is_err());
+
+    std::fs::write(root.path().join("script.py"), b"def valid():\n\xff\xfe\n")?;
+    git(root.path(), &["add", "script.py"])?;
+    git(
+        root.path(),
+        &["commit", "-qm", "unsupported source encoding"],
+    )?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("unsupported-source-test"),
+        CaptureLimits::default(),
+    )?;
+    let prepared = build(&capture, None, CodeIndexLimits::default())?;
+    assert!(prepared
+        .artifact
+        .coverage
+        .gaps
+        .iter()
+        .any(|gap| gap.path.as_deref() == Some("script.py")
+            && gap.kind == CoverageGapKind::UnsupportedEncoding));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn scip_reader_rejects_escape_symlink_and_oversize_inputs() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let root = repository()?;
+    let outside = TempDir::new()?;
+    let external = outside.path().join("index.scip");
+    std::fs::write(&external, b"external")?;
+    assert!(texo::code_index::read_scip(root.path(), &external, 1024).is_err());
+
+    let linked = root.path().join("linked.scip");
+    symlink(&external, &linked)?;
+    assert!(texo::code_index::read_scip(root.path(), &linked, 1024).is_err());
+
+    let large = root.path().join("large.scip");
+    std::fs::write(&large, vec![0_u8; 17])?;
+    assert!(texo::code_index::read_scip(root.path(), &large, 16).is_err());
+    Ok(())
+}
+
+#[cfg(feature = "code-rust")]
+#[test]
+fn recovered_rust_parse_is_never_reported_as_complete() -> TestResult {
+    let root = repository()?;
+    std::fs::write(
+        root.path().join("src/lib.rs"),
+        b"pub fn incomplete(value: {\n",
+    )?;
+    git(root.path(), &["add", "src/lib.rs"])?;
+    git(root.path(), &["commit", "-qm", "incomplete syntax"])?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("parser-recovery-test"),
+        CaptureLimits::default(),
+    )?;
+    let prepared = build(&capture, None, CodeIndexLimits::default())?;
+    assert!(prepared.artifact.coverage.gaps.iter().any(|gap| {
+        gap.path.as_deref() == Some("src/lib.rs") && gap.kind == CoverageGapKind::AnalysisIncomplete
+    }));
     Ok(())
 }

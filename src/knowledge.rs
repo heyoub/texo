@@ -606,7 +606,7 @@ pub enum CoverageGapKind {
     MissingObject,
     /// Entry is a submodule gitlink.
     Gitlink,
-    /// Entry is a symbolic link; the target was recorded but never followed.
+    /// Entry is a symbolic link; it was excluded and its target was never followed.
     Symlink,
     /// Blob is a Git LFS pointer whose target was not read.
     LfsPointer,

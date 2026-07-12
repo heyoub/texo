@@ -308,6 +308,13 @@ fn import_scip(
             );
             continue;
         }
+        if std::str::from_utf8(&source.bytes).is_err() {
+            builder.gap(
+                Some(document.relative_path.clone()),
+                CoverageGapKind::UnsupportedEncoding,
+            );
+            continue;
+        }
         indexed_paths.insert(document.relative_path.clone());
         import_scip_document(document, source, &analyzer, builder);
     }
@@ -540,6 +547,13 @@ fn analyze_fallbacks(
             break;
         }
         builder.sources_examined = builder.sources_examined.saturating_add(1);
+        if std::str::from_utf8(&source.bytes).is_err() {
+            builder.gap(
+                Some(source.path.clone()),
+                CoverageGapKind::UnsupportedEncoding,
+            );
+            continue;
+        }
         #[cfg(feature = "code-rust")]
         if Path::new(&source.path)
             .extension()

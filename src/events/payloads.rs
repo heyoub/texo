@@ -239,7 +239,7 @@ pub struct SourceSnapshotRecordedV1 {
     pub base_commit: GitObjectId,
     /// Tree referenced by the base commit.
     pub base_tree: GitObjectId,
-    /// Digest of the exact Git index bytes.
+    /// Digest of semantic Git index entries, excluding volatile filesystem stats.
     pub index_digest_hex: String,
     /// Digest of the sorted frozen worktree overlay.
     pub overlay_digest_hex: String,

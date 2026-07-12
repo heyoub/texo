@@ -94,9 +94,12 @@ by accepting a claim, path, span, or code symbol target.
 - Read committed content as raw object-database blobs. Working-tree filters do
   not participate in committed identity.
 - Represent Git SHA-1 and SHA-256 object IDs explicitly.
-- Freeze a resolved base commit plus index/worktree overlay; never re-resolve a
-  moving ref mid-operation.
-- Symlinks are recorded, never followed. Gitlinks, LFS pointers, shallow
+- Freeze a resolved base commit plus index/worktree overlay. Status comparison
+  is pinned to that resolved tree even if the ref moves mid-operation. Index
+  identity hashes path, object id, mode, and stage—not volatile stat fields—so
+  equivalent checkouts have the same content identity; an index mutation
+  during capture fails closed.
+- Symlinks are excluded, never followed. Gitlinks, LFS pointers, shallow
   history, conflicts, missing objects, size limits, and unsupported encodings
   become typed coverage gaps.
 - Prefer imported SCIP indexes for precise definitions/references. Syntactic
