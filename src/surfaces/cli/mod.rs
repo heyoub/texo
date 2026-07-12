@@ -164,6 +164,9 @@ enum Command {
     },
     /// Remove only Texo-managed workspace adapters and guidance.
     Uninstall {
+        /// Client adapters to remove; omitting removes the complete installation.
+        #[arg(long, value_enum)]
+        client: Vec<ClientTarget>,
         /// Preview the exact file changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -252,6 +255,9 @@ enum BackupCmd {
     /// Verify a backup using only the destination's bytes.
     Verify {
         dest: PathBuf,
+        /// Out-of-band manifest hash printed when the backup was created.
+        #[arg(long)]
+        expect_manifest_hash: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -571,8 +577,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Uninstall { dry_run, json } => {
-            let report = crate::install::uninstall(&cli.root, dry_run)?;
+        Command::Uninstall {
+            client,
+            dry_run,
+            json,
+        } => {
+            let report = crate::install::uninstall(&cli.root, &client, dry_run)?;
             let output = serde_json::to_value(report)?;
             if json {
                 render::json(&output)?;
@@ -671,8 +681,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 }
                 Ok(ExitCode::SUCCESS)
             }
-            BackupCmd::Verify { dest, json } => {
-                let report = crate::backup::verify(&dest)?;
+            BackupCmd::Verify {
+                dest,
+                expect_manifest_hash,
+                json,
+            } => {
+                let report = crate::backup::verify_with_expected_manifest_hash(
+                    &dest,
+                    expect_manifest_hash.as_deref(),
+                )?;
                 let verified = report.verified;
                 let output = serde_json::to_value(report)?;
                 if json {

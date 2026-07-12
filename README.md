@@ -21,7 +21,10 @@ texo doctor --deep
 manifests under `.texo/`, detects existing Codex, Claude Code, and Cursor
 project configuration, merges only Texo-owned entries, and adds one managed
 block to `AGENTS.md`. Preview it with `--dry-run --json`; remove only those
-managed entries with `texo uninstall`.
+managed entries with `texo uninstall`, or select one adapter with
+`texo uninstall --client <codex|claude|cursor>`. Texo records which empty
+adapter files it created, so uninstall removes those files without deleting
+pre-existing user-owned shells.
 
 From this source checkout, a complete clean demo is:
 
@@ -51,6 +54,10 @@ Multi-workspace scopes live in `.texo/config.toml` under
   and agent-install diagnostics. `--fix` touches only Texo-managed files.
 - `texo backup create <dest>` creates a fresh journal/config backup with
   BatPak snapshot evidence; `texo backup verify <dest>` checks it offline.
+  Creation prints `manifest_hash_hex`: store that value outside the backup and
+  pass `--expect-manifest-hash <hex>` to detect coordinated rewrites. Without
+  a separately trusted pin, verification detects corruption and incomplete
+  publication, not forgery of both data and manifest.
 
 ## Agent tools
 

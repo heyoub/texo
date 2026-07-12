@@ -27,3 +27,6 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 - Backups carry journal authority and config only. Caches, warm projections,
   generated views, and client adapters are rebuilt rather than restored as
   source truth.
+- Backup evidence is self-consistency evidence unless its printed manifest
+  hash is pinned outside the backup and supplied during verification; it is
+  never described as a signature or independent proof of authenticity.

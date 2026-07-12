@@ -113,6 +113,114 @@ fn backup_rejects_workspace_overlap_and_symbolic_link_roots() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn store_and_snapshot_evidence_tampering_fail_closed() -> TestResult {
+    let root = TempDir::new()?;
+    let outside = TempDir::new()?;
+    assert!(run(root.path(), &["init", "--workspace", "demo"])?
+        .status
+        .success());
+
+    let store_tamper = outside.path().join("store-tamper");
+    create_backup(root.path(), &store_tamper)?;
+    let segment = std::fs::read_dir(store_tamper.join("store"))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "fbat")
+        })
+        .ok_or("snapshot segment")?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(segment)?
+        .write_all(b"tamper")?;
+    let store_report = verify_backup(root.path(), &store_tamper, &[])?;
+    assert!(!store_report.0);
+    assert!(has_finding(&store_report.1, "store_file_mismatch"));
+
+    let evidence_tamper = outside.path().join("evidence-tamper");
+    create_backup(root.path(), &evidence_tamper)?;
+    let manifest_path = evidence_tamper.join("backup.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    manifest["snapshot"]["body"]["fence_token"]["token"] = Value::from(999_999_u64);
+    let mut bytes = serde_json::to_vec_pretty(&manifest)?;
+    bytes.push(b'\n');
+    std::fs::write(&manifest_path, bytes)?;
+    let evidence_report = verify_backup(root.path(), &evidence_tamper, &[])?;
+    assert!(!evidence_report.0);
+    assert!(has_finding(
+        &evidence_report.1,
+        "snapshot_evidence_mismatch"
+    ));
+    Ok(())
+}
+
+#[test]
+fn out_of_band_manifest_pin_detects_coordinated_manifest_rewrite() -> TestResult {
+    let root = TempDir::new()?;
+    let outside = TempDir::new()?;
+    assert!(run(root.path(), &["init", "--workspace", "demo"])?
+        .status
+        .success());
+    let dest = outside.path().join("pinned");
+    let created = create_backup(root.path(), &dest)?;
+    let expected = created["manifest_hash_hex"]
+        .as_str()
+        .ok_or("manifest hash")?;
+    assert!(verify_backup(root.path(), &dest, &["--expect-manifest-hash", expected])?.0);
+
+    let manifest_path = dest.join("backup.json");
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    manifest["created_at_ms"] = Value::from(
+        manifest["created_at_ms"]
+            .as_u64()
+            .ok_or("created_at_ms")?
+            .saturating_add(1),
+    );
+    let mut bytes = serde_json::to_vec_pretty(&manifest)?;
+    bytes.push(b'\n');
+    std::fs::write(&manifest_path, bytes)?;
+
+    assert!(
+        verify_backup(root.path(), &dest, &[])?.0,
+        "unpinned verification proves consistency, not independent authenticity"
+    );
+    let pinned = verify_backup(root.path(), &dest, &["--expect-manifest-hash", expected])?;
+    assert!(!pinned.0);
+    assert!(has_finding(&pinned.1, "manifest_hash_mismatch"));
+    Ok(())
+}
+
+fn create_backup(root: &std::path::Path, dest: &std::path::Path) -> TestResult<Value> {
+    let output = run(root, &["backup", "create", path(dest)?, "--json"])?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn verify_backup(
+    root: &std::path::Path,
+    dest: &std::path::Path,
+    extra: &[&str],
+) -> TestResult<(bool, Value)> {
+    let mut args = vec!["backup", "verify", path(dest)?, "--json"];
+    args.extend_from_slice(extra);
+    let output = run(root, &args)?;
+    Ok((
+        output.status.success(),
+        serde_json::from_slice(&output.stdout)?,
+    ))
+}
+
+fn has_finding(report: &Value, kind: &str) -> bool {
+    report["findings"]
+        .as_array()
+        .is_some_and(|findings| findings.iter().any(|finding| finding["kind"] == kind))
+}
+
 fn run(root: &std::path::Path, args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new(env!("CARGO_BIN_EXE_texo"))
         .arg("--root")

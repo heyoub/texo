@@ -296,11 +296,15 @@ impl TexoError {
             | Self::Extract { .. }
             | Self::Verify { .. }
             | Self::Backup { .. }
-            | Self::OpInput { .. }
             | Self::OpRuntime { denied: true, .. } => FailureFacts {
                 committed: No,
                 retry_safe: false,
                 resume: None,
+            },
+            Self::OpInput { .. } => FailureFacts {
+                committed: No,
+                retry_safe: true,
+                resume: Some("fix the input and retry"),
             },
             Self::Semantics { .. } => FailureFacts {
                 committed: No,

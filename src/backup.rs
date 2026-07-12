@@ -4,6 +4,10 @@
 //! the BatPak journal snapshot, `.texo/config.toml`, and `backup.json`.
 //! Projection sidecars, model caches, generated views, and agent integration
 //! files are deliberately excluded because they are rebuildable.
+//! Unpinned verification detects corruption and incomplete publication, not a
+//! coordinated rewrite of both data and manifest. Persist the create report's
+//! `manifest_hash_hex` outside the backup and supply it to
+//! [`verify_with_expected_manifest_hash`] when authenticity matters.
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -186,6 +190,27 @@ pub fn create(
 /// # Errors
 /// Returns an error only when the destination cannot be safely inspected.
 pub fn verify(dest: &Path) -> Result<BackupVerifyReport, TexoError> {
+    verify_with_expected_manifest_hash(dest, None)
+}
+
+/// Verify a backup and optionally compare its manifest to an out-of-band pin.
+///
+/// # Errors
+/// Returns an input error for a malformed expected digest, or an environment
+/// error when the destination cannot be safely inspected.
+pub fn verify_with_expected_manifest_hash(
+    dest: &Path,
+    expected_manifest_hash: Option<&str>,
+) -> Result<BackupVerifyReport, TexoError> {
+    if let Some(expected) = expected_manifest_hash {
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(TexoError::OpInput {
+                op: "texo backup verify".to_string(),
+                detail: "expected manifest hash must be exactly 64 hexadecimal characters"
+                    .to_string(),
+            });
+        }
+    }
     let original = dest.to_path_buf();
     let metadata = match fs::symlink_metadata(dest) {
         Ok(metadata) => metadata,
@@ -224,6 +249,12 @@ pub fn verify(dest: &Path) -> Result<BackupVerifyReport, TexoError> {
         }
     };
     let mut findings = Vec::new();
+    if expected_manifest_hash.is_some_and(|expected| expected != manifest_hash_hex) {
+        findings.push(finding(
+            "manifest_hash_mismatch",
+            format!("manifest hash is {manifest_hash_hex}; it does not match the out-of-band pin"),
+        ));
+    }
     if manifest.schema != MANIFEST_SCHEMA {
         findings.push(finding(
             "manifest_schema_unsupported",
@@ -239,7 +270,10 @@ pub fn verify(dest: &Path) -> Result<BackupVerifyReport, TexoError> {
     check_top_level(&dest, &mut findings)?;
     check_snapshot_evidence(&dest, &manifest, &mut findings);
     let store_files_valid = check_store_files(&dest, &manifest, &mut findings)?;
-    check_config(&dest, &manifest, &mut findings);
+    let config_valid = check_config(&dest, &manifest, &mut findings);
+    if config_valid {
+        check_config_binding(&dest, &manifest, &mut findings);
+    }
     if store_files_valid == manifest.store_files.len() {
         check_store_read_only(&dest, &manifest, &mut findings);
     }
@@ -350,18 +384,46 @@ fn check_store_files(
     Ok(valid)
 }
 
-fn check_config(dest: &Path, manifest: &BackupManifest, findings: &mut Vec<BackupFinding>) {
+fn check_config(dest: &Path, manifest: &BackupManifest, findings: &mut Vec<BackupFinding>) -> bool {
     match hash_regular_bounded(&dest.join(CONFIG_FILE), MAX_CONFIG_BYTES) {
         Ok((hash, bytes)) if hash == manifest.config_hash_hex && bytes == manifest.config_bytes => {
+            true
         }
-        Ok((hash, bytes)) => findings.push(finding(
-            "config_mismatch",
+        Ok((hash, bytes)) => {
+            findings.push(finding(
+                "config_mismatch",
+                format!(
+                    "expected {}/{} but found {bytes}/{hash}",
+                    manifest.config_bytes, manifest.config_hash_hex
+                ),
+            ));
+            false
+        }
+        Err(detail) => {
+            findings.push(finding("config_invalid", detail));
+            false
+        }
+    }
+}
+
+fn check_config_binding(dest: &Path, manifest: &BackupManifest, findings: &mut Vec<BackupFinding>) {
+    let config = match crate::config::TexoRootConfig::load(&dest.join(CONFIG_FILE)) {
+        Ok(config) => config,
+        Err(error) => {
+            findings.push(finding("config_binding_invalid", error.to_string()));
+            return;
+        }
+    };
+    match config.resolve(Some(&manifest.workspace_id)) {
+        Ok(workspace) if workspace.store_path == manifest.store_path => {}
+        Ok(workspace) => findings.push(finding(
+            "config_binding_mismatch",
             format!(
-                "expected {}/{} but found {bytes}/{hash}",
-                manifest.config_bytes, manifest.config_hash_hex
+                "manifest store path `{}` differs from config `{}`",
+                manifest.store_path, workspace.store_path
             ),
         )),
-        Err(detail) => findings.push(finding("config_invalid", detail)),
+        Err(error) => findings.push(finding("config_binding_mismatch", error.to_string())),
     }
 }
 

@@ -142,3 +142,32 @@ fn mcp_stdio_full_session() -> TestResult {
     assert!(status.success());
     Ok(())
 }
+
+#[test]
+fn mcp_input_error_carries_safe_retry_facts() -> TestResult {
+    let workspace = TestWorkspace::new()?;
+    let root = workspace.root().to_path_buf();
+    let support::TestWorkspace { dir: _dir, host } = workspace;
+    drop(host);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&root)?;
+    send_json(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "search_claims", "arguments": {"limit": 101}}
+        }),
+    )?;
+    let response = read_json(&mut stdout)?;
+    assert_eq!(response["error"]["data"]["code"], "op.input");
+    assert_eq!(response["error"]["data"]["committed"], "no");
+    assert_eq!(response["error"]["data"]["retry_safe"], true);
+    assert_eq!(
+        response["error"]["data"]["resume"],
+        "fix the input and retry"
+    );
+    drop(stdin);
+    assert!(child.wait()?.success());
+    Ok(())
+}
