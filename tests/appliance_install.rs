@@ -73,6 +73,25 @@ fn cli_dry_run_does_not_create_a_workspace() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn cli_targeted_uninstall_is_symmetric_with_install() -> TestResult {
+    let root = TempDir::new()?;
+    assert!(run(root.path(), &["install", "--client", "all", "--json"])?
+        .status
+        .success());
+
+    let removed = run(root.path(), &["uninstall", "--client", "cursor", "--json"])?;
+
+    assert!(removed.status.success());
+    let report: Value = serde_json::from_slice(&removed.stdout)?;
+    assert_eq!(report["clients"][0], "cursor");
+    assert!(!root.path().join(".cursor/mcp.json").exists());
+    assert!(root.path().join(".mcp.json").is_file());
+    assert!(root.path().join(".codex/config.toml").is_file());
+    assert!(root.path().join(".texo/mcp.json").is_file());
+    Ok(())
+}
+
 fn run(root: &std::path::Path, args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new(env!("CARGO_BIN_EXE_texo"))
         .arg("--root")

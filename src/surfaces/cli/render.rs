@@ -421,6 +421,13 @@ pub fn backup(value: &Value) {
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
         );
+        println!(
+            "manifest hash: {} (store this outside the backup)",
+            value
+                .get("manifest_hash_hex")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
     }
 }
 

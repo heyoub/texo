@@ -389,6 +389,14 @@ fn runtime_error(error: RuntimeError) -> TexoError {
             name,
             code,
             message,
+        } if code == "invalid_input" => TexoError::OpInput {
+            detail: input_error_detail(&name, &message),
+            op: name,
+        },
+        RuntimeError::Handler {
+            name,
+            code,
+            message,
         } => TexoError::OpRuntime {
             op: name,
             detail: format!("{code}: {message}"),
@@ -418,6 +426,15 @@ fn runtime_error(error: RuntimeError) -> TexoError {
     }
 }
 
+fn input_error_detail(operation: &str, message: &str) -> String {
+    let message = message.strip_prefix("op.input: ").unwrap_or(message);
+    let operation_prefix = format!("op input {operation}: ");
+    message
+        .strip_prefix(&operation_prefix)
+        .unwrap_or(message)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,5 +445,27 @@ mod tests {
         assert!(!grants_model_capability(Some(String::new())));
         assert!(!grants_model_capability(Some("  ".to_string())));
         assert!(grants_model_capability(Some("sk-test".to_string())));
+    }
+
+    #[test]
+    fn runtime_error_preserves_invalid_input_class_and_detail() {
+        let error = runtime_error(RuntimeError::handler(
+            "texo.claims.search",
+            "invalid_input",
+            "op.input: op input texo.claims.search: limit must be between 1 and 100",
+        ));
+        assert!(matches!(
+            error,
+            TexoError::OpInput { ref op, ref detail }
+                if op == "texo.claims.search" && detail == "limit must be between 1 and 100"
+        ));
+        assert_eq!(
+            error.facts(),
+            crate::error::FailureFacts {
+                committed: crate::error::Committed::No,
+                retry_safe: true,
+                resume: Some("fix the input and retry"),
+            }
+        );
     }
 }

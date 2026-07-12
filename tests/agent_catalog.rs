@@ -75,7 +75,10 @@ fn claim_search_rejects_unbounded_or_forged_pagination() -> TestResult {
             &json!({"query": null, "subject": null, "status": null, "limit": 101, "cursor": null}),
         )
         .expect_err("oversized page must fail");
-    assert_eq!(too_large.code(), "op.runtime");
+    assert_eq!(too_large.code(), "op.input");
+    assert_eq!(too_large.facts().committed, texo::error::Committed::No);
+    assert!(too_large.facts().retry_safe);
+    assert_eq!(too_large.facts().resume, Some("fix the input and retry"));
     assert!(too_large.to_string().contains("limit must be between"));
 
     let forged = workspace
@@ -84,7 +87,7 @@ fn claim_search_rejects_unbounded_or_forged_pagination() -> TestResult {
             &json!({"query": null, "subject": null, "status": null, "limit": 25, "cursor": "other:v1:2"}),
         )
         .expect_err("foreign cursor must fail");
-    assert_eq!(forged.code(), "op.runtime");
+    assert_eq!(forged.code(), "op.input");
     assert!(forged.to_string().contains("unsupported schema"));
     Ok(())
 }

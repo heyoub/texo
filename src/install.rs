@@ -1,9 +1,12 @@
 //! Idempotent workspace appliance installation.
 
 use std::collections::BTreeSet;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::ValueEnum;
+use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -21,6 +24,9 @@ const CODEX_MARKER_START: &str = "# texo:install:codex:start";
 const CODEX_MARKER_END: &str = "# texo:install:codex:end";
 const AGENT_MARKER_START: &str = "<!-- texo:install:start -->";
 const AGENT_MARKER_END: &str = "<!-- texo:install:end -->";
+static INSTALL_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+type OrderedJsonObject = IndexMap<String, Box<serde_json::value::RawValue>>;
 
 /// Agent client adapter target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, ValueEnum)]
@@ -87,6 +93,8 @@ pub struct UninstallReport {
     pub root: String,
     /// Whether this was a write-free preview.
     pub dry_run: bool,
+    /// Selected concrete clients.
+    pub clients: Vec<ClientTarget>,
     /// Ordered path changes.
     pub changes: Vec<InstallChange>,
 }
@@ -103,6 +111,22 @@ pub fn install(
     dry_run: bool,
 ) -> Result<InstallReport, TexoError> {
     let clients = resolve_clients(root, requested);
+    ensure_safe_managed_path(root, ".texo/config.toml")?;
+    ensure_safe_managed_path(root, MCP_MANIFEST_PATH)?;
+    ensure_safe_managed_path(root, crate::hooks::HOOKS_MANIFEST_PATH)?;
+    ensure_safe_managed_path(root, AGENT_GUIDE_PATH)?;
+    let mut created_paths = managed_created_paths(root)?;
+    for client in &clients {
+        if let Some(relative) = client_path(*client) {
+            ensure_safe_managed_path(root, relative)?;
+            if !root.join(relative).exists() {
+                created_paths.insert(relative.to_string());
+            }
+        }
+    }
+    if !root.join(AGENT_GUIDE_PATH).exists() {
+        created_paths.insert(AGENT_GUIDE_PATH.to_string());
+    }
     // Validate every merge before the first write so a conflicting adapter
     // cannot leave behind a half-installed workspace.
     for client in &clients {
@@ -137,7 +161,7 @@ pub fn install(
         },
     });
 
-    let canonical = serde_json::to_vec_pretty(&canonical_manifest(workspace_id))?;
+    let canonical = serde_json::to_vec_pretty(&canonical_manifest(workspace_id, &created_paths))?;
     changes.push(write_managed(
         root,
         MCP_MANIFEST_PATH,
@@ -180,47 +204,95 @@ pub fn install(
 ///
 /// # Errors
 /// Returns an error when a managed file cannot be parsed or updated.
-pub fn uninstall(root: &Path, dry_run: bool) -> Result<UninstallReport, TexoError> {
+pub fn uninstall(
+    root: &Path,
+    requested: &[ClientTarget],
+    dry_run: bool,
+) -> Result<UninstallReport, TexoError> {
+    let remove_shared = requested.is_empty() || requested.contains(&ClientTarget::All);
+    let clients = if requested.is_empty() {
+        vec![
+            ClientTarget::Codex,
+            ClientTarget::Claude,
+            ClientTarget::Cursor,
+        ]
+    } else {
+        resolve_clients(root, requested)
+    };
+    let created_paths = managed_created_paths(root)?;
+
+    // Prove every selected entry is ours before the first removal.
+    for client in &clients {
+        preflight_remove_client(root, *client, &created_paths)?;
+    }
+    if remove_shared {
+        remove_marked_block(
+            root,
+            AGENT_GUIDE_PATH,
+            AGENT_MARKER_START,
+            AGENT_MARKER_END,
+            created_paths.contains(AGENT_GUIDE_PATH),
+            true,
+        )?;
+        remove_managed_file(
+            root,
+            crate::hooks::HOOKS_MANIFEST_PATH,
+            "texo.hooks.v1",
+            true,
+        )?;
+        remove_managed_file(root, MCP_MANIFEST_PATH, "texo.mcp-install.v1", true)?;
+    }
+
     let mut changes = Vec::new();
-    changes.push(remove_managed_file(
-        root,
-        MCP_MANIFEST_PATH,
-        "texo.mcp-install.v1",
-        dry_run,
-    )?);
-    changes.push(remove_managed_file(
-        root,
-        crate::hooks::HOOKS_MANIFEST_PATH,
-        "texo.hooks.v1",
-        dry_run,
-    )?);
-    for path in [CLAUDE_MCP_PATH, CURSOR_MCP_PATH] {
-        if let Some(change) = remove_json_adapter(root, path, dry_run)? {
+    for client in &clients {
+        if let Some(change) = remove_client(root, *client, &created_paths, dry_run)? {
             changes.push(change);
         }
     }
-    if let Some(change) = remove_marked_block(
-        root,
-        CODEX_CONFIG_PATH,
-        CODEX_MARKER_START,
-        CODEX_MARKER_END,
-        dry_run,
-    )? {
-        changes.push(change);
-    }
-    if let Some(change) = remove_marked_block(
-        root,
-        AGENT_GUIDE_PATH,
-        AGENT_MARKER_START,
-        AGENT_MARKER_END,
-        dry_run,
-    )? {
-        changes.push(change);
+    if remove_shared {
+        if let Some(change) = remove_marked_block(
+            root,
+            AGENT_GUIDE_PATH,
+            AGENT_MARKER_START,
+            AGENT_MARKER_END,
+            created_paths.contains(AGENT_GUIDE_PATH),
+            dry_run,
+        )? {
+            changes.push(change);
+        }
+        changes.push(remove_managed_file(
+            root,
+            crate::hooks::HOOKS_MANIFEST_PATH,
+            "texo.hooks.v1",
+            dry_run,
+        )?);
+        changes.push(remove_managed_file(
+            root,
+            MCP_MANIFEST_PATH,
+            "texo.mcp-install.v1",
+            dry_run,
+        )?);
+    } else {
+        let mut remaining = created_paths;
+        for client in &clients {
+            if let Some(relative) = client_path(*client) {
+                remaining.remove(relative);
+            }
+        }
+        if root.join(MCP_MANIFEST_PATH).exists() {
+            let workspace_id = managed_workspace_id(root)?.unwrap_or_else(|| "demo".to_string());
+            let canonical = with_newline(serde_json::to_vec_pretty(&canonical_manifest(
+                &workspace_id,
+                &remaining,
+            ))?);
+            changes.push(write_managed(root, MCP_MANIFEST_PATH, &canonical, dry_run)?);
+        }
     }
     Ok(UninstallReport {
         schema: "texo.uninstall.v1",
         root: root.display().to_string(),
         dry_run,
+        clients,
         changes,
     })
 }
@@ -260,10 +332,11 @@ fn resolve_clients(root: &Path, requested: &[ClientTarget]) -> Vec<ClientTarget>
     selected.into_iter().collect()
 }
 
-fn canonical_manifest(workspace_id: &str) -> Value {
+fn canonical_manifest(workspace_id: &str, created_paths: &BTreeSet<String>) -> Value {
     json!({
         "schema": "texo.mcp-install.v1",
-        "server": server_entry(workspace_id)
+        "server": server_entry(workspace_id),
+        "created_paths": created_paths
     })
 }
 
@@ -281,31 +354,21 @@ fn merge_json_adapter(
     workspace_id: &str,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
+    ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     let existed = path.exists();
-    let mut document = if existed {
-        serde_json::from_slice::<Value>(&std::fs::read(&path)?)?
-    } else {
-        json!({})
-    };
-    let object = document
-        .as_object_mut()
-        .ok_or_else(|| config_error(relative, "root must be an object"))?;
-    let servers = object
-        .entry("mcpServers".to_string())
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| config_error(relative, "mcpServers must be an object"))?;
+    let (mut document, mut servers) = read_ordered_adapter(&path, existed, relative)?;
     let wanted = server_entry(workspace_id);
     if let Some(existing) = servers.get("texo") {
-        if existing != &wanted {
+        if serde_json::from_str::<Value>(existing.get())? != wanted {
             return Err(config_error(
                 relative,
                 "existing mcpServers.texo is not managed by this installer",
             ));
         }
     }
-    servers.insert("texo".to_string(), wanted);
+    servers.insert("texo".to_string(), raw_json(&wanted)?);
+    document.insert("mcpServers".to_string(), raw_json(&servers)?);
     let bytes = with_newline(serde_json::to_vec_pretty(&document)?);
     let action = classify_bytes(&path, &bytes)?;
     if !dry_run && action != ChangeAction::Unchanged {
@@ -326,6 +389,7 @@ fn merge_codex_adapter(
     workspace_id: &str,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
+    ensure_safe_managed_path(root, CODEX_CONFIG_PATH)?;
     let path = root.join(CODEX_CONFIG_PATH);
     let existing = read_optional_string(&path)?;
     let (without, had_marker) =
@@ -376,6 +440,7 @@ fn upsert_agent_guide(
     workspace_id: &str,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
+    ensure_safe_managed_path(root, AGENT_GUIDE_PATH)?;
     let path = root.join(AGENT_GUIDE_PATH);
     let existing = read_optional_string(&path)?;
     let (without, _) = strip_marked_block(&existing, AGENT_MARKER_START, AGENT_MARKER_END)?;
@@ -397,40 +462,155 @@ fn upsert_agent_guide(
     })
 }
 
+fn client_path(client: ClientTarget) -> Option<&'static str> {
+    match client {
+        ClientTarget::Codex => Some(CODEX_CONFIG_PATH),
+        ClientTarget::Claude => Some(CLAUDE_MCP_PATH),
+        ClientTarget::Cursor => Some(CURSOR_MCP_PATH),
+        ClientTarget::Auto | ClientTarget::All => None,
+    }
+}
+
+fn managed_manifest(root: &Path) -> Result<Option<Value>, TexoError> {
+    ensure_safe_managed_path(root, MCP_MANIFEST_PATH)?;
+    let path = root.join(MCP_MANIFEST_PATH);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let document = serde_json::from_slice::<Value>(&std::fs::read(path)?)?;
+    if document.get("schema").and_then(Value::as_str) != Some("texo.mcp-install.v1") {
+        return Err(config_error(
+            MCP_MANIFEST_PATH,
+            "file is not managed by this installer",
+        ));
+    }
+    Ok(Some(document))
+}
+
+fn managed_created_paths(root: &Path) -> Result<BTreeSet<String>, TexoError> {
+    let Some(document) = managed_manifest(root)? else {
+        return Ok(BTreeSet::new());
+    };
+    document.get("created_paths").map_or_else(
+        || Ok(BTreeSet::new()),
+        |paths| serde_json::from_value(paths.clone()).map_err(TexoError::Json),
+    )
+}
+
+fn managed_workspace_id(root: &Path) -> Result<Option<String>, TexoError> {
+    let Some(document) = managed_manifest(root)? else {
+        return Ok(None);
+    };
+    Ok(document
+        .get("server")
+        .and_then(|server| server.get("args"))
+        .and_then(Value::as_array)
+        .and_then(|args| args.get(3))
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
+fn preflight_remove_client(
+    root: &Path,
+    client: ClientTarget,
+    created_paths: &BTreeSet<String>,
+) -> Result<(), TexoError> {
+    let _change = remove_client(root, client, created_paths, true)?;
+    Ok(())
+}
+
+fn remove_client(
+    root: &Path,
+    client: ClientTarget,
+    created_paths: &BTreeSet<String>,
+    dry_run: bool,
+) -> Result<Option<InstallChange>, TexoError> {
+    let Some(relative) = client_path(client) else {
+        return Ok(None);
+    };
+    let remove_empty = created_paths.contains(relative);
+    match client {
+        ClientTarget::Claude | ClientTarget::Cursor => {
+            remove_json_adapter(root, relative, remove_empty, dry_run)
+        }
+        ClientTarget::Codex => remove_marked_block(
+            root,
+            relative,
+            CODEX_MARKER_START,
+            CODEX_MARKER_END,
+            remove_empty,
+            dry_run,
+        ),
+        ClientTarget::Auto | ClientTarget::All => Ok(None),
+    }
+}
+
 fn remove_json_adapter(
     root: &Path,
     relative: &str,
+    remove_empty: bool,
     dry_run: bool,
 ) -> Result<Option<InstallChange>, TexoError> {
+    ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     if !path.exists() {
         return Ok(None);
     }
-    let mut document = serde_json::from_slice::<Value>(&std::fs::read(&path)?)?;
-    let Some(existing) = document
-        .get("mcpServers")
-        .and_then(Value::as_object)
-        .and_then(|servers| servers.get("texo"))
-    else {
+    let (mut document, mut servers) = read_ordered_adapter(&path, true, relative)?;
+    let Some(existing) = servers.get("texo") else {
         return Ok(None);
     };
-    if !is_managed_server_entry(existing) {
+    if !is_managed_server_entry(&serde_json::from_str::<Value>(existing.get())?) {
         return Err(config_error(
             relative,
             "mcpServers.texo is not managed by this installer",
         ));
     }
-    document
-        .get_mut("mcpServers")
-        .and_then(Value::as_object_mut)
-        .map(|servers| servers.remove("texo"));
+    servers.shift_remove("texo");
+    document.insert("mcpServers".to_string(), raw_json(&servers)?);
     if !dry_run {
-        atomic_write(&path, &with_newline(serde_json::to_vec_pretty(&document)?))?;
+        if remove_empty && json_adapter_is_empty(&document, &servers) {
+            std::fs::remove_file(&path)?;
+        } else {
+            atomic_write(&path, &with_newline(serde_json::to_vec_pretty(&document)?))?;
+        }
     }
     Ok(Some(InstallChange {
         path: relative.to_string(),
         action: ChangeAction::Removed,
     }))
+}
+
+fn read_ordered_adapter(
+    path: &Path,
+    existed: bool,
+    relative: &str,
+) -> Result<(OrderedJsonObject, OrderedJsonObject), TexoError> {
+    let document = if existed {
+        serde_json::from_slice::<OrderedJsonObject>(&std::fs::read(path)?)?
+    } else {
+        OrderedJsonObject::new()
+    };
+    let servers = document.get("mcpServers").map_or_else(
+        || Ok(OrderedJsonObject::new()),
+        |raw| {
+            serde_json::from_str::<OrderedJsonObject>(raw.get()).map_err(|error| {
+                TexoError::Config {
+                    detail: format!("{relative}: mcpServers must be an object"),
+                    source: Some(Box::new(error)),
+                }
+            })
+        },
+    )?;
+    Ok((document, servers))
+}
+
+fn raw_json<T: Serialize>(value: &T) -> Result<Box<serde_json::value::RawValue>, TexoError> {
+    serde_json::value::RawValue::from_string(serde_json::to_string(value)?).map_err(TexoError::Json)
+}
+
+fn json_adapter_is_empty(document: &OrderedJsonObject, servers: &OrderedJsonObject) -> bool {
+    document.len() == 1 && servers.is_empty()
 }
 
 fn remove_managed_file(
@@ -439,6 +619,7 @@ fn remove_managed_file(
     schema: &str,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
+    ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     let action = if path.is_file() {
         let document = serde_json::from_slice::<Value>(&std::fs::read(&path)?)?;
@@ -480,8 +661,10 @@ fn remove_marked_block(
     relative: &str,
     start: &str,
     end: &str,
+    remove_empty: bool,
     dry_run: bool,
 ) -> Result<Option<InstallChange>, TexoError> {
+    ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     let existing = read_optional_string(&path)?;
     let (without, had_marker) = strip_marked_block(&existing, start, end)?;
@@ -489,7 +672,11 @@ fn remove_marked_block(
         return Ok(None);
     }
     if !dry_run {
-        atomic_write(&path, without.as_bytes())?;
+        if remove_empty && without.trim().is_empty() {
+            std::fs::remove_file(&path)?;
+        } else {
+            atomic_write(&path, without.as_bytes())?;
+        }
     }
     Ok(Some(InstallChange {
         path: relative.to_string(),
@@ -503,6 +690,7 @@ fn write_managed(
     bytes: &[u8],
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
+    ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     let existed = path.exists();
     let action = classify_bytes(&path, bytes)?;
@@ -528,19 +716,91 @@ fn classify_bytes(path: &Path, wanted: &[u8]) -> Result<ChangeAction, TexoError>
     }
 }
 
+fn ensure_safe_managed_path(root: &Path, relative: &str) -> Result<(), TexoError> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(config_error(
+            relative,
+            "managed path must remain below the workspace root",
+        ));
+    }
+    let mut current = root.to_path_buf();
+    for component in relative_path.components() {
+        if let std::path::Component::Normal(name) = component {
+            current.push(name);
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(config_error(
+                        relative,
+                        &format!("managed path crosses symbolic link `{}`", current.display()),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), TexoError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| config_error(&path.display().to_string(), "managed path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let existing_permissions = std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.file_type().is_file())
+        .map(|metadata| metadata.permissions());
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| config_error(&path.display().to_string(), "file name is not UTF-8"))?;
+    for _attempt in 0..100 {
+        let counter = INSTALL_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = parent.join(format!(
+            ".{name}.texo-install-{}-{counter}.tmp",
+            std::process::id()
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let result = (|| -> std::io::Result<()> {
+            file.write_all(bytes)?;
+            if let Some(permissions) = &existing_permissions {
+                file.set_permissions(permissions.clone())?;
+            }
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&tmp, path)?;
+            #[cfg(unix)]
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _removed = std::fs::remove_file(&tmp);
+        }
+        return result.map_err(Into::into);
     }
-    let tmp = path.with_extension(format!("texo-install-{}.tmp", std::process::id()));
-    let result = (|| {
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _removed = std::fs::remove_file(tmp);
-    }
-    result.map_err(Into::into)
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a private install staging file",
+    )
+    .into())
 }
 
 fn strip_marked_block(input: &str, start: &str, end: &str) -> Result<(String, bool), TexoError> {
@@ -648,7 +908,7 @@ mod tests {
             .all(|change| change.action == ChangeAction::Unchanged));
         assert_eq!(fingerprint_files(dir.path()), first);
 
-        uninstall(dir.path(), false).expect("uninstall");
+        uninstall(dir.path(), &[], false).expect("uninstall");
         assert!(std::fs::read_to_string(dir.path().join(AGENT_GUIDE_PATH))
             .expect("guide")
             .contains("# User guide"));
@@ -696,12 +956,137 @@ mod tests {
         let conflict = br#"{"mcpServers":{"texo":{"command":"other"}}}"#;
         std::fs::write(dir.path().join(CLAUDE_MCP_PATH), conflict).expect("conflict");
 
-        let error = uninstall(dir.path(), false).expect_err("unmanaged entry must survive");
+        let error = uninstall(dir.path(), &[], false).expect_err("unmanaged entry must survive");
 
         assert!(error.to_string().contains("not managed"));
         assert_eq!(
             std::fs::read(dir.path().join(CLAUDE_MCP_PATH)).expect("preserved"),
             conflict
+        );
+    }
+
+    #[test]
+    fn uninstall_deletes_only_empty_files_created_by_texo() {
+        let created = TempDir::new().expect("created root");
+        install(created.path(), "demo", &[ClientTarget::All], false).expect("install created");
+        uninstall(created.path(), &[], false).expect("uninstall created");
+        for relative in [
+            CLAUDE_MCP_PATH,
+            CURSOR_MCP_PATH,
+            CODEX_CONFIG_PATH,
+            AGENT_GUIDE_PATH,
+        ] {
+            assert!(
+                !created.path().join(relative).exists(),
+                "{relative} removed"
+            );
+        }
+        assert!(created.path().join(".texo/config.toml").is_file());
+
+        let existing = TempDir::new().expect("existing root");
+        std::fs::create_dir_all(existing.path().join(".cursor")).expect("cursor dir");
+        std::fs::create_dir_all(existing.path().join(".codex")).expect("codex dir");
+        std::fs::write(existing.path().join(CLAUDE_MCP_PATH), "{}\n").expect("claude");
+        std::fs::write(existing.path().join(CURSOR_MCP_PATH), "{}\n").expect("cursor");
+        std::fs::write(existing.path().join(CODEX_CONFIG_PATH), "").expect("codex");
+        std::fs::write(existing.path().join(AGENT_GUIDE_PATH), "").expect("guide");
+        install(existing.path(), "demo", &[ClientTarget::All], false).expect("install existing");
+        uninstall(existing.path(), &[], false).expect("uninstall existing");
+        for relative in [
+            CLAUDE_MCP_PATH,
+            CURSOR_MCP_PATH,
+            CODEX_CONFIG_PATH,
+            AGENT_GUIDE_PATH,
+        ] {
+            assert!(
+                existing.path().join(relative).is_file(),
+                "{relative} preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn targeted_uninstall_keeps_shared_and_other_client_entries() {
+        let dir = TempDir::new().expect("tempdir");
+        install(dir.path(), "demo", &[ClientTarget::All], false).expect("install");
+
+        let report = uninstall(dir.path(), &[ClientTarget::Claude], false).expect("uninstall");
+
+        assert_eq!(report.clients, vec![ClientTarget::Claude]);
+        assert!(!dir.path().join(CLAUDE_MCP_PATH).exists());
+        assert!(dir.path().join(CURSOR_MCP_PATH).is_file());
+        assert!(dir.path().join(CODEX_CONFIG_PATH).is_file());
+        assert!(dir.path().join(MCP_MANIFEST_PATH).is_file());
+        assert!(dir.path().join(crate::hooks::HOOKS_MANIFEST_PATH).is_file());
+        assert!(dir.path().join(AGENT_GUIDE_PATH).is_file());
+    }
+
+    #[test]
+    fn json_merge_preserves_user_key_order() {
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::write(
+            dir.path().join(CLAUDE_MCP_PATH),
+            r#"{"zeta":1,"alpha":2,"mcpServers":{"other":{"command":"other"}}}"#,
+        )
+        .expect("config");
+
+        install(dir.path(), "demo", &[ClientTarget::Claude], false).expect("install");
+
+        let merged = std::fs::read_to_string(dir.path().join(CLAUDE_MCP_PATH)).expect("merged");
+        let zeta = merged.find("\"zeta\"").expect("zeta");
+        let alpha = merged.find("\"alpha\"").expect("alpha");
+        let servers = merged.find("\"mcpServers\"").expect("servers");
+        assert!(zeta < alpha && alpha < servers);
+    }
+
+    #[test]
+    fn uninstall_conflict_is_detected_before_any_removal() {
+        let dir = TempDir::new().expect("tempdir");
+        install(dir.path(), "demo", &[ClientTarget::All], false).expect("install");
+        std::fs::write(
+            dir.path().join(CURSOR_MCP_PATH),
+            r#"{"mcpServers":{"texo":{"command":"other"}}}"#,
+        )
+        .expect("conflict");
+        let before = fingerprint_files(dir.path());
+
+        let error = uninstall(dir.path(), &[], false).expect_err("conflict");
+
+        assert!(error.to_string().contains("not managed"));
+        assert_eq!(fingerprint_files(dir.path()), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_refuses_symlinked_client_paths_and_preserves_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+        let linked = TempDir::new().expect("linked root");
+        let outside = TempDir::new().expect("outside");
+        symlink(outside.path(), linked.path().join(".cursor")).expect("symlink");
+        let before = fingerprint_files(outside.path());
+        let error = install(linked.path(), "demo", &[ClientTarget::All], false)
+            .expect_err("symlink must fail");
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(fingerprint_files(outside.path()), before);
+        assert!(!linked.path().join(".texo").exists());
+
+        let permissions = TempDir::new().expect("permissions root");
+        std::fs::write(permissions.path().join(CLAUDE_MCP_PATH), "{}\n").expect("config");
+        let mut mode = std::fs::metadata(permissions.path().join(CLAUDE_MCP_PATH))
+            .expect("metadata")
+            .permissions();
+        mode.set_mode(0o600);
+        std::fs::set_permissions(permissions.path().join(CLAUDE_MCP_PATH), mode)
+            .expect("permissions");
+        install(permissions.path(), "demo", &[ClientTarget::Claude], false).expect("install");
+        assert_eq!(
+            std::fs::metadata(permissions.path().join(CLAUDE_MCP_PATH))
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 
