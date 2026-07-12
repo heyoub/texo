@@ -3,6 +3,9 @@
 /// Curated agent-facing tools and operation discovery.
 pub mod agent_catalog;
 
+/// Composed config, store, gateway, and integration diagnostics.
+pub mod doctor;
+
 /// Error types.
 pub mod error;
 

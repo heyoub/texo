@@ -176,6 +176,18 @@ enum Command {
         #[command(subcommand)]
         cmd: HookCmd,
     },
+    /// Diagnose config, store, model readiness, and agent integration.
+    Doctor {
+        /// Verify the full journal and projection chain.
+        #[arg(long)]
+        deep: bool,
+        /// Reconcile only Texo-owned integration files.
+        #[arg(long)]
+        fix: bool,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -592,6 +604,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             let _ = json;
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
+        }
+        Command::Doctor { deep, fix, json } => {
+            let report = crate::doctor::diagnose(&cli.root, cli.workspace.as_deref(), deep, fix);
+            let broken = report.status == crate::doctor::DoctorStatus::Broken;
+            let output = serde_json::to_value(report)?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::doctor(&output);
+            }
+            Ok(if broken {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
     }
 }

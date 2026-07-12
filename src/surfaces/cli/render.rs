@@ -341,6 +341,40 @@ pub fn installation(value: &Value) {
     }
 }
 
+/// Print a concise doctor report with repair guidance.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn doctor(value: &Value) {
+    println!(
+        "texo doctor: {}",
+        value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("broken")
+    );
+    for check in value
+        .get("checks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  {:<5} {:<24} {}",
+            check
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("fail"),
+            check.get("id").and_then(Value::as_str).unwrap_or("unknown"),
+            check
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        );
+        if let Some(fix) = check.get("fix").and_then(Value::as_str) {
+            println!("        fix: {fix}");
+        }
+    }
+}
+
 /// Print an extractor error with the extractor subcommand prefix.
 #[expect(clippy::print_stderr, reason = "CLI output contract")]
 pub fn extract_error(error: &dyn std::error::Error) {
