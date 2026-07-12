@@ -36,13 +36,27 @@ fn repository() -> TestResult<TempDir> {
         &["config", "user.email", "texo@example.invalid"],
     )?;
     std::fs::create_dir_all(root.path().join("src"))?;
+    std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::create_dir_all(root.path().join("ui/dist"))?;
     std::fs::write(
         root.path().join("src/lib.rs"),
         "pub fn deploy() { helper(); }\nfn helper() {}\n",
     )?;
     std::fs::write(
         root.path().join("script.py"),
-        "def release():\n    deploy()\n",
+        "def release():\n    deploy()\n    return release\n",
+    )?;
+    std::fs::write(
+        root.path().join("docs/notes.md"),
+        "The release helper calls deploy.\n",
+    )?;
+    std::fs::write(
+        root.path().join("ui/dist/generated.js"),
+        "function generatedBundle() {}\n",
+    )?;
+    std::fs::write(
+        root.path().join("pnpm-lock.yaml"),
+        "generatedDependency: true\n",
     )?;
     git(root.path(), &["add", "."])?;
     git(root.path(), &["commit", "-qm", "code"])?;
@@ -87,6 +101,26 @@ fn built_in_index_is_deterministic_syntactic_then_lexical() -> TestResult {
             && occurrence.roles.contains(&CodeOccurrenceRole::Definition)
             && occurrence.analysis_quality == AnalysisQuality::Syntactic
             && occurrence.context.contains("pub fn deploy() { helper(); }")
+    }));
+    assert_eq!(
+        first
+            .artifact
+            .occurrences
+            .iter()
+            .filter(|occurrence| {
+                occurrence.path == "script.py" && occurrence.display_name == "release"
+            })
+            .count(),
+        1,
+        "lexical fallback keeps one discovery row per name and file"
+    );
+    assert!(!first
+        .artifact
+        .occurrences
+        .iter()
+        .any(|occurrence| occurrence.path == "docs/notes.md"));
+    assert!(!first.artifact.occurrences.iter().any(|occurrence| {
+        occurrence.path == "ui/dist/generated.js" || occurrence.path == "pnpm-lock.yaml"
     }));
     assert!(first.artifact.occurrences.iter().any(|occurrence| {
         occurrence.path == "script.py"
@@ -161,25 +195,26 @@ fn normalized_artifact_authenticates_and_tampering_fails_closed() -> TestResult 
 }
 
 #[test]
-fn prior_schema_artifact_is_a_rebuildable_cache_miss() -> TestResult {
+fn prior_schema_artifacts_are_rebuildable_cache_misses() -> TestResult {
     let root = repository()?;
     let capture = capture(
         root.path(),
         RepositoryId::derive("old-code-index-schema"),
         CaptureLimits::default(),
     )?;
-    let mut prepared = build(&capture, None, CodeIndexLimits::default())?;
-    prepared.artifact.schema = "texo.code-index.v1".to_string();
-    let bytes = batpak::encoding::to_bytes(&prepared.artifact)?;
-    let digest = texo::events::ids::blake3_bytes_hex(&bytes);
-    let directory = root.path().join(".texo/cache/code-index");
-    std::fs::create_dir_all(&directory)?;
-    std::fs::write(
-        directory.join(format!("{}.bin", prepared.artifact.index_id.as_str())),
-        bytes,
-    )?;
-
-    assert!(load(root.path(), &prepared.artifact.index_id, &digest)?.is_none());
+    for schema in ["texo.code-index.v1", "texo.code-index.v2"] {
+        let mut prepared = build(&capture, None, CodeIndexLimits::default())?;
+        prepared.artifact.schema = schema.to_string();
+        let bytes = batpak::encoding::to_bytes(&prepared.artifact)?;
+        let digest = texo::events::ids::blake3_bytes_hex(&bytes);
+        let directory = root.path().join(".texo/cache/code-index");
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(
+            directory.join(format!("{}.bin", prepared.artifact.index_id.as_str())),
+            bytes,
+        )?;
+        assert!(load(root.path(), &prepared.artifact.index_id, &digest)?.is_none());
+    }
     Ok(())
 }
 
@@ -234,6 +269,40 @@ fn one_index_command_freezes_source_and_builds_code_intelligence() -> TestResult
     assert_eq!(value["schema"], "texo.index.v2");
     assert_eq!(value["source"]["snapshot_id"], value["code"]["snapshot_id"]);
     assert_eq!(value["code"]["format"], "syntax");
+    assert_eq!(value["code"]["already_indexed"], false);
+
+    let repeated = Command::cargo_bin("texo")?
+        .arg("--root")
+        .arg(root.path())
+        .arg("--workspace")
+        .arg("demo")
+        .arg("index")
+        .arg("--json")
+        .output()?;
+    assert!(repeated.status.success());
+    let repeated: serde_json::Value = serde_json::from_slice(&repeated.stdout)?;
+    assert_eq!(repeated["source"]["already_indexed"], true);
+    assert_eq!(repeated["code"]["already_indexed"], true);
+    assert_eq!(repeated["code"]["receipt"], serde_json::Value::Null);
+
+    let artifact = root.path().join(
+        value["code"]["artifact_path"]
+            .as_str()
+            .ok_or("artifact path")?,
+    );
+    std::fs::remove_file(&artifact)?;
+    let rebuilt = Command::cargo_bin("texo")?
+        .arg("--root")
+        .arg(root.path())
+        .arg("--workspace")
+        .arg("demo")
+        .arg("index")
+        .arg("--json")
+        .output()?;
+    assert!(rebuilt.status.success());
+    let rebuilt: serde_json::Value = serde_json::from_slice(&rebuilt.stdout)?;
+    assert_eq!(rebuilt["code"]["already_indexed"], false);
+    assert!(artifact.is_file());
     Ok(())
 }
 

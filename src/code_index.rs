@@ -19,7 +19,7 @@ use crate::knowledge::{
 };
 
 /// Normalized artifact schema.
-pub const ARTIFACT_SCHEMA: &str = "texo.code-index.v2";
+pub const ARTIFACT_SCHEMA: &str = "texo.code-index.v3";
 const SCIP_DEFINITION: i32 = 0x1;
 const SCIP_IMPORT: i32 = 0x2;
 const SCIP_WRITE: i32 = 0x4;
@@ -28,6 +28,7 @@ const SCIP_GENERATED: i32 = 0x10;
 const SCIP_TEST: i32 = 0x20;
 const SCIP_FORWARD_DEFINITION: i32 = 0x40;
 const MAX_GAPS: usize = 256;
+const MAX_LEXICAL_OCCURRENCES_PER_SOURCE: usize = 512;
 static ARTIFACT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Bounds for one code-index build/import.
@@ -138,7 +139,7 @@ pub fn build(
         analyzer_parts.push(fallback);
     }
     if analyzer_parts.is_empty() {
-        analyzer_parts.push("texo-lexical:v1".to_string());
+        analyzer_parts.push("texo-lexical:v2".to_string());
     }
     let analyzer_fingerprint = analyzer_parts.join("+");
     let mut occurrences = builder.occurrences;
@@ -541,6 +542,9 @@ fn analyze_fallbacks(
         if indexed_paths.contains(&source.path) {
             continue;
         }
+        if !code_index_path_is_in_scope(&source.path) {
+            continue;
+        }
         if Instant::now() >= deadline {
             builder.truncated = true;
             builder.gap(None, CoverageGapKind::BudgetExceeded);
@@ -576,9 +580,9 @@ fn analyze_fallbacks(
         builder.format = CodeIndexFormat::Syntax;
     }
     Ok(match (used_syntax, used_lexical) {
-        (true, true) => format!("{}+texo-lexical:v1", rust_analyzer_fingerprint()),
+        (true, true) => format!("{}+texo-lexical:v2", rust_analyzer_fingerprint()),
         (true, false) => rust_analyzer_fingerprint(),
-        (false, true) => "texo-lexical:v1".to_string(),
+        (false, true) => "texo-lexical:v2".to_string(),
         (false, false) => String::new(),
     })
 }
@@ -737,6 +741,7 @@ fn rust_analyzer_fingerprint() -> String {
 
 fn analyze_lexical(source: &CapturedSource, builder: &mut ArtifactBuilder) {
     let source_digest_hex = blake3_bytes_hex(&source.bytes);
+    let mut names = BTreeSet::new();
     let mut offset = 0;
     while offset < source.bytes.len() {
         if !identifier_start(source.bytes[offset]) {
@@ -751,8 +756,13 @@ fn analyze_lexical(source: &CapturedSource, builder: &mut ArtifactBuilder) {
         let Ok(name) = std::str::from_utf8(&source.bytes[start..offset]) else {
             continue;
         };
-        if name.len() < 2 {
+        if name.len() < 3 || !names.insert(name.to_ascii_lowercase()) {
             continue;
+        }
+        if names.len() > MAX_LEXICAL_OCCURRENCES_PER_SOURCE {
+            builder.truncated = true;
+            builder.gap(Some(source.path.clone()), CoverageGapKind::BudgetExceeded);
+            return;
         }
         let (start_line, end_line) = byte_line_range(&source.bytes, start, offset);
         let Some((context, context_byte_range, context_line_range)) =
@@ -782,13 +792,60 @@ fn analyze_lexical(source: &CapturedSource, builder: &mut ArtifactBuilder) {
             context,
             context_byte_range,
             context_line_range,
-            analyzer_fingerprint: "texo-lexical:v1".to_string(),
+            analyzer_fingerprint: "texo-lexical:v2".to_string(),
             analysis_quality: AnalysisQuality::Lexical,
         };
         if !builder.push(occurrence) {
             return;
         }
     }
+}
+
+fn code_index_path_is_in_scope(path: &str) -> bool {
+    let path = Path::new(path);
+    if path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|name| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "dist" | "build" | "node_modules" | ".next" | "coverage"
+            )
+        })
+    }) || path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "pnpm-lock.yaml" | "pnpm-lock.yml"
+            )
+        })
+    {
+        return false;
+    }
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "rs" | "py"
+                    | "js"
+                    | "jsx"
+                    | "ts"
+                    | "tsx"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "c"
+                    | "h"
+                    | "cc"
+                    | "cpp"
+                    | "hpp"
+                    | "sh"
+                    | "toml"
+                    | "yaml"
+                    | "yml"
+            )
+        })
 }
 
 fn identifier_start(byte: u8) -> bool {

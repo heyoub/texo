@@ -644,7 +644,7 @@ mod tests {
             context: "retries".to_string(),
             context_byte_range: ByteRange::new(0, 7).expect("range"),
             context_line_range: LineRange::new(1, 1).expect("line"),
-            analyzer_fingerprint: "texo-lexical:v1".to_string(),
+            analyzer_fingerprint: "texo-lexical:v2".to_string(),
             analysis_quality: AnalysisQuality::Lexical,
         };
         CodeIndexArtifact {

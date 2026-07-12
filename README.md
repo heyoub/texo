@@ -9,6 +9,9 @@ compile surfaces.
 
 Git tracks code diffs. texo tracks claim diffs.
 
+See [INTELLIGENCE.md](INTELLIGENCE.md) for the agent-first Git/code workflow,
+coverage contract, limitations, and independently reproducible proof.
+
 ## Quickstart
 
 ```sh

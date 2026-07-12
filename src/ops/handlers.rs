@@ -1198,7 +1198,7 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.code.index.build",
     effect = Persist,
     input_schema = "texo.code.index.build.input.v1",
-    output_schema = "texo.code.index.build.output.v1",
+    output_schema = "texo.code.index.build.output.v2",
     receipt_kind = "receipt.texo.code.index.build.v1",
     appends_events = ["evt.e00e"],
     reads_events = ["evt.e00b", "evt.e00e"],
@@ -1231,6 +1231,36 @@ fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 kind: SnapshotFailureKind::SourceUnavailable,
                 detail: "Git commit/index/worktree changed; run source indexing again before code indexing".to_string(),
             });
+        }
+        if input.can_reuse_default() {
+            if let Some(existing) = latest_code_index(None, &recorded.snapshot_id)? {
+                if let Some(artifact) =
+                    load_code_index(&root, &existing.index_id, &existing.artifact_digest_hex)?
+                {
+                    if artifact.snapshot_id != recorded.snapshot_id {
+                        return Err(TexoError::Snapshot {
+                            kind: SnapshotFailureKind::SourceUnavailable,
+                            detail: "code-index artifact belongs to a different source snapshot"
+                                .to_string(),
+                        });
+                    }
+                    return Ok(CodeIndexBuildOutput {
+                        workspace_id,
+                        snapshot_id: existing.snapshot_id,
+                        index_id: existing.index_id.clone(),
+                        format: artifact.format,
+                        analyzer_fingerprint: artifact.analyzer_fingerprint,
+                        artifact_digest_hex: existing.artifact_digest_hex,
+                        artifact_path: format!(
+                            ".texo/cache/code-index/{}.bin",
+                            existing.index_id.as_str()
+                        ),
+                        coverage: artifact.coverage,
+                        already_indexed: true,
+                        receipt: None,
+                    });
+                }
+            }
         }
         let scip_bytes = input
             .scip_path
@@ -1269,7 +1299,8 @@ fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             artifact_digest_hex: payload.artifact_digest_hex,
             artifact_path: relative_artifact,
             coverage: payload.coverage,
-            receipt: take_one_receipt("texo.code.index.build")?,
+            already_indexed: false,
+            receipt: Some(take_one_receipt("texo.code.index.build")?),
         })
     })
 }
@@ -1614,6 +1645,14 @@ struct CodeIndexBuildInput {
 }
 
 impl CodeIndexBuildInput {
+    fn can_reuse_default(&self) -> bool {
+        self.scip_path.is_none()
+            && self.max_scip_bytes.is_none()
+            && self.max_documents.is_none()
+            && self.max_occurrences.is_none()
+            && self.analysis_budget_secs.is_none()
+    }
+
     fn validated_limits(&self) -> Result<CodeIndexLimits, TexoError> {
         let defaults = CodeIndexLimits::default();
         let limits = CodeIndexLimits {
@@ -1653,7 +1692,8 @@ struct CodeIndexBuildOutput {
     artifact_digest_hex: String,
     artifact_path: String,
     coverage: KnowledgeCoverage,
-    receipt: ReceiptNote,
+    already_indexed: bool,
+    receipt: Option<ReceiptNote>,
 }
 
 #[derive(Debug, Deserialize)]

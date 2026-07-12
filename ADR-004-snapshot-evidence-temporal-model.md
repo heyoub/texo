@@ -104,7 +104,8 @@ by accepting a claim, path, span, or code symbol target.
   become typed coverage gaps.
 - Prefer imported SCIP indexes for precise definitions/references. Syntactic
   results advertise parser recovery and grammar fingerprints. Lexical results
-  never masquerade as structural certainty.
+  never masquerade as structural certainty; they are unique bounded discovery
+  rows for code/config paths, not repeated prose tokens or generated bundles.
 - `texo index --scip <workspace-relative-index.scip>` consumes official SCIP
   typed ranges first and legacy packed ranges only as an input format. Only
   explicitly declared UTF-8 position encoding is accepted; UTF-16/32
@@ -115,7 +116,9 @@ by accepting a claim, path, span, or code symbol target.
   content-addressed and digest-checked, and remain disposable. Their journal
   registration is causally linked to the source-snapshot event. Missing
   artifacts produce `code_index_unavailable`; they never erase beliefs or
-  silently become empty search results.
+  silently become empty search results. An unchanged default build authenticates
+  and reuses the current artifact; missing artifacts rebuild, while corrupt
+  present artifacts fail closed.
 - Code occurrences retain both the exact symbol span and a bounded,
   digest-bound source context. `texo reconcile` considers code/config paths
   only, so lexical prose occurrences cannot self-cite a claim.
