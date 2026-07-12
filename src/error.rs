@@ -234,6 +234,12 @@ pub enum TexoError {
         /// Failure detail.
         detail: String,
     },
+    /// Backup creation or verification environment failure.
+    #[error("backup: {detail}")]
+    Backup {
+        /// Sanitized failure detail.
+        detail: String,
+    },
 }
 
 impl TexoError {
@@ -269,6 +275,7 @@ impl TexoError {
             Self::Surface { which, .. } => which.code(),
             Self::Model { .. } => "agent.model",
             Self::Session { .. } => "agent.session",
+            Self::Backup { .. } => "backup",
         }
     }
 
@@ -288,6 +295,7 @@ impl TexoError {
             | Self::Source { .. }
             | Self::Extract { .. }
             | Self::Verify { .. }
+            | Self::Backup { .. }
             | Self::OpInput { .. }
             | Self::OpRuntime { denied: true, .. } => FailureFacts {
                 committed: No,

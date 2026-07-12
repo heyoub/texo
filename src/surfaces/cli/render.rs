@@ -375,6 +375,55 @@ pub fn doctor(value: &Value) {
     }
 }
 
+/// Print a concise backup create or verification report.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn backup(value: &Value) {
+    if let Some(verified) = value.get("verified").and_then(Value::as_bool) {
+        println!(
+            "backup {}: {}",
+            value
+                .get("dest")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            if verified { "verified" } else { "INVALID" }
+        );
+        for finding in value
+            .get("findings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "  {}: {}",
+                finding
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("invalid"),
+                finding
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            );
+        }
+    } else {
+        println!(
+            "backup created: {} ({} files, {} bytes)",
+            value
+                .get("dest")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("store_file_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            value
+                .get("store_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        );
+    }
+}
+
 /// Print an extractor error with the extractor subcommand prefix.
 #[expect(clippy::print_stderr, reason = "CLI output contract")]
 pub fn extract_error(error: &dyn std::error::Error) {

@@ -188,6 +188,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Create or verify an evidence-backed workspace backup.
+    Backup {
+        #[command(subcommand)]
+        cmd: BackupCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +236,22 @@ enum HookCmd {
     },
     /// Verify the journal and projection before a commit.
     PreCommit {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupCmd {
+    /// Create a new immutable backup directory.
+    Create {
+        dest: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a backup using only the destination's bytes.
+    Verify {
+        dest: PathBuf,
         #[arg(long)]
         json: bool,
     },
@@ -620,6 +641,52 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 ExitCode::SUCCESS
             })
         }
+        Command::Backup { cmd } => match cmd {
+            BackupCmd::Create { dest, json } => {
+                let config_path = cli.root.join(".texo/config.toml");
+                let root_config =
+                    TexoRootConfig::load(&config_path).map_err(|error| TexoError::Config {
+                        detail: error.to_string(),
+                        source: Some(Box::new(error)),
+                    })?;
+                let workspace = root_config
+                    .resolve(cli.workspace.as_deref())
+                    .map_err(|error| TexoError::Config {
+                        detail: error.to_string(),
+                        source: Some(Box::new(error)),
+                    })?;
+                let store = crate::host::open_workspace_store(&cli.root, &workspace.workspace_id)?;
+                let report = crate::backup::create(
+                    &cli.root,
+                    &workspace,
+                    store.as_ref(),
+                    &dest,
+                    observed_at_ms(),
+                )?;
+                let output = serde_json::to_value(report)?;
+                if json {
+                    render::json(&output)?;
+                } else {
+                    render::backup(&output);
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            BackupCmd::Verify { dest, json } => {
+                let report = crate::backup::verify(&dest)?;
+                let verified = report.verified;
+                let output = serde_json::to_value(report)?;
+                if json {
+                    render::json(&output)?;
+                } else {
+                    render::backup(&output);
+                }
+                Ok(if verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                })
+            }
+        },
     }
 }
 

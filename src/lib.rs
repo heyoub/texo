@@ -2,6 +2,8 @@
 
 /// Curated agent-facing tools and operation discovery.
 pub mod agent_catalog;
+/// Evidence-backed workspace backup and offline verification.
+pub mod backup;
 
 /// Composed config, store, gateway, and integration diagnostics.
 pub mod doctor;
