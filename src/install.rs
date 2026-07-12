@@ -144,6 +144,13 @@ pub fn install(
         &with_newline(canonical),
         dry_run,
     )?);
+    let hooks = serde_json::to_vec_pretty(&crate::hooks::manifest(workspace_id))?;
+    changes.push(write_managed(
+        root,
+        crate::hooks::HOOKS_MANIFEST_PATH,
+        &with_newline(hooks),
+        dry_run,
+    )?);
 
     for client in &clients {
         let change = match client {
@@ -175,7 +182,18 @@ pub fn install(
 /// Returns an error when a managed file cannot be parsed or updated.
 pub fn uninstall(root: &Path, dry_run: bool) -> Result<UninstallReport, TexoError> {
     let mut changes = Vec::new();
-    changes.push(remove_managed_file(root, MCP_MANIFEST_PATH, dry_run)?);
+    changes.push(remove_managed_file(
+        root,
+        MCP_MANIFEST_PATH,
+        "texo.mcp-install.v1",
+        dry_run,
+    )?);
+    changes.push(remove_managed_file(
+        root,
+        crate::hooks::HOOKS_MANIFEST_PATH,
+        "texo.hooks.v1",
+        dry_run,
+    )?);
     for path in [CLAUDE_MCP_PATH, CURSOR_MCP_PATH] {
         if let Some(change) = remove_json_adapter(root, path, dry_run)? {
             changes.push(change);
@@ -418,12 +436,13 @@ fn remove_json_adapter(
 fn remove_managed_file(
     root: &Path,
     relative: &str,
+    schema: &str,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
     let path = root.join(relative);
     let action = if path.is_file() {
         let document = serde_json::from_slice::<Value>(&std::fs::read(&path)?)?;
-        if document.get("schema").and_then(Value::as_str) != Some("texo.mcp-install.v1") {
+        if document.get("schema").and_then(Value::as_str) != Some(schema) {
             return Err(config_error(
                 relative,
                 "file is not managed by this installer",

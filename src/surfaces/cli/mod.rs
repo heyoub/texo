@@ -1,5 +1,6 @@
 //! Clap-driven CLI surface.
 
+use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -170,6 +171,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run a fixed read-only agent hook.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -194,6 +200,25 @@ enum OpsCmd {
     /// Describe one registered operation.
     Describe {
         name: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Return bounded context for the start of an agent session.
+    SessionStart {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check changed workspace paths supplied as a bounded JSON stdin envelope.
+    FilesChanged {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the journal and projection before a commit.
+    PreCommit {
         #[arg(long)]
         json: bool,
     },
@@ -521,6 +546,51 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             } else {
                 render::installation(&output);
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Hook { cmd } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let (event, data, json) = match cmd {
+                HookCmd::SessionStart { json } => (
+                    "session_start",
+                    host.invoke_json(
+                        "texo.context.agent",
+                        &json!({
+                            "subject": null,
+                            "include_stale": true,
+                            "strict_settlement": false
+                        }),
+                    )?,
+                    json,
+                ),
+                HookCmd::FilesChanged { json } => {
+                    let mut bytes = Vec::new();
+                    std::io::stdin()
+                        .take((crate::hooks::MAX_INPUT_BYTES + 1) as u64)
+                        .read_to_end(&mut bytes)?;
+                    let input = crate::hooks::parse_files_changed(&bytes)?;
+                    let mut reports = Vec::with_capacity(input.paths.len());
+                    for path in input.paths {
+                        reports.push(
+                            host.invoke_json("texo.staleness.check", &json!({"path": path}))?,
+                        );
+                    }
+                    ("files_changed", json!({"reports": reports}), json)
+                }
+                HookCmd::PreCommit { json } => (
+                    "pre_commit",
+                    host.invoke_json("texo.verify.run", &json!({}))?,
+                    json,
+                ),
+            };
+            let output = json!({
+                "schema": "texo.hook-result.v1",
+                "event": event,
+                "advisory": true,
+                "data": data
+            });
+            let _ = json;
+            render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }
     }

@@ -9,6 +9,8 @@ pub mod error;
 pub mod lexicon;
 /// Typed configuration and resolution for every model role.
 pub mod gateway;
+/// Fixed read-only agent hook contracts.
+pub mod hooks;
 /// Idempotent agent-appliance installation.
 pub mod install;
 /// Configuration loading and defaults.
