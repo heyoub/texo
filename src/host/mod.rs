@@ -86,6 +86,25 @@ pub fn open_workspace_store(
     open_store_for_config(root, &config)
 }
 
+/// Open one explicitly selected workspace journal with authority encoded in
+/// the returned handle.
+///
+/// # Errors
+/// Returns configuration, registry, or store-open failures.
+pub fn open_workspace_journal_store(
+    root: impl AsRef<Path>,
+    workspace_id: &str,
+    journal_id: &str,
+) -> Result<JournalStore, TexoError> {
+    let root = root.as_ref();
+    let config_path = root.join(".texo").join("config.toml");
+    let root_config = TexoRootConfig::load(&config_path).map_err(config_error)?;
+    let (config, journal) = root_config
+        .resolve_journal(Some(workspace_id), Some(journal_id))
+        .map_err(config_error)?;
+    open_journal_store_for_config(root, &config, journal.role)
+}
+
 impl TexoHost {
     /// Build a runnable host for one workspace.
     ///
@@ -219,6 +238,35 @@ impl TexoHost {
             config,
             journal,
             JournalStore::writable(store),
+            Some(shared_cache),
+        )
+    }
+
+    /// Build a host over an already-open explicitly selected journal.
+    ///
+    /// # Errors
+    /// Returns registry, topology, or host-composition failures.
+    pub fn open_journal_with_store_and_cache(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        journal_id: &str,
+        observed_at_ms: u64,
+        store: JournalStore,
+        shared_cache: SharedWorkspaceCache,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+            detail: error.to_string(),
+        })?;
+        let (config, journal) = load_or_default_config(&root, &workspace_id, Some(journal_id))?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
+            store,
             Some(shared_cache),
         )
     }

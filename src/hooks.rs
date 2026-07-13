@@ -25,12 +25,18 @@ pub struct FilesChangedInput {
 /// Build the client-neutral hook manifest installed in `.texo`.
 #[must_use]
 pub fn manifest(workspace_id: &str) -> Value {
+    manifest_for_journal(workspace_id, None)
+}
+
+/// Build the hook manifest pinned to an optional physical journal.
+#[must_use]
+pub fn manifest_for_journal(workspace_id: &str, journal_id: Option<&str>) -> Value {
     json!({
         "schema": "texo.hooks.v1",
         "hooks": [
-            hook("session_start", workspace_id, "session-start", "none"),
-            hook("files_changed", workspace_id, "files-changed", "texo.hook.files-changed.input.v1"),
-            hook("pre_commit", workspace_id, "pre-commit", "none")
+            hook("session_start", workspace_id, journal_id, "session-start", "none"),
+            hook("files_changed", workspace_id, journal_id, "files-changed", "texo.hook.files-changed.input.v1"),
+            hook("pre_commit", workspace_id, journal_id, "pre-commit", "none")
         ]
     })
 }
@@ -71,14 +77,33 @@ pub fn parse_files_changed(bytes: &[u8]) -> Result<FilesChangedInput, TexoError>
     Ok(input)
 }
 
-fn hook(event: &str, workspace_id: &str, command: &str, input_schema: &str) -> Value {
+fn hook(
+    event: &str,
+    workspace_id: &str,
+    journal_id: Option<&str>,
+    command: &str,
+    input_schema: &str,
+) -> Value {
+    let mut invocation = vec![
+        "texo".to_string(),
+        "--root".to_string(),
+        ".".to_string(),
+        "--workspace".to_string(),
+        workspace_id.to_string(),
+    ];
+    if let Some(journal_id) = journal_id {
+        invocation.push("--journal".to_string());
+        invocation.push(journal_id.to_string());
+    }
+    invocation.extend([
+        "hook".to_string(),
+        command.to_string(),
+        "--json".to_string(),
+    ]);
     json!({
         "event": event,
         "blocking": false,
-        "command": [
-            "texo", "--root", ".", "--workspace", workspace_id,
-            "hook", command, "--json"
-        ],
+        "command": invocation,
         "input_schema": input_schema,
         "effect": "read",
         "failure_policy": "warn"

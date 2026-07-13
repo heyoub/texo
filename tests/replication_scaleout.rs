@@ -214,6 +214,13 @@ fn imported_read_model_resumes_and_replays_after_stale_cursor_without_duplicates
         advanced_cursor.replica_frontier + 1,
         "BatPak records one mutable-open lifecycle event per follower run"
     );
+    let before_noop = replica_event_count(root.path(), "agent")?;
+    let no_op = texo::replication::follow_once(root.path(), Some("demo"), "agent")?;
+    let ReplicaReport::ImportedReadModel { imported, .. } = no_op else {
+        return Err("expected imported read model report".into());
+    };
+    assert_eq!(imported, 0);
+    assert_eq!(replica_event_count(root.path(), "agent")?, before_noop);
     assert_eq!(
         semantic_claims(root.path(), "canonical")?,
         semantic_claims(root.path(), "agent")?

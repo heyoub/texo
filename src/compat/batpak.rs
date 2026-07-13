@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum source rows in one atomic materialization batch.
 pub const IMPORT_PAGE_SIZE: usize = 128;
+/// Maximum aggregate payload bytes materialized in one page, except that one
+/// valid single event may reach `BatPak`'s 16 MiB default append ceiling.
+pub const IMPORT_PAGE_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 /// Stable source identity carried by the durable caller-owned ledger.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -42,6 +45,72 @@ pub struct ImportEvent {
     kind: EventKind,
     payload: Vec<u8>,
     correlation_id: CorrelationId,
+}
+
+/// Explicit transport form of one importable source event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteImportEvent {
+    /// Stable source evidence.
+    pub source: SourceEventRef,
+    /// Source entity coordinate.
+    pub entity: String,
+    /// Source scope coordinate.
+    pub scope: String,
+    /// Raw custom event-kind bits.
+    pub kind_raw: u16,
+    /// Exact committed payload bytes.
+    pub payload: Vec<u8>,
+    /// Opaque correlation id.
+    pub correlation_id: u128,
+}
+
+impl ImportEvent {
+    /// Convert a locally read event into the explicit transport schema.
+    #[must_use]
+    pub fn into_remote(self) -> RemoteImportEvent {
+        RemoteImportEvent {
+            source: self.source,
+            entity: self.coordinate.entity().to_string(),
+            scope: self.coordinate.scope().to_string(),
+            kind_raw: self.kind.as_raw_u16(),
+            payload: self.payload,
+            correlation_id: self.correlation_id.as_u128(),
+        }
+    }
+
+    /// Validate and reconstruct an import event received from a remote source.
+    ///
+    /// # Errors
+    /// Returns configuration failures for malformed coordinates, event kinds,
+    /// source ids, or payload content hashes.
+    pub fn from_remote(remote: RemoteImportEvent) -> Result<Self, StoreError> {
+        let category = u8::try_from(remote.kind_raw >> 12).map_err(|error| {
+            StoreError::Configuration(format!("remote event category: {error}"))
+        })?;
+        let kind = EventKind::try_custom(category, remote.kind_raw & 0x0fff)
+            .map_err(|error| StoreError::Configuration(format!("remote event kind: {error:?}")))?;
+        if kind.as_raw_u16() != remote.kind_raw {
+            return Err(StoreError::Configuration(
+                "remote event kind did not round-trip".to_string(),
+            ));
+        }
+        if remote.source.kind_raw != remote.kind_raw
+            || !valid_event_id_hex(&remote.source.event_id_hex)
+            || batpak::event::hash::compute_hash(&remote.payload) != remote.source.content_hash
+        {
+            return Err(StoreError::Configuration(
+                "remote event source evidence mismatch".to_string(),
+            ));
+        }
+        Ok(Self {
+            source: remote.source,
+            coordinate: Coordinate::new(remote.entity, remote.scope)
+                .map_err(|error| StoreError::Configuration(error.to_string()))?,
+            kind,
+            payload: remote.payload,
+            correlation_id: CorrelationId::from_u128(remote.correlation_id),
+        })
+    }
 }
 
 /// Bounded source page with explicit coverage counters.
@@ -88,25 +157,37 @@ pub fn read_import_page<S: StoreState>(
         skipped_operational: 0,
         has_more: false,
     };
+    let mut payload_bytes = 0_usize;
+    let mut hit_payload_budget = false;
     for entry in rows {
         if entry.global_sequence() > source_ceiling {
             break;
         }
-        page.high_watermark = Some(entry.global_sequence());
         let event_id_hex = format!("{:032x}", entry.event_id().as_u128());
         if entry.event_kind().is_reserved() {
+            page.high_watermark = Some(entry.global_sequence());
             page.skipped_reserved = page.skipped_reserved.saturating_add(1);
             continue;
         }
         if entry.event_kind() == excluded_kind {
+            page.high_watermark = Some(entry.global_sequence());
             page.skipped_operational = page.skipped_operational.saturating_add(1);
             continue;
         }
         if represented.contains(&event_id_hex) {
+            page.high_watermark = Some(entry.global_sequence());
             page.deduplicated = page.deduplicated.saturating_add(1);
             continue;
         }
         let raw = source.read_raw(entry.event_id())?;
+        if !page.events.is_empty()
+            && payload_bytes.saturating_add(raw.event.payload.len()) > IMPORT_PAGE_PAYLOAD_BYTES
+        {
+            hit_payload_budget = true;
+            break;
+        }
+        page.high_watermark = Some(entry.global_sequence());
+        payload_bytes = payload_bytes.saturating_add(raw.event.payload.len());
         page.events.push(ImportEvent {
             source: SourceEventRef {
                 event_id_hex,
@@ -120,10 +201,18 @@ pub fn read_import_page<S: StoreState>(
             correlation_id: raw.event.header.correlation_id,
         });
     }
-    page.has_more = page
-        .high_watermark
-        .is_some_and(|seen| seen < source_ceiling);
+    page.has_more = hit_payload_budget
+        || page
+            .high_watermark
+            .is_some_and(|seen| seen < source_ceiling);
     Ok(page)
+}
+
+fn valid_event_id_hex(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Atomically append raw copied events and one caller-built ledger event.

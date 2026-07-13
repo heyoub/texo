@@ -97,6 +97,8 @@ pub enum ReplicationFailureKind {
     Evidence,
     /// `BatPak` returned a lifecycle or import failure at an uncertain boundary.
     Substrate,
+    /// A bounded remote replica call failed before its response was accepted.
+    Transport,
 }
 
 impl ReplicationFailureKind {
@@ -109,6 +111,7 @@ impl ReplicationFailureKind {
             Self::Verification => "replication.verify",
             Self::Evidence => "replication.evidence",
             Self::Substrate => "replication.substrate",
+            Self::Transport => "replication.transport",
         }
     }
 }
@@ -482,10 +485,14 @@ const fn replication_facts(kind: ReplicationFailureKind, committed: Committed) -
         ReplicationFailureKind::Substrate => {
             "inspect both journal frontiers and receipts before retrying"
         }
+        ReplicationFailureKind::Transport => "resume the replica from its durable cursor",
     };
     FailureFacts {
         committed,
-        retry_safe: matches!(kind, ReplicationFailureKind::Evidence),
+        retry_safe: matches!(
+            kind,
+            ReplicationFailureKind::Evidence | ReplicationFailureKind::Transport
+        ),
         resume: Some(resume),
     }
 }

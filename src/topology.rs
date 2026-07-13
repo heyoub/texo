@@ -75,6 +75,12 @@ pub struct JournalEntry {
     /// Replica identity/materialization semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replica_mode: Option<ReplicaMode>,
+    /// Optional `netbat` source address for a remote replica circuit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_endpoint: Option<String>,
+    /// Environment variable containing the remote circuit bearer token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_token_env: Option<String>,
 }
 
 impl JournalEntry {
@@ -86,6 +92,8 @@ impl JournalEntry {
             store_path: store_path.into(),
             source_journal: None,
             replica_mode: None,
+            source_endpoint: None,
+            source_token_env: None,
         }
     }
 
@@ -101,6 +109,26 @@ impl JournalEntry {
             store_path: store_path.into(),
             source_journal: Some(source_journal.into()),
             replica_mode: Some(replica_mode),
+            source_endpoint: None,
+            source_token_env: None,
+        }
+    }
+
+    /// Declare a remote imported read model served over `netbat`.
+    #[must_use]
+    pub fn remote_replica(
+        store_path: impl Into<String>,
+        source_journal: impl Into<String>,
+        source_endpoint: impl Into<String>,
+        source_token_env: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: JournalRole::Replica,
+            store_path: store_path.into(),
+            source_journal: Some(source_journal.into()),
+            replica_mode: Some(ReplicaMode::ImportedReadModel),
+            source_endpoint: Some(source_endpoint.into()),
+            source_token_env: Some(source_token_env.into()),
         }
     }
 }
@@ -118,6 +146,10 @@ pub struct ResolvedJournal {
     pub source_journal: Option<JournalId>,
     /// Replica semantics, absent for canonical journals.
     pub replica_mode: Option<ReplicaMode>,
+    /// Optional remote `netbat` address.
+    pub source_endpoint: Option<String>,
+    /// Optional environment-variable name holding the circuit token.
+    pub source_token_env: Option<String>,
 }
 
 /// Validate and resolve one journal from a normalized topology map.
@@ -152,6 +184,8 @@ pub fn resolve_journal(
             .map(JournalId::new)
             .transpose()?,
         replica_mode: entry.replica_mode,
+        source_endpoint: entry.source_endpoint.clone(),
+        source_token_env: entry.source_token_env.clone(),
     })
 }
 
@@ -174,7 +208,11 @@ fn validate_all(journals: &BTreeMap<String, JournalEntry>) -> Result<(), Topolog
         }
         match entry.role {
             JournalRole::Canonical => {
-                if entry.source_journal.is_some() || entry.replica_mode.is_some() {
+                if entry.source_journal.is_some()
+                    || entry.replica_mode.is_some()
+                    || entry.source_endpoint.is_some()
+                    || entry.source_token_env.is_some()
+                {
                     return Err(TopologyError::CanonicalHasReplicaFields(id.to_string()));
                 }
             }
@@ -196,6 +234,17 @@ fn validate_all(journals: &BTreeMap<String, JournalEntry>) -> Result<(), Topolog
                 if entry.replica_mode.is_none() {
                     return Err(TopologyError::ReplicaMissingMode(id.to_string()));
                 }
+                match (&entry.source_endpoint, &entry.source_token_env) {
+                    (Some(endpoint), Some(token_env))
+                        if !endpoint.trim().is_empty() && valid_env_name(token_env) => {}
+                    (None, None) => {}
+                    _ => return Err(TopologyError::InvalidRemoteSource(id.to_string())),
+                }
+                if entry.source_endpoint.is_some()
+                    && entry.replica_mode == Some(ReplicaMode::ExactFork)
+                {
+                    return Err(TopologyError::RemoteExactFork(id.to_string()));
+                }
             }
         }
     }
@@ -213,6 +262,13 @@ fn validate_all(journals: &BTreeMap<String, JournalEntry>) -> Result<(), Topolog
         }
     }
     Ok(())
+}
+
+fn valid_env_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 /// Invalid topology declaration.
@@ -242,6 +298,12 @@ pub enum TopologyError {
     /// Replica omitted materialization semantics.
     #[error("replica is missing replica_mode: {0}")]
     ReplicaMissingMode(String),
+    /// Remote source fields are incomplete or unsafe.
+    #[error("replica has invalid remote source fields: {0}")]
+    InvalidRemoteSource(String),
+    /// Exact forks require direct source-store access.
+    #[error("remote replica cannot use exact_fork mode: {0}")]
+    RemoteExactFork(String),
     /// Replica source is not declared.
     #[error("replica {replica} references missing source journal {source_journal}")]
     MissingSource {

@@ -116,6 +116,8 @@ mod tests {
                 store_path: "store".to_string(),
                 source_journal: None,
                 replica_mode: None,
+                source_endpoint: None,
+                source_token_env: None,
             },
         })
     }

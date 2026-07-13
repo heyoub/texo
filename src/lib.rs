@@ -46,6 +46,7 @@ pub mod relate;
 pub mod reconcile;
 /// Exact-fork and imported-read-model replica circuits.
 pub mod replication;
+pub mod replica_net;
 /// Operation scaffolding.
 pub mod ops;
 /// Host integration scaffolding.

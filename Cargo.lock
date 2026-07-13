@@ -1684,6 +1684,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "netbat"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bbebc6decad6b41b3b04975f275f51e56b2c32cebbf6b87187e5adc6a857876"
+dependencies = [
+ "flume",
+ "syncbat",
+ "tracing",
+]
+
+[[package]]
 name = "nonempty"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2468,6 +2479,7 @@ dependencies = [
  "hostbat",
  "indexmap",
  "insta",
+ "netbat",
  "predicates",
  "proptest",
  "protobuf",

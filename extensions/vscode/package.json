@@ -47,6 +47,11 @@
           "default": "demo",
           "description": "Workspace id"
         },
+        "texo.journalId": {
+          "type": "string",
+          "default": "",
+          "description": "Optional physical journal id; leave empty for the workspace primary"
+        },
         "texo.checkOnSave": {
           "type": "boolean",
           "default": true,

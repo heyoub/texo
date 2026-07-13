@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use texo::events::coordinate::scope_for_workspace;
 use texo::host::{open_workspace_store, TexoHost};
+use texo::journal_store::JournalStore;
 use texo::surfaces::http::routes::RouteState;
 use texo::surfaces::http::server::{serve_listener, ServeStats, ServerConfig, ShutdownHandle};
 
@@ -28,7 +29,8 @@ fn start_server(dir: &TempDir, keep_alive: Duration) -> TestResult<StartedServer
         RouteState {
             root: dir.path().to_path_buf(),
             workspace_id: "demo".to_string(),
-            store: Some(Arc::clone(&store)),
+            journal_id: "canonical".to_string(),
+            store: Some(JournalStore::writable(Arc::clone(&store))),
             projection_cache: Arc::new(std::sync::Mutex::new(None)),
             chat_enabled: false,
         },

@@ -110,6 +110,20 @@ pub fn install(
     requested: &[ClientTarget],
     dry_run: bool,
 ) -> Result<InstallReport, TexoError> {
+    install_for_journal(root, workspace_id, None, requested, dry_run)
+}
+
+/// Install the appliance with every client pinned to one physical journal.
+///
+/// # Errors
+/// Returns the same safe-merge failures as [`install`].
+pub fn install_for_journal(
+    root: &Path,
+    workspace_id: &str,
+    journal_id: Option<&str>,
+    requested: &[ClientTarget],
+    dry_run: bool,
+) -> Result<InstallReport, TexoError> {
     let clients = resolve_clients(root, requested);
     ensure_safe_managed_path(root, ".texo/config.toml")?;
     ensure_safe_managed_path(root, MCP_MANIFEST_PATH)?;
@@ -132,13 +146,13 @@ pub fn install(
     for client in &clients {
         match client {
             ClientTarget::Claude => {
-                merge_json_adapter(root, CLAUDE_MCP_PATH, workspace_id, true)?;
+                merge_json_adapter(root, CLAUDE_MCP_PATH, workspace_id, journal_id, true)?;
             }
             ClientTarget::Cursor => {
-                merge_json_adapter(root, CURSOR_MCP_PATH, workspace_id, true)?;
+                merge_json_adapter(root, CURSOR_MCP_PATH, workspace_id, journal_id, true)?;
             }
             ClientTarget::Codex => {
-                merge_codex_adapter(root, workspace_id, true)?;
+                merge_codex_adapter(root, workspace_id, journal_id, true)?;
             }
             ClientTarget::Auto | ClientTarget::All => {}
         }
@@ -161,14 +175,21 @@ pub fn install(
         },
     });
 
-    let canonical = serde_json::to_vec_pretty(&canonical_manifest(workspace_id, &created_paths))?;
+    let canonical = serde_json::to_vec_pretty(&canonical_manifest(
+        workspace_id,
+        journal_id,
+        &created_paths,
+    ))?;
     changes.push(write_managed(
         root,
         MCP_MANIFEST_PATH,
         &with_newline(canonical),
         dry_run,
     )?);
-    let hooks = serde_json::to_vec_pretty(&crate::hooks::manifest(workspace_id))?;
+    let hooks = serde_json::to_vec_pretty(&crate::hooks::manifest_for_journal(
+        workspace_id,
+        journal_id,
+    ))?;
     changes.push(write_managed(
         root,
         crate::hooks::HOOKS_MANIFEST_PATH,
@@ -179,12 +200,12 @@ pub fn install(
     for client in &clients {
         let change = match client {
             ClientTarget::Claude => {
-                merge_json_adapter(root, CLAUDE_MCP_PATH, workspace_id, dry_run)
+                merge_json_adapter(root, CLAUDE_MCP_PATH, workspace_id, journal_id, dry_run)
             }
             ClientTarget::Cursor => {
-                merge_json_adapter(root, CURSOR_MCP_PATH, workspace_id, dry_run)
+                merge_json_adapter(root, CURSOR_MCP_PATH, workspace_id, journal_id, dry_run)
             }
-            ClientTarget::Codex => merge_codex_adapter(root, workspace_id, dry_run),
+            ClientTarget::Codex => merge_codex_adapter(root, workspace_id, journal_id, dry_run),
             ClientTarget::Auto | ClientTarget::All => continue,
         }?;
         changes.push(change);
@@ -286,8 +307,10 @@ pub fn uninstall(
                     "managed manifest exists but its workspace id could not be recovered",
                 ));
             };
+            let journal_id = managed_journal_id(root)?;
             let canonical = with_newline(serde_json::to_vec_pretty(&canonical_manifest(
                 &workspace_id,
+                journal_id.as_deref(),
                 &remaining,
             ))?);
             changes.push(write_managed(root, MCP_MANIFEST_PATH, &canonical, dry_run)?);
@@ -337,18 +360,33 @@ fn resolve_clients(root: &Path, requested: &[ClientTarget]) -> Vec<ClientTarget>
     selected.into_iter().collect()
 }
 
-fn canonical_manifest(workspace_id: &str, created_paths: &BTreeSet<String>) -> Value {
+fn canonical_manifest(
+    workspace_id: &str,
+    journal_id: Option<&str>,
+    created_paths: &BTreeSet<String>,
+) -> Value {
     json!({
         "schema": "texo.mcp-install.v1",
-        "server": server_entry(workspace_id),
+        "server": server_entry(workspace_id, journal_id),
         "created_paths": created_paths
     })
 }
 
-fn server_entry(workspace_id: &str) -> Value {
+fn server_entry(workspace_id: &str, journal_id: Option<&str>) -> Value {
+    let mut args = vec![
+        "--root".to_string(),
+        ".".to_string(),
+        "--workspace".to_string(),
+        workspace_id.to_string(),
+    ];
+    if let Some(journal_id) = journal_id {
+        args.push("--journal".to_string());
+        args.push(journal_id.to_string());
+    }
+    args.push("mcp".to_string());
     json!({
         "command": "texo",
-        "args": ["--root", ".", "--workspace", workspace_id, "mcp"],
+        "args": args,
         "env": {}
     })
 }
@@ -357,13 +395,14 @@ fn merge_json_adapter(
     root: &Path,
     relative: &str,
     workspace_id: &str,
+    journal_id: Option<&str>,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
     ensure_safe_managed_path(root, relative)?;
     let path = root.join(relative);
     let existed = path.exists();
     let (mut document, mut servers) = read_ordered_adapter(&path, existed, relative)?;
-    let wanted = server_entry(workspace_id);
+    let wanted = server_entry(workspace_id, journal_id);
     if let Some(existing) = servers.get("texo") {
         if serde_json::from_str::<Value>(existing.get())? != wanted {
             return Err(config_error(
@@ -392,6 +431,7 @@ fn merge_json_adapter(
 fn merge_codex_adapter(
     root: &Path,
     workspace_id: &str,
+    journal_id: Option<&str>,
     dry_run: bool,
 ) -> Result<InstallChange, TexoError> {
     ensure_safe_managed_path(root, CODEX_CONFIG_PATH)?;
@@ -417,8 +457,11 @@ fn merge_codex_adapter(
             ));
         }
     }
+    let journal_args = journal_id.map_or_else(String::new, |journal_id| {
+        format!(", \"--journal\", \"{}\"", escape_toml(journal_id))
+    });
     let args = format!(
-        "[\"--root\", \".\", \"--workspace\", \"{}\", \"mcp\"]",
+        "[\"--root\", \".\", \"--workspace\", \"{}\"{journal_args}, \"mcp\"]",
         escape_toml(workspace_id)
     );
     let block = format!(
@@ -529,6 +572,24 @@ fn managed_workspace_id(root: &Path) -> Result<Option<String>, TexoError> {
             "managed manifest args carry no recoverable --workspace id; refusing to rewrite",
         )),
     }
+}
+
+fn managed_journal_id(root: &Path) -> Result<Option<String>, TexoError> {
+    let Some(document) = managed_manifest(root)? else {
+        return Ok(None);
+    };
+    let args = document
+        .get("server")
+        .and_then(|server| server.get("args"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| config_error(MCP_MANIFEST_PATH, "managed manifest has no server args"))?;
+    Ok(args.windows(2).find_map(|pair| {
+        if pair[0].as_str() == Some("--journal") {
+            pair[1].as_str().map(str::to_string)
+        } else {
+            None
+        }
+    }))
 }
 
 fn preflight_remove_client(
@@ -673,7 +734,11 @@ fn is_managed_server_entry(value: &Value) -> bool {
                     && args.get(1).and_then(Value::as_str) == Some(".")
                     && args.get(2).and_then(Value::as_str) == Some("--workspace")
                     && args.get(3).and_then(Value::as_str).is_some()
-                    && args.get(4).and_then(Value::as_str) == Some("mcp")
+                    && args.last().and_then(Value::as_str) == Some("mcp")
+                    && (args.len() == 5
+                        || (args.len() == 7
+                            && args.get(4).and_then(Value::as_str) == Some("--journal")
+                            && args.get(5).and_then(Value::as_str).is_some()))
             })
 }
 

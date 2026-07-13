@@ -23,6 +23,7 @@ code-rust = ["dep:tree-sitter", "dep:tree-sitter-rust"]
 batpak = "0.10.0"
 syncbat = "0.10.0"
 hostbat = "0.10.0"
+netbat = "0.10.0"
 flume = "0.12"
 signal-hook = "0.3"
 serde = { version = "1", features = ["derive", "rc"] }

@@ -78,7 +78,9 @@ export function parseStalenessReport(stdout: string): StalenessReport {
 function texoArgs(extra: string[]): string[] {
   const cfg = vscode.workspace.getConfiguration("texo");
   const workspaceId = cfg.get<string>("workspaceId", "demo");
-  return ["--workspace", workspaceId, ...extra];
+  const journalId = cfg.get<string>("journalId", "").trim();
+  const journalArgs = journalId.length > 0 ? ["--journal", journalId] : [];
+  return ["--workspace", workspaceId, ...journalArgs, ...extra];
 }
 
 /**

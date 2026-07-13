@@ -19,10 +19,10 @@ const SUPPORTED_PROTOCOL_VERSIONS: [&str; 2] = ["2025-06-18", "2024-11-05"];
 ///
 /// Returns [`TexoError::Io`] when stdin/stdout I/O fails and
 /// [`TexoError::Json`] when a response cannot be serialized.
-pub fn run(root: &Path, workspace: Option<&str>) -> Result<(), TexoError> {
+pub fn run(root: &Path, workspace: Option<&str>, journal: Option<&str>) -> Result<(), TexoError> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    run_with_io(stdin.lock(), stdout.lock(), root, workspace)
+    run_with_io(stdin.lock(), stdout.lock(), root, workspace, journal)
 }
 
 fn run_with_io<R: BufRead, W: Write>(
@@ -30,6 +30,7 @@ fn run_with_io<R: BufRead, W: Write>(
     mut output: W,
     root: &Path,
     workspace: Option<&str>,
+    journal: Option<&str>,
 ) -> Result<(), TexoError> {
     let mut line = String::new();
     loop {
@@ -41,7 +42,7 @@ fn run_with_io<R: BufRead, W: Write>(
         let response = if line.len() > LINE_CAP {
             Some(error_response(&Value::Null, -32700, "parse error", None))
         } else {
-            handle_line(&line, root, workspace)
+            handle_line(&line, root, workspace, journal)
         };
         if let Some(response) = response {
             serde_json::to_writer(&mut output, &response)?;
@@ -51,7 +52,12 @@ fn run_with_io<R: BufRead, W: Write>(
     }
 }
 
-fn handle_line(line: &str, root: &Path, workspace: Option<&str>) -> Option<Value> {
+fn handle_line(
+    line: &str,
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Option<Value> {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return Some(error_response(&Value::Null, -32700, "parse error", None));
     };
@@ -67,7 +73,13 @@ fn handle_line(line: &str, root: &Path, workspace: Option<&str>) -> Option<Value
     match method {
         "initialize" => Some(success_response(&id_value, &initialize_result(&value))),
         "tools/list" => Some(success_response(&id_value, &tools_list())),
-        "tools/call" => Some(call_tool(&id_value, value.get("params"), root, workspace)),
+        "tools/call" => Some(call_tool(
+            &id_value,
+            value.get("params"),
+            root,
+            workspace,
+            journal,
+        )),
         _ => Some(error_response(&id_value, -32601, "method not found", None)),
     }
 }
@@ -97,7 +109,13 @@ fn tools_list() -> Value {
     crate::agent_catalog::mcp_tools_list()
 }
 
-fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<&str>) -> Value {
+fn call_tool(
+    id: &Value,
+    params: Option<&Value>,
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Value {
     let Some(params) = params else {
         return error_response(id, -32602, "invalid params", None);
     };
@@ -112,7 +130,7 @@ fn call_tool(id: &Value, params: Option<&Value>, root: &Path, workspace: Option<
         Ok(mapped) => mapped,
         Err(message) => return error_response(id, -32602, &message, None),
     };
-    let mut host = match open_host(root, workspace) {
+    let mut host = match open_host(root, workspace, journal) {
         Ok(host) => host,
         Err(error) => {
             return error_response(id, -32603, &error.to_string(), Some(failure_data(&error)));
@@ -355,7 +373,11 @@ fn output_snapshot_token(output: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError> {
+fn open_host(
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Result<TexoHost, TexoError> {
     let workspace = if let Some(workspace) = workspace {
         workspace.to_string()
     } else {
@@ -376,11 +398,20 @@ fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError
             "demo".to_string()
         }
     };
-    TexoHost::open(
-        root.to_path_buf(),
-        workspace,
-        crate::surfaces::cli::observed_at_ms(),
-    )
+    if let Some(journal) = journal {
+        TexoHost::open_journal(
+            root.to_path_buf(),
+            workspace,
+            journal,
+            crate::surfaces::cli::observed_at_ms(),
+        )
+    } else {
+        TexoHost::open(
+            root.to_path_buf(),
+            workspace,
+            crate::surfaces::cli::observed_at_ms(),
+        )
+    }
 }
 
 fn success_response(id: &Value, result: &Value) -> Value {
@@ -407,7 +438,8 @@ mod tests {
             "method": "initialize",
             "params": { "protocolVersion": "test-version" }
         });
-        let response = handle_line(&request.to_string(), Path::new("."), None).expect("response");
+        let response =
+            handle_line(&request.to_string(), Path::new("."), None, None).expect("response");
         assert_eq!(
             response["result"]["protocolVersion"],
             DEFAULT_PROTOCOL_VERSION
@@ -419,7 +451,7 @@ mod tests {
     #[test]
     fn notification_has_no_response() {
         let request = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
-        assert!(handle_line(&request.to_string(), Path::new("."), None).is_none());
+        assert!(handle_line(&request.to_string(), Path::new("."), None, None).is_none());
     }
 
     #[test]

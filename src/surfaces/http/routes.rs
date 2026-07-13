@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use batpak::store::{Open, Store};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::TexoError;
 use crate::host::{SharedWorkspaceCache, TexoHost};
+use crate::journal_store::JournalStore;
 use crate::ops::agent::valid_session_id;
 
 use super::request::{HttpRequest, Method};
@@ -24,8 +24,10 @@ pub struct RouteState {
     pub root: PathBuf,
     /// Workspace id.
     pub workspace_id: String,
+    /// Selected physical journal id.
+    pub journal_id: String,
     /// Shared open store for long-lived server processes.
-    pub store: Option<Arc<Store<Open>>>,
+    pub store: Option<JournalStore>,
     /// Cross-request checkout slot for the warm workspace projection.
     pub projection_cache: SharedWorkspaceCache,
     /// Whether model-backed chat should be exposed.
@@ -281,15 +283,21 @@ fn static_file(path: &str) -> Result<HttpResponse, TexoError> {
 /// Returns [`TexoError`] when host composition fails.
 pub fn open_host(state: &RouteState) -> Result<TexoHost, TexoError> {
     if let Some(store) = &state.store {
-        TexoHost::open_with_store_and_cache(
+        TexoHost::open_journal_with_store_and_cache(
             state.root.clone(),
             state.workspace_id.clone(),
+            &state.journal_id,
             now_ms(),
-            Arc::clone(store),
+            store.clone(),
             Arc::clone(&state.projection_cache),
         )
     } else {
-        TexoHost::open(state.root.clone(), state.workspace_id.clone(), now_ms())
+        TexoHost::open_journal(
+            state.root.clone(),
+            state.workspace_id.clone(),
+            &state.journal_id,
+            now_ms(),
+        )
     }
 }
 
