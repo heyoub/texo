@@ -26,7 +26,7 @@ pub fn tools() -> Vec<AgentToolSpec> {
         AgentToolSpec {
             name: "get_agent_context",
             operation: "texo.context.agent",
-            description: "Start here when answering from workspace knowledge. Returns current claims, conflicts, freshness, provenance, and settlement warnings. Search claims next when the snapshot is broader than the task. This tool is read-only.",
+            description: "Start here when answering from workspace knowledge. Returns current claims, conflicts, freshness, provenance, and settlement warnings. Use search_knowledge next when the snapshot is broader than the task. This tool is read-only.",
             result_schema: "texo.mcp.agent-context.v2",
         },
         AgentToolSpec {

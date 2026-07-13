@@ -405,11 +405,7 @@ pub fn backup(value: &Value) {
                     .unwrap_or_default()
             );
         }
-    } else if value
-        .get("chain_verified")
-        .and_then(Value::as_bool)
-        .is_some()
-    {
+    } else if value.get("chain_verified").and_then(Value::as_bool) == Some(true) {
         println!(
             "backup restored: {} ({} files, {} bytes; chain verified)",
             value

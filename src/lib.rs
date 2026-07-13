@@ -28,6 +28,7 @@ pub mod config;
 pub mod events;
 /// Claim-domain scaffolding.
 pub mod claims;
+/// Bounded SCIP/syntactic/lexical code intelligence and disposable artifacts.
 pub mod code_index;
 /// Context assembly scaffolding.
 pub mod context;

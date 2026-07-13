@@ -553,8 +553,22 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 "source": source,
                 "code": code
             });
+            // Incomplete capture must not read as success: mirror the partial exit
+            // used by the other arms when either phase reports truncated coverage.
+            let truncated = ["source", "code"].iter().any(|phase| {
+                output
+                    .get(*phase)
+                    .and_then(|value| value.get("coverage"))
+                    .and_then(|coverage| coverage.get("truncated"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
             render::json(&output)?;
-            Ok(ExitCode::SUCCESS)
+            if truncated {
+                Ok(ExitCode::from(2))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
         }
         Command::Reconcile {
             max_per_claim,

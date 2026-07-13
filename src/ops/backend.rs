@@ -233,7 +233,10 @@ fn append_domain_event(
             .occurrence
             .validate()
             .map_err(|error| TexoError::OpInput {
-                op: "texo.knowledge.index".to_string(),
+                // This kind is appended from both knowledge.index and
+                // knowledge.reconcile, so use the generic dispatcher label the
+                // other backend-level errors here use rather than one op name.
+                op: "texo.effect.append".to_string(),
                 detail: error.to_string(),
             })?;
         let coordinate = coordinate_for_evidence(
