@@ -1,0 +1,46 @@
+{
+  "schema": "texo.intelligence-performance.v1",
+  "commit": "8a30870190e03b312a67f1dcf4b183b3d8a39deb",
+  "branch": "agent/snapshot-evidence-intelligence",
+  "toolchain": {
+    "rustc_release": "1.92.0",
+    "rustc_host": "x86_64-unknown-linux-gnu",
+    "llvm_version": "21.1.3"
+  },
+  "host": {
+    "kernel": "Linux 7.0.11-76070011-generic x86_64 GNU/Linux",
+    "logical_cpus": 8,
+    "memory_kib": 20212396
+  },
+  "binary": {
+    "path": "/home/heyoub/Code/texo/target/debug/texo",
+    "sha256": "ab64fcb736916a0f2c46779c07ed90f95eff02d5dec08a0d8052c3c22fab7eb2"
+  },
+  "cold": {
+    "source_files": 205,
+    "source_coverage": {
+      "analysis_quality": "unavailable",
+      "gaps": [],
+      "occurrences": 0,
+      "sources_examined": 205,
+      "truncated": false
+    },
+    "code_format": "syntax",
+    "code_occurrences": 17142,
+    "code_coverage": {
+      "analysis_quality": "syntactic",
+      "gaps": [],
+      "occurrences": 17142,
+      "sources_examined": 141,
+      "truncated": false
+    },
+    "wall_seconds": 4.95,
+    "max_rss_kib": 72864
+  },
+  "warm": {
+    "source_already_indexed": true,
+    "code_already_indexed": true,
+    "wall_seconds": 0.51,
+    "max_rss_kib": 54412
+  }
+}

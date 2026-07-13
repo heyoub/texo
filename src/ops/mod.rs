@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod env;
 pub mod handlers;
+pub(crate) mod reconcile;
 pub mod agent;
 
 use syncbat::{CoreBuilder, OperationRegisterItem};

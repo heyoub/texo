@@ -239,6 +239,9 @@ fn courtroom_on_ops() -> TestResult {
         .get("receipts")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|receipts| !receipts.is_empty()));
+    assert_eq!(second["claims_superseded"], 1);
+    assert_eq!(second["supersessions_held"], 0);
+    assert_eq!(second["held_supersessions"], json!([]));
 
     let list = host.invoke_json("texo.claims.list", &json!({"subject": null}))?;
     let claims = list

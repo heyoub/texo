@@ -25,9 +25,22 @@ All domain events are BatPak payloads in category `0xE`.
 | 8 | 1 | `SessionTurnV1` | `session:{session_id}` on `session_lane(id)` |
 | 9 | 1 | `RelationJudgedV1` | provider-neutral logical relation pair |
 | 10 | 1 | `RelationDeferredV1` | provider-neutral logical relation pair |
+| 11 | 1 | `SourceSnapshotRecordedV1` | `source-snapshot:{snapshot_id}` |
+| 12 | 1 | `EvidenceOccurrenceRecordedV1` | `evidence:{occurrence_id}` |
+| 13 | 1 | `ClaimEvidenceLinkedV1` | `claim:{claim_id}` |
+| 14 | 1 | `CodeIndexRecordedV1` | `code-index:{index_id}` |
+| 15 | 1 | `SourceSnapshotRelationV1` | directed source-snapshot pair |
+| 16 | 1 | `EvidenceReconciliationAcceptedV1` | `claim:{claim_id}` |
 
 Claim and conflict state changes carry `TransitionRecordV1` evidence with a
 deterministic blake3 transition id and explicit causes.
+
+All supersession mechanisms share the source-order policy. Explicit replacement
+wording is a proposal: no-Git and same-snapshot pairs may use observation order,
+Git descendants authorize only the ancestry direction, and reversed,
+concurrent, or unknown pairs return typed held evidence without appending type
+3. Source indexing retries held explicit proposals after it journals exact claim
+evidence and snapshot relations.
 
 ## Demo Narrative
 
@@ -42,9 +55,11 @@ deterministic blake3 transition id and explicit causes.
 ## Surfaces
 
 - CLI: `init`, `ingest`, `claims`, `supersede`, `check-staleness`,
-  `agent-context`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
+  `agent-context`, `index`, `compile`, `relate`, `conflicts`, `verify`, `serve`,
   `extract`, `session export`, `host fingerprint`, `ops`, `install`,
-  `uninstall`, `hook`, `doctor`, `backup`, and `mcp`.
+  `uninstall`, `hook`, `doctor`, `backup`, `reconcile`, and `mcp`.
+  `index` freezes Git source and builds code intelligence in one invocation;
+  `--scip` supplies an optional workspace-local precise index.
 - HTTP: `GET /`, `GET /api/host`, `POST /api/chat`, `GET /api/memory`,
   `POST /api/session/end`, and `GET /api/stream`. Request heads are capped at
   8 KiB, POST bodies at 1 MiB, and unsupported transfer encoding returns 501.
@@ -52,9 +67,18 @@ deterministic blake3 transition id and explicit causes.
   keep-alive comments on quiet ticks, and resume via `Last-Event-ID` header
   or `lastEventId` query param replays workspace events after the cursor.
 - MCP: line-delimited JSON-RPC 2.0 stdio with `initialize`, `tools/list`, and
-  `tools/call` for five read-only tools: `get_agent_context`, `search_claims`,
-  `explain_claim`, `check_staleness`, and `get_workspace_status`. Successful
-  calls carry structured content and bounded next actions.
+  `tools/call` for five read-only tools: `get_agent_context`,
+  `search_knowledge`, `explain_knowledge`, `triangulate`, and
+  `get_workspace_status`. Successful calls carry output-schema-validated
+  structured content, one reusable snapshot token, explicit coverage, and
+  bounded next actions.
+- Triangulation returns a closed answer state (`supported`, `contradicted`,
+  `stale`, `unverified`, or `incomparable`), exact bounded evidence when
+  journaled, typed uncertainty, and coverage. Search hits alone are never
+  promoted to evidence.
+- `search_knowledge` returns one bounded, snapshot-bound union of semantic
+  claims and code occurrences. Claim filters exclude code rows by construction;
+  opaque cursors are bound to the query, filters, and snapshot.
 - Static compile: `onboarding.generated.md`, claims JSON, and index files.
 
 ## Semantic Pipeline
@@ -63,7 +87,11 @@ The default extractor is heuristic. When configured, `texo extract` runs an
 OpenAI-compatible proposer, faithfulness gate, and record-once cache. `texo
 relate` embeds current claims, clusters related claims, and asks the relation
 judge for supersession/conflict verdicts. Model outputs are cached by content
-identity before becoming journal events.
+identity before becoming journal events. `texo reconcile` generates a bounded
+lexical candidate set over code paths, obtains cached claim↔code proposals,
+and applies a closed deterministic score/relation policy. Accepted exact code
+context, model fingerprint, score, cache key, and policy version are journaled;
+rejected proposals and missing candidates never become negative facts.
 
 ## Non-Goals
 

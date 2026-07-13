@@ -8,6 +8,11 @@ use crate::events::ids::{ClaimId, WorkspaceId};
 use crate::events::machines::{
     transition_id, TransitionCauseV1, TransitionRecordV1, CLAIM_MACHINE, CONFLICT_MACHINE,
 };
+use crate::knowledge::{
+    CodeIndexFormat, CodeIndexId, EvidenceLinkMethod, EvidenceOccurrence, EvidenceOccurrenceId,
+    EvidenceStance, GitObjectId, KnowledgeCoverage, RepositoryId, SourceSnapshotId,
+    TemporalRelation,
+};
 use crate::relate::settlement::{RelationFailureClass, SettledRelation};
 
 /// A source document observation.
@@ -220,6 +225,137 @@ pub struct RelationDeferredV1 {
     pub observed_at_ms: u64,
 }
 
+/// One frozen Git commit plus index/worktree overlay observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 11, version = 1)]
+pub struct SourceSnapshotRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Stable local repository identity.
+    pub repository_id: RepositoryId,
+    /// Content-addressed snapshot identity.
+    pub snapshot_id: SourceSnapshotId,
+    /// Commit resolved once at capture start.
+    pub base_commit: GitObjectId,
+    /// Tree referenced by the base commit.
+    pub base_tree: GitObjectId,
+    /// Digest of semantic Git index entries, excluding volatile filesystem stats.
+    pub index_digest_hex: String,
+    /// Digest of the sorted frozen worktree overlay.
+    pub overlay_digest_hex: String,
+    /// Whether the frozen overlay differs from the base tree.
+    pub dirty: bool,
+    /// Bounded capture coverage and omissions.
+    pub coverage: KnowledgeCoverage,
+    /// Maximum source files retained by the capture that recorded this snapshot.
+    pub capture_max_files: u64,
+    /// Maximum bytes retained per source by that capture.
+    pub capture_max_file_bytes: u64,
+    /// Maximum bytes retained across all sources by that capture.
+    pub capture_max_total_bytes: u64,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// One exact bounded occurrence of source evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 12, version = 1)]
+pub struct EvidenceOccurrenceRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Exact occurrence and analyzer provenance.
+    pub occurrence: EvidenceOccurrence,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// Durable link from an assertion to exact evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 13, version = 1)]
+pub struct ClaimEvidenceLinkedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Existing semantic claim identity.
+    pub claim_id: ClaimId,
+    /// Exact evidence occurrence identity.
+    pub occurrence_id: EvidenceOccurrenceId,
+    /// How the evidence bears on the claim.
+    pub stance: EvidenceStance,
+    /// Mechanism whose result policy accepted.
+    pub method: EvidenceLinkMethod,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// Registration of one disposable, content-addressed code index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 14, version = 1)]
+pub struct CodeIndexRecordedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Frozen source snapshot indexed.
+    pub snapshot_id: SourceSnapshotId,
+    /// Content-addressed code-index identity.
+    pub index_id: CodeIndexId,
+    /// Artifact encoding.
+    pub format: CodeIndexFormat,
+    /// Analyzer implementation and version.
+    pub analyzer_fingerprint: String,
+    /// BLAKE3 digest of the disposable artifact bytes.
+    pub artifact_digest_hex: String,
+    /// Bounded index coverage and omissions.
+    pub coverage: KnowledgeCoverage,
+    /// Observation wall-clock time in milliseconds.
+    pub observed_at_ms: u64,
+}
+
+/// One replayable Git-ancestry comparison between frozen source snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 15, version = 1)]
+pub struct SourceSnapshotRelationV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Repository whose object DAG supplied the comparison.
+    pub repository_id: RepositoryId,
+    /// Previously recorded snapshot.
+    pub left_snapshot_id: SourceSnapshotId,
+    /// Newly recorded snapshot.
+    pub right_snapshot_id: SourceSnapshotId,
+    /// Commit underlying the left snapshot.
+    pub left_commit: GitObjectId,
+    /// Commit underlying the right snapshot.
+    pub right_commit: GitObjectId,
+    /// Ancestry relation from left to right.
+    pub relation: TemporalRelation,
+    /// Observation wall-clock time in milliseconds; never an ordering input.
+    pub observed_at_ms: u64,
+}
+
+/// Deterministic policy acceptance of one cached model proposal linking code
+/// evidence to a semantic claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 16, version = 1)]
+pub struct EvidenceReconciliationAcceptedV1 {
+    /// Workspace scope identifier.
+    pub workspace_id: WorkspaceId,
+    /// Existing semantic claim identity.
+    pub claim_id: ClaimId,
+    /// Exact durable code evidence accepted by policy.
+    pub occurrence_id: EvidenceOccurrenceId,
+    /// Proposed stance accepted by deterministic policy.
+    pub stance: EvidenceStance,
+    /// Model score converted to integer parts per million.
+    pub score_ppm: u32,
+    /// Provider/model/prompt identity of the cached proposal.
+    pub judge_fingerprint: String,
+    /// Content-addressed paid-result cache key.
+    pub cache_key_hex: String,
+    /// Closed policy implementation version.
+    pub policy_version: String,
+    /// Observation wall-clock time in milliseconds; never an ordering input.
+    pub observed_at_ms: u64,
+}
+
 struct SourceObservedV1ToV2;
 struct ClaimRecordedV1ToV2;
 struct ClaimSupersededV1ToV2;
@@ -378,6 +514,10 @@ mod tests {
 
     use super::*;
     use crate::events::machines::{transition_record, CLAIM_MACHINE, CONFLICT_MACHINE};
+    use crate::knowledge::{
+        AnalysisQuality, ByteRange, CoverageGap, CoverageGapKind, EvidenceSourceKind,
+        GitObjectFormat, LineRange,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -537,6 +677,94 @@ mod tests {
             failure_class: RelationFailureClass::Deadline,
             attempts: 5,
             observed_at_ms: 15,
+        })
+    }
+
+    #[test]
+    fn knowledge_payloads_round_trip() -> TestResult {
+        let workspace_id = WorkspaceId::new("demo")?;
+        let snapshot_id = SourceSnapshotId::derive("snapshot");
+        let occurrence_id = EvidenceOccurrenceId::derive("occurrence");
+        let coverage = KnowledgeCoverage {
+            analysis_quality: AnalysisQuality::Syntactic,
+            sources_examined: 1,
+            occurrences: 1,
+            truncated: false,
+            gaps: vec![CoverageGap {
+                path: Some("vendor".to_string()),
+                kind: CoverageGapKind::Gitlink,
+            }],
+        };
+        assert_round_trip(&SourceSnapshotRecordedV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: RepositoryId::derive("repository"),
+            snapshot_id: snapshot_id.clone(),
+            base_commit: GitObjectId::new(GitObjectFormat::Sha1, "a".repeat(40))?,
+            base_tree: GitObjectId::new(GitObjectFormat::Sha1, "b".repeat(40))?,
+            index_digest_hex: "c".repeat(64),
+            overlay_digest_hex: "d".repeat(64),
+            dirty: true,
+            coverage: coverage.clone(),
+            capture_max_files: 20_000,
+            capture_max_file_bytes: 4 * 1024 * 1024,
+            capture_max_total_bytes: 128 * 1024 * 1024,
+            observed_at_ms: 16,
+        })?;
+        assert_round_trip(&EvidenceOccurrenceRecordedV1 {
+            workspace_id: workspace_id.clone(),
+            occurrence: EvidenceOccurrence {
+                occurrence_id: occurrence_id.clone(),
+                snapshot_id: snapshot_id.clone(),
+                source_kind: EvidenceSourceKind::WorktreeOverlay,
+                path: "docs/a.md".to_string(),
+                byte_range: ByteRange::new(0, 5)?,
+                line_range: LineRange::new(1, 1)?,
+                git_blob: None,
+                source_digest_hex: "e".repeat(64),
+                excerpt: "claim".to_string(),
+                analyzer_fingerprint: "markdown:heuristic:v1".to_string(),
+                analysis_quality: AnalysisQuality::Syntactic,
+            },
+            observed_at_ms: 17,
+        })?;
+        assert_round_trip(&ClaimEvidenceLinkedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from("claim_aaaaaaaaaaaa")?,
+            occurrence_id,
+            stance: EvidenceStance::Supports,
+            method: EvidenceLinkMethod::Deterministic,
+            observed_at_ms: 18,
+        })?;
+        assert_round_trip(&SourceSnapshotRelationV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: RepositoryId::derive("repository"),
+            left_snapshot_id: snapshot_id.clone(),
+            right_snapshot_id: SourceSnapshotId::derive("snapshot-next"),
+            left_commit: GitObjectId::new(GitObjectFormat::Sha1, "a".repeat(40))?,
+            right_commit: GitObjectId::new(GitObjectFormat::Sha1, "b".repeat(40))?,
+            relation: TemporalRelation::Before,
+            observed_at_ms: 19,
+        })?;
+        assert_round_trip(&EvidenceReconciliationAcceptedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from("claim_aaaaaaaaaaaa")?,
+            occurrence_id: EvidenceOccurrenceId::derive("code-occurrence"),
+            stance: EvidenceStance::Contradicts,
+            score_ppm: 910_000,
+            judge_fingerprint: "openrouter:model|relation-v2".to_string(),
+            cache_key_hex: "1".repeat(64),
+            policy_version: "evidence-reconcile-v1".to_string(),
+            observed_at_ms: 20,
+        })?;
+        assert_round_trip(&CodeIndexRecordedV1 {
+            workspace_id,
+            snapshot_id,
+            index_id: CodeIndexId::derive("index"),
+            format: CodeIndexFormat::Syntax,
+            analyzer_fingerprint: "tree-sitter-rust:1".to_string(),
+            artifact_digest_hex: "f".repeat(64),
+            coverage,
+            observed_at_ms: 21,
         })
     }
 }

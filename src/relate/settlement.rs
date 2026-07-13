@@ -56,6 +56,10 @@ pub enum RelationFailureClass {
     Parse,
     /// Global relate budget was exhausted before this pair ran.
     BudgetExhausted,
+    /// Both source revisions are valid but neither descends from the other.
+    TemporalConcurrent,
+    /// Available source evidence cannot establish an ordering.
+    TemporalUnknown,
 }
 
 /// Sanitized pair-level failure evidence.

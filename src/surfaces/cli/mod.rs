@@ -119,6 +119,40 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Freeze the current Git commit and worktree as evidence.
+    Index {
+        /// Optional workspace-local SCIP protobuf index; built-in analyzers
+        /// cover sources absent from it.
+        #[arg(long)]
+        scip: Option<PathBuf>,
+        /// Maximum source files captured.
+        #[arg(long)]
+        max_files: Option<usize>,
+        /// Maximum bytes captured from one source.
+        #[arg(long)]
+        max_file_bytes: Option<u64>,
+        /// Maximum total captured source bytes.
+        #[arg(long)]
+        max_total_bytes: Option<u64>,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Reconcile current semantic claims against the frozen code index.
+    Reconcile {
+        /// Maximum code candidates considered for each claim.
+        #[arg(long)]
+        max_per_claim: Option<usize>,
+        /// Maximum paid proposal candidates for the complete run.
+        #[arg(long)]
+        max_candidates: Option<usize>,
+        /// Minimum policy acceptance score in parts per million.
+        #[arg(long)]
+        min_score_ppm: Option<u32>,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
@@ -255,6 +289,15 @@ enum BackupCmd {
     /// Verify a backup using only the destination's bytes.
     Verify {
         dest: PathBuf,
+        /// Out-of-band manifest hash printed when the backup was created.
+        #[arg(long)]
+        expect_manifest_hash: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a verified backup into the fresh `--root` workspace.
+    Restore {
+        source: PathBuf,
         /// Out-of-band manifest hash printed when the backup was created.
         #[arg(long)]
         expect_manifest_hash: Option<String>,
@@ -479,6 +522,85 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Index {
+            scip,
+            max_files,
+            max_file_bytes,
+            max_total_bytes,
+            json: _,
+        } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let observed_at_ms = observed_at_ms();
+            let source = host.invoke_json(
+                "texo.knowledge.index",
+                &json!({
+                    "observed_at_ms": observed_at_ms,
+                    "max_files": max_files,
+                    "max_file_bytes": max_file_bytes,
+                    "max_total_bytes": max_total_bytes
+                }),
+            )?;
+            let code = host.invoke_json(
+                "texo.code.index.build",
+                &json!({
+                    "snapshot_id": source.get("snapshot_id").cloned(),
+                    "scip_path": scip,
+                    "observed_at_ms": observed_at_ms
+                }),
+            )?;
+            let output = json!({
+                "schema": "texo.index.v2",
+                "source": source,
+                "code": code
+            });
+            // Incomplete capture must not read as success: mirror the partial exit
+            // used by the other arms when either phase reports truncated coverage.
+            let truncated = ["source", "code"].iter().any(|phase| {
+                output
+                    .get(*phase)
+                    .and_then(|value| value.get("coverage"))
+                    .and_then(|coverage| coverage.get("truncated"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            });
+            render::json(&output)?;
+            if truncated {
+                Ok(ExitCode::from(2))
+            } else {
+                Ok(ExitCode::SUCCESS)
+            }
+        }
+        Command::Reconcile {
+            max_per_claim,
+            max_candidates,
+            min_score_ppm,
+            json,
+        } => {
+            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let output = host.invoke_json(
+                "texo.knowledge.reconcile",
+                &json!({
+                    "observed_at_ms": observed_at_ms(),
+                    "max_per_claim": max_per_claim,
+                    "max_candidates": max_candidates,
+                    "min_score_ppm": min_score_ppm,
+                    "budget_secs": null,
+                    "concurrency": null
+                }),
+            )?;
+            if json {
+                render::json(&output)?;
+            } else {
+                render::reconcile(&output);
+            }
+            Ok(
+                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                },
+            )
+        }
         Command::Host {
             cmd: HostCmd::Fingerprint,
         } => {
@@ -702,6 +824,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 } else {
                     ExitCode::FAILURE
                 })
+            }
+            BackupCmd::Restore {
+                source,
+                expect_manifest_hash,
+                json,
+            } => {
+                let report =
+                    crate::backup::restore(&source, &cli.root, expect_manifest_hash.as_deref())?;
+                let output = serde_json::to_value(report)?;
+                if json {
+                    render::json(&output)?;
+                } else {
+                    render::backup(&output);
+                }
+                Ok(ExitCode::SUCCESS)
             }
         },
     }

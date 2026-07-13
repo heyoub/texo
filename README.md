@@ -9,6 +9,9 @@ compile surfaces.
 
 Git tracks code diffs. texo tracks claim diffs.
 
+See [INTELLIGENCE.md](INTELLIGENCE.md) for the agent-first Git/code workflow,
+coverage contract, limitations, and independently reproducible proof.
+
 ## Quickstart
 
 ```sh
@@ -30,7 +33,13 @@ From this source checkout, a complete clean demo is:
 
 ```sh
 just demo-fresh
+just demo-intelligence
 ```
+
+Release evidence is reproducible through `just measure-intelligence` and the
+literal external-fixture compatibility matrix through `just verify-old-store`.
+The latter intentionally fails when the immutable 0.9 fixture archive is not
+available; `test-invariants` is substrate smoke coverage, not old-store proof.
 
 Multi-workspace scopes live in `.texo/config.toml` under
 `[workspaces.<id>]`. Use `--workspace <id>` on any CLI command.
@@ -43,6 +52,9 @@ Multi-workspace scopes live in `.texo/config.toml` under
   `texo conflicts`, and `texo verify` are replayed read surfaces.
 - `texo relate` runs the semantic relation pass when `TEXO_LLM_API_KEY` is
   present.
+- `texo index` freezes Git source and builds a bounded code index; `texo
+  reconcile` then evaluates cached, bounded claim↔code proposals and journals
+  only policy-accepted exact evidence.
 - `texo compile --out public` writes the static onboarding trophy.
 - `texo serve` runs the sync HTTP memory-agent server.
 - `texo extract <doc.md>` runs the LLM extractor and writes NDJSON.
@@ -53,7 +65,10 @@ Multi-workspace scopes live in `.texo/config.toml` under
 - `texo doctor [--deep] [--fix]` composes config, store, projection, gateway,
   and agent-install diagnostics. `--fix` touches only Texo-managed files.
 - `texo backup create <dest>` creates a fresh journal/config backup with
-  BatPak snapshot evidence; `texo backup verify <dest>` checks it offline.
+  BatPak snapshot evidence; `texo backup verify <dest>` checks it offline;
+  `texo --root <fresh-root> backup restore <source>` verifies, copies, verifies
+  the restored chain, and atomically publishes a new workspace without caches
+  or agent-client configuration. Restore refuses an existing root.
   Creation prints `manifest_hash_hex`: store that value outside the backup and
   pass `--expect-manifest-hash <hex>` to detect coordinated rewrites. Without
   a separately trusted pin, verification detects corruption and incomplete
@@ -64,9 +79,9 @@ Multi-workspace scopes live in `.texo/config.toml` under
 The MCP catalog stays deliberately small and progressively discloses detail:
 
 1. `get_agent_context` returns bounded current context and freshness evidence.
-2. `search_claims` performs bounded, cursor-based claim discovery.
-3. `explain_claim` expands one claim into provenance and transition evidence.
-4. `check_staleness` checks a workspace-relative document before it is trusted.
+2. `search_knowledge` performs bounded, cursor-based discovery at one snapshot.
+3. `explain_knowledge` expands one item into provenance and transition evidence.
+4. `triangulate` checks a workspace-relative target before it is trusted.
 5. `get_workspace_status` reports frontier, freshness, and settlement state.
 
 All five tools are read-only. Successful calls include concise text plus
@@ -80,6 +95,7 @@ commands—never workspace-supplied shell commands.
 - `src/claims/` - per-entity projections and deterministic workspace views.
 - `src/extract/` - markdown heuristics, LLM extraction, record-once caches.
 - `src/semantics/` - OpenAI-compatible semantic backends and chat builders.
+- `src/reconcile.rs` - bounded doc↔code candidates and proposal-only policy.
 - `src/ops/` - syncbat operation handlers and the Texo effect backend.
 - `src/host/` - store opening, op composition, canonical fingerprints.
 - `src/surfaces/cli/` - CLI parsing and renderers.

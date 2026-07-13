@@ -257,5 +257,14 @@ expression: claims
     }
   ],
   "frontier": "[frontier]",
+  "snapshot": {
+    "descriptor": {
+      "anchor_event_id_hex": "b3104a64cfa1a5f5ecd2f9d9ffc93e4d",
+      "frontier": 33,
+      "source_snapshot_id": null,
+      "workspace_id": "demo"
+    },
+    "token": "texo_snap_v1.33.b3104a64cfa1a5f5ecd2f9d9ffc93e4d.none.fd41dbe786059370d5f1cab84f3949ac"
+  },
   "workspace_id": "demo"
 }

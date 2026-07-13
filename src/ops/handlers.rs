@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use batpak::coordinate::Region;
-use batpak::event::{EventKind, EventPayload};
+use batpak::event::{EventKind, EventPayload, EventSourced};
 use batpak::id::EntityIdType;
 use batpak::store::Freshness;
 use serde::{Deserialize, Serialize};
@@ -18,10 +18,16 @@ use syncbat::{CoreBuilder, HandlerError, HandlerResult, OperationRegisterItem};
 
 use crate::claims::card::ClaimCard;
 use crate::claims::conflict::ConflictCard;
+use crate::claims::evidence::{assemble_through as assemble_evidence_through, EvidenceProjection};
+use crate::claims::temporal::{assemble_through as assemble_temporal_through, TemporalProjection};
 use crate::claims::timeline::{ClaimTimeline, TimelineEntry};
-use crate::claims::workspace::{assemble, ClaimView, WorkspaceView};
+use crate::claims::workspace::{assemble, assemble_through, ClaimView, WorkspaceView};
+use crate::code_index::{
+    build as build_code_index, load as load_code_index, persist as persist_code_index, read_scip,
+    CodeIndexLimits,
+};
 use crate::config::{TexoRootConfig, WorkspaceEntry};
-use crate::error::TexoError;
+use crate::error::{SnapshotFailureKind, TexoError};
 use crate::events::coordinate::{
     entity_for_claim, entity_for_conflict, entity_for_workspace_meta, scope_for_workspace,
 };
@@ -31,17 +37,36 @@ use crate::events::machines::{
     CONFLICT_MACHINE,
 };
 use crate::events::payloads::{
-    ClaimRecordedV2, ClaimSupersededV2, ConflictOpenedV2, ConflictResolvedV2, OnboardingCompiledV2,
-    RelationDeferredV1, RelationJudgedV1, SessionTurnV1, SourceObservedV2, WorkspaceInitializedV2,
+    ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
+    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1,
+    EvidenceReconciliationAcceptedV1, OnboardingCompiledV2, RelationDeferredV1, RelationJudgedV1,
+    SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
+    WorkspaceInitializedV2,
 };
 use crate::extract::hints::hints_from_line_normalized;
 use crate::extract::markdown::{collect_markdown_files, MarkdownDocument};
 use crate::extract::normalize::normalize_line;
+use crate::git_source::{
+    capture as capture_git, compare_commits, CaptureLimits, CapturedLayer, CapturedSource,
+};
+use crate::knowledge::{
+    AnalysisQuality, AnswerState, ByteRange, ClaimEvidence, CodeIndexArtifact, CodeIndexId,
+    CodeOccurrence, CoverageGap, CoverageGapKind, EvidenceLinkMethod, EvidenceOccurrence,
+    EvidenceOccurrenceId, EvidenceSourceKind, EvidenceStance, KnowledgeCoverage, LineRange,
+    RepositoryId, SnapshotDescriptor, SnapshotRead, SnapshotToken, TemporalRelation,
+    TriangulationTarget, UncertaintyReason, MAX_EVIDENCE_EXCERPT_BYTES,
+};
 use crate::ops::env::{self, ReceiptNote};
+use crate::ops::reconcile::append_proposals as append_reconciliation_proposals;
+use crate::reconcile::{
+    claims_from_view as reconcile_claims, evaluate_with_backends, plan_candidates,
+    unresolved_row as reconcile_unresolved_row, KnowledgeReconcileInput, KnowledgeReconcileOutput,
+    ReconcileBackendOutput, ReconcileCompletion,
+};
 use crate::relate::heuristic;
 use crate::semantics::pipeline::{
     receipt_view, ClaimStatus as SemanticClaimStatus, ClaimView as SemanticClaimView,
-    RelateThresholds,
+    ParallelRelateOptions, RelateTemporalPolicy, RelateThresholds,
 };
 
 const WORKSPACE_VIEW_PROJECTION: &str = "texo.workspace.view.v2";
@@ -49,6 +74,9 @@ const CLAIM_EXPLAIN_PROJECTION: &str = "texo.claim.explain.v2";
 const RELATE_PREFILTER: f32 = 0.60;
 const MAX_INLINE_SOURCE_FAILURES: usize = 256;
 const MAX_SOURCE_FAILURE_DETAIL_CHARS: usize = 512;
+const MAX_TRIANGULATION_CODE_OCCURRENCES: usize = 200;
+const MAX_TEMPORAL_SNAPSHOT_COMPARISONS: usize = 1_024;
+const MAX_GIT_ANCESTRY_WALK: usize = 100_000;
 #[cfg(feature = "openrouter")]
 const ENV_RELATE_CACHE: &str = "TEXO_RELATE_CACHE";
 #[cfg(feature = "openrouter")]
@@ -155,7 +183,7 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.ingest.run",
     effect = Persist,
     input_schema = "texo.ingest.run.input.v2",
-    output_schema = "texo.ingest.run.output.v2",
+    output_schema = "texo.ingest.run.output.v3",
     receipt_kind = "receipt.texo.ingest.run.v2",
     appends_events = ["evt.e001", "evt.e002", "evt.e003"],
     queries_projections = ["texo.workspace.view.v2"]
@@ -211,6 +239,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let mut source_count = 0_u32;
         let mut claim_count = 0_u32;
         let mut supersede_count = 0_u32;
+        let mut held_supersessions = Vec::new();
         let mut append_ms = 0_u64;
 
         if input.dry_run {
@@ -254,8 +283,11 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     .iter()
                     .flat_map(|source| source.claims.iter().cloned())
                     .collect::<Vec<_>>();
+                let temporal = workspace_temporal_policy(&view)?;
+                let inference =
+                    infer_supersessions(&view, &new_claims, input.observed_at_ms, &temporal)?;
                 let append_started = Instant::now();
-                for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
+                for superseded in inference.applied {
                     append_json(
                         "texo.ingest.run",
                         cx,
@@ -264,6 +296,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     )?;
                     supersede_count = supersede_count.saturating_add(1);
                 }
+                held_supersessions = inference.held;
                 append_ms = append_ms.saturating_add(elapsed_ms(append_started));
             }
         }
@@ -282,6 +315,8 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             sources_observed: source_count,
             claims_recorded: claim_count,
             claims_superseded: supersede_count,
+            supersessions_held: held_supersessions.len(),
+            held_supersessions,
             dry_run: input.dry_run,
             empty: plan.empty,
             skipped,
@@ -315,9 +350,9 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claims_list_item,
     name = "texo.claims.list",
     effect = Inspect,
-    input_schema = "texo.claims.list.input.v2",
-    output_schema = "texo.claims.list.output.v2",
-    receipt_kind = "receipt.texo.claims.list.v2",
+    input_schema = "texo.claims.list.input.v3",
+    output_schema = "texo.claims.list.output.v3",
+    receipt_kind = "receipt.texo.claims.list.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -327,12 +362,13 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.claims.list", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let claims = claim_list_rows(&view, input.subject.as_deref())?;
         Ok(ClaimsListOutput {
             workspace_id: view.workspace_id.clone(),
             frontier: view.frontier,
             claims,
+            snapshot,
         })
     })
 }
@@ -343,9 +379,9 @@ fn claims_list(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claims_search_item,
     name = "texo.claims.search",
     effect = Inspect,
-    input_schema = "texo.claims.search.input.v1",
-    output_schema = "texo.claims.search.output.v1",
-    receipt_kind = "receipt.texo.claims.search.v1",
+    input_schema = "texo.claims.search.input.v2",
+    output_schema = "texo.claims.search.output.v2",
+    receipt_kind = "receipt.texo.claims.search.v2",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -355,7 +391,7 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.claims.search", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let query = input.query.unwrap_or_default();
         if query.len() > 256 {
             return Err(TexoError::OpInput {
@@ -398,7 +434,32 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             has_more,
             next_cursor: has_more.then(|| format!("texo-claims-v1:{next_offset}")),
             claims: page,
+            snapshot,
         })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = KNOWLEDGE_SEARCH,
+    register = register_knowledge_search,
+    register_item = knowledge_search_item,
+    name = "texo.knowledge.search",
+    effect = Inspect,
+    input_schema = "texo.knowledge.search.input.v1",
+    output_schema = "texo.knowledge.search.output.v1",
+    receipt_kind = "receipt.texo.knowledge.search.v1",
+    reads_events = ["evt.e00e"],
+    queries_projections = ["texo.workspace.view.v2", "texo.code.index.v1"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.search", || {
+        let input: KnowledgeSearchInput = parse_input("texo.knowledge.search", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.search", error))?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        search_knowledge_from_view(&view, snapshot, &input)
     })
 }
 
@@ -408,9 +469,9 @@ fn claims_search(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = claim_explain_item,
     name = "texo.claim.explain",
     effect = Inspect,
-    input_schema = "texo.claim.explain.input.v2",
-    output_schema = "texo.claim.explain.output.v2",
-    receipt_kind = "receipt.texo.claim.explain.v2",
+    input_schema = "texo.claim.explain.input.v3",
+    output_schema = "texo.claim.explain.output.v4",
+    receipt_kind = "receipt.texo.claim.explain.v4",
     queries_projections = ["texo.claim.explain.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -421,23 +482,57 @@ fn claim_explain(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .query_projection(CLAIM_EXPLAIN_PROJECTION)
             .map_err(|error| op_runtime("texo.claim.explain", error))?;
         let entity = entity_for_claim(&input.claim_id);
-        env::with(|op_env| {
-            if op_env.store.by_entity(&entity).is_empty() {
-                return Err(TexoError::MissingEntity {
-                    entity: entity.clone(),
-                });
-            }
-            let (card, timeline) = op_env
-                .store
-                .project_fused2::<ClaimCard, ClaimTimeline>(&entity)?;
-            let card = card.ok_or_else(|| TexoError::MissingEntity {
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        let card = view
+            .claims
+            .iter()
+            .find(|claim| claim.card.claim_id == input.claim_id)
+            .map(|claim| claim.card.as_ref().clone())
+            .ok_or_else(|| TexoError::MissingEntity {
                 entity: entity.clone(),
             })?;
-            Ok(ClaimExplainOutput {
-                card,
-                timeline: timeline.map_or_else(Vec::new, |timeline| timeline.entries),
-            })
-        })?
+        let timeline = claim_timeline_through(&entity, view.frontier)?;
+        let evidence = evidence_projection_through(view.frontier)?.take_claim(&input.claim_id);
+        let coverage = coverage_for_view(&view, &snapshot)?;
+        let answer_state = answer_state_for_claim(
+            view.claims
+                .iter()
+                .find(|claim| claim.card.claim_id == input.claim_id)
+                .map(|claim| claim.status),
+            &evidence,
+        );
+        Ok(ClaimExplainOutput {
+            card,
+            timeline: timeline.entries,
+            answer_state,
+            evidence,
+            coverage,
+            snapshot,
+        })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = KNOWLEDGE_TRIANGULATE,
+    register = register_knowledge_triangulate,
+    register_item = knowledge_triangulate_item,
+    name = "texo.knowledge.triangulate",
+    effect = Inspect,
+    input_schema = "texo.knowledge.triangulate.input.v1",
+    output_schema = "texo.knowledge.triangulate.output.v1",
+    receipt_kind = "receipt.texo.knowledge.triangulate.v1",
+    reads_events = ["evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
+    queries_projections = ["texo.workspace.view.v2", "texo.evidence.view.v1"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_triangulate(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.triangulate", || {
+        let input: KnowledgeTriangulateInput = parse_input("texo.knowledge.triangulate", input)?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.triangulate", error))?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        triangulate_from_view(&view, &snapshot, input.target)
     })
 }
 
@@ -552,7 +647,7 @@ fn claim_supersede(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.verify.run.input.v2",
     output_schema = "texo.verify.run.output.v2",
     receipt_kind = "receipt.texo.verify.run.v2",
-    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a"],
+    reads_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e005", "evt.e006", "evt.e007", "evt.e008", "evt.e009", "evt.e00a", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e", "evt.e00f", "evt.e010"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -640,9 +735,9 @@ fn verify_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = staleness_check_item,
     name = "texo.staleness.check",
     effect = Inspect,
-    input_schema = "texo.staleness.check.input.v2",
-    output_schema = "texo.staleness.check.output.v2",
-    receipt_kind = "receipt.texo.staleness.check.v2",
+    input_schema = "texo.staleness.check.input.v3",
+    output_schema = "texo.staleness.check.output.v3",
+    receipt_kind = "receipt.texo.staleness.check.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -652,11 +747,11 @@ fn staleness_check(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.staleness.check", error))?;
-        let view = assemble_current_view()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
         let path = resolve_path(&root, &input.path);
-        check_staleness_from_view(&view, &workspace_id, &root, &path)
+        check_staleness_from_view(&view, &workspace_id, &root, &path, snapshot)
     })
 }
 
@@ -666,9 +761,9 @@ fn staleness_check(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = context_agent_item,
     name = "texo.context.agent",
     effect = Inspect,
-    input_schema = "texo.context.agent.input.v2",
-    output_schema = "texo.context.agent.output.v2",
-    receipt_kind = "receipt.texo.context.agent.v2",
+    input_schema = "texo.context.agent.input.v3",
+    output_schema = "texo.context.agent.output.v3",
+    receipt_kind = "receipt.texo.context.agent.v3",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -681,8 +776,13 @@ fn context_agent(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         if input.strict_settlement {
             require_complete_settlement()?;
         }
-        let view = assemble_current_view()?;
-        build_agent_context_from_view(&view, input.subject.as_deref(), input.include_stale)
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        build_agent_context_from_view(
+            &view,
+            input.subject.as_deref(),
+            input.include_stale,
+            snapshot,
+        )
     })
 }
 
@@ -709,7 +809,8 @@ fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             require_complete_settlement()?;
         }
         let view = assemble_current_view()?;
-        let context = build_agent_context_from_view(&view, None, true)?;
+        let snapshot = snapshot_for_view(&view)?;
+        let context = build_agent_context_from_view(&view, None, true, snapshot.clone())?;
         let conflict_report = heuristic::detect_conflicts(&view)?;
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
@@ -719,6 +820,7 @@ fn compile_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             checked_path: ".".to_string(),
             replayed_through_sequence: view.frontier,
             diagnostics: Vec::new(),
+            snapshot,
         };
         let files = compile_artifacts(&context, &view, &stale_report, &conflict_report)?;
         for file in &files {
@@ -983,6 +1085,356 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 }
 
 #[syncbat::operation(
+    descriptor = KNOWLEDGE_INDEX,
+    register = register_knowledge_index,
+    register_item = knowledge_index_item,
+    name = "texo.knowledge.index",
+    effect = Persist,
+    input_schema = "texo.knowledge.index.input.v1",
+    output_schema = "texo.knowledge.index.output.v2",
+    receipt_kind = "receipt.texo.knowledge.index.v1",
+    appends_events = ["evt.e003", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00f"],
+    queries_projections = ["texo.workspace.view.v2"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.index", || {
+        let input: KnowledgeIndexInput = parse_input("texo.knowledge.index", input)?;
+        let limits = input.validated_limits()?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.index", error))?;
+        let view = assemble_current_view()?;
+        let (root, workspace_id) =
+            env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
+        let workspace = WorkspaceId::new(workspace_id.clone())?;
+        let previous_snapshots = source_snapshots_through(Some(view.frontier))?;
+        let repository_id = previous_snapshots.last().cloned().map_or_else(
+            || {
+                let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+                RepositoryId::derive(&format!(
+                    "texo.repository.v1\u{1f}{workspace_id}\u{1f}{}",
+                    canonical.display()
+                ))
+            },
+            |snapshot| snapshot.repository_id,
+        );
+        let mut capture = capture_git(&root, repository_id, limits)?;
+        let already_indexed = latest_source_snapshot(Some(view.frontier))?
+            .is_some_and(|existing| existing.snapshot_id == capture.snapshot_id);
+
+        let planned = plan_claim_evidence(
+            &view,
+            &capture.sources,
+            &capture.snapshot_id,
+            input.observed_at_ms,
+        )?;
+        for gap in planned.gaps {
+            if capture.coverage.gaps.len() < 256 {
+                capture.coverage.gaps.push(gap);
+            } else {
+                capture.coverage.truncated = true;
+            }
+        }
+        if !planned.rows.is_empty() {
+            capture.coverage.analysis_quality = AnalysisQuality::Syntactic;
+        }
+        capture.coverage.occurrences = u64::try_from(planned.rows.len()).unwrap_or(u64::MAX);
+        let relations = plan_and_attach_snapshot_relations(
+            &root,
+            &workspace,
+            &mut capture,
+            &previous_snapshots,
+            input.observed_at_ms,
+        )?;
+        let snapshot = SourceSnapshotRecordedV1 {
+            workspace_id: workspace.clone(),
+            repository_id: capture.repository_id,
+            snapshot_id: capture.snapshot_id.clone(),
+            base_commit: capture.base_commit.clone(),
+            base_tree: capture.base_tree,
+            index_digest_hex: capture.index_digest_hex,
+            overlay_digest_hex: capture.overlay_digest_hex,
+            dirty: capture.dirty,
+            coverage: capture.coverage.clone(),
+            capture_max_files: u64::try_from(limits.max_files).unwrap_or(u64::MAX),
+            capture_max_file_bytes: limits.max_file_bytes,
+            capture_max_total_bytes: limits.max_total_bytes,
+            observed_at_ms: input.observed_at_ms,
+        };
+        let indexed_claim_ids = planned
+            .rows
+            .iter()
+            .map(|(_, link)| link.claim_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut receipts = append_knowledge_plan(
+            cx,
+            &workspace,
+            &snapshot,
+            &planned.rows,
+            &relations,
+            input.observed_at_ms,
+        )?;
+        let supersessions = settle_indexed_explicit_supersessions(
+            cx,
+            &view,
+            &indexed_claim_ids,
+            input.observed_at_ms,
+            &mut receipts,
+        )?;
+        Ok(KnowledgeIndexOutput {
+            workspace_id,
+            snapshot_id: capture.snapshot_id,
+            base_commit: capture.base_commit,
+            dirty: capture.dirty,
+            sources_captured: capture.sources.len(),
+            evidence_recorded: planned.rows.len(),
+            claims_linked: planned.rows.len(),
+            relations_recorded: relations.len(),
+            supersessions_applied: supersessions.applied.len(),
+            supersessions_held: supersessions.held.len(),
+            held_supersessions: supersessions.held,
+            already_indexed,
+            coverage: capture.coverage,
+            receipts,
+        })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = CODE_INDEX_BUILD,
+    register = register_code_index_build,
+    register_item = code_index_build_item,
+    name = "texo.code.index.build",
+    effect = Persist,
+    input_schema = "texo.code.index.build.input.v1",
+    output_schema = "texo.code.index.build.output.v2",
+    receipt_kind = "receipt.texo.code.index.build.v1",
+    appends_events = ["evt.e00e"],
+    reads_events = ["evt.e00b", "evt.e00e"],
+    queries_projections = ["texo.code.index.v1"]
+)]
+#[tracing::instrument(skip_all)]
+fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.code.index.build", || {
+        let input: CodeIndexBuildInput = parse_input("texo.code.index.build", input)?;
+        let limits = input.validated_limits()?;
+        let (root, workspace_id) =
+            env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
+        // Select by the requested id, not "the latest recorded": revisiting a
+        // previously recorded commit re-derives its existing snapshot id (the
+        // record is idempotent), and requiring it to also be the newest one would
+        // reject the id `knowledge.index` just returned whenever an intervening
+        // snapshot exists. Absent an explicit id, fall back to the latest.
+        let recorded = match input.snapshot_id.as_ref() {
+            Some(wanted) => source_snapshot_by_id(wanted)?.ok_or_else(|| TexoError::Snapshot {
+                kind: SnapshotFailureKind::SourceUnavailable,
+                detail: "requested source snapshot is not recorded; run `texo index` first"
+                    .to_string(),
+            })?,
+            None => latest_source_snapshot(None)?.ok_or_else(|| TexoError::Snapshot {
+                kind: SnapshotFailureKind::SourceUnavailable,
+                detail: "run `texo index` to record a Git source snapshot first".to_string(),
+            })?,
+        };
+        // Reproduce the snapshot with the *recorded* bounds, not the defaults: a
+        // snapshot captured under non-default limits would otherwise omit different
+        // sources here and be misreported as "Git changed" on an unchanged tree.
+        let recorded_limits = recorded_capture_limits(&recorded);
+        let capture = capture_git(&root, recorded.repository_id, recorded_limits)?;
+        if capture.snapshot_id != recorded.snapshot_id {
+            return Err(TexoError::Snapshot {
+                kind: SnapshotFailureKind::SourceUnavailable,
+                detail: "Git commit/index/worktree changed; run source indexing again before code indexing".to_string(),
+            });
+        }
+        if input.can_reuse_default() {
+            if let Some(existing) = latest_code_index(None, &recorded.snapshot_id)? {
+                if let Some(artifact) =
+                    load_code_index(&root, &existing.index_id, &existing.artifact_digest_hex)?
+                {
+                    if artifact.snapshot_id != recorded.snapshot_id {
+                        return Err(TexoError::Snapshot {
+                            kind: SnapshotFailureKind::SourceUnavailable,
+                            detail: "code-index artifact belongs to a different source snapshot"
+                                .to_string(),
+                        });
+                    }
+                    return Ok(CodeIndexBuildOutput {
+                        workspace_id,
+                        snapshot_id: existing.snapshot_id,
+                        index_id: existing.index_id.clone(),
+                        format: artifact.format,
+                        analyzer_fingerprint: artifact.analyzer_fingerprint,
+                        artifact_digest_hex: existing.artifact_digest_hex,
+                        artifact_path: format!(
+                            ".texo/cache/code-index/{}.bin",
+                            existing.index_id.as_str()
+                        ),
+                        coverage: artifact.coverage,
+                        already_indexed: true,
+                        receipt: None,
+                    });
+                }
+            }
+        }
+        let scip_bytes = input
+            .scip_path
+            .as_deref()
+            .map(|path| read_scip(&root, path, limits.max_scip_bytes))
+            .transpose()?;
+        let prepared = build_code_index(&capture, scip_bytes.as_deref(), limits)?;
+        let artifact_path = persist_code_index(&root, &prepared)?;
+        let payload = CodeIndexRecordedV1 {
+            workspace_id: WorkspaceId::new(workspace_id.clone())?,
+            snapshot_id: recorded.snapshot_id,
+            index_id: prepared.artifact.index_id.clone(),
+            format: prepared.artifact.format,
+            analyzer_fingerprint: prepared.artifact.analyzer_fingerprint.clone(),
+            artifact_digest_hex: prepared.artifact_digest_hex.clone(),
+            coverage: prepared.artifact.coverage.clone(),
+            observed_at_ms: input.observed_at_ms,
+        };
+        append_json(
+            "texo.code.index.build",
+            cx,
+            <CodeIndexRecordedV1 as EventPayload>::KIND,
+            &payload,
+        )?;
+        let relative_artifact = artifact_path
+            .strip_prefix(&root)
+            .unwrap_or(&artifact_path)
+            .to_string_lossy()
+            .to_string();
+        Ok(CodeIndexBuildOutput {
+            workspace_id,
+            snapshot_id: payload.snapshot_id,
+            index_id: payload.index_id,
+            format: payload.format,
+            analyzer_fingerprint: payload.analyzer_fingerprint,
+            artifact_digest_hex: payload.artifact_digest_hex,
+            artifact_path: relative_artifact,
+            coverage: payload.coverage,
+            already_indexed: false,
+            receipt: Some(take_one_receipt("texo.code.index.build")?),
+        })
+    })
+}
+
+#[syncbat::operation(
+    descriptor = KNOWLEDGE_RECONCILE,
+    register = register_knowledge_reconcile,
+    register_item = knowledge_reconcile_item,
+    name = "texo.knowledge.reconcile",
+    effect = Persist,
+    input_schema = "texo.knowledge.reconcile.input.v1",
+    output_schema = "texo.knowledge.reconcile.output.v1",
+    receipt_kind = "receipt.texo.knowledge.reconcile.v1",
+    appends_events = ["evt.e00c", "evt.e00d", "evt.e010"],
+    reads_events = ["evt.e002", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00e"],
+    queries_projections = ["texo.workspace.view.v2", "texo.code.index.v1"],
+    requires_capabilities = ["texo.cap.model"]
+)]
+#[tracing::instrument(skip_all)]
+fn knowledge_reconcile(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
+    run_op("texo.knowledge.reconcile", || {
+        let input: KnowledgeReconcileInput = parse_input("texo.knowledge.reconcile", input)?;
+        let (limits, budget_secs, concurrency) = input.validated()?;
+        cx.projection_read_handle()
+            .query_projection(WORKSPACE_VIEW_PROJECTION)
+            .map_err(|error| op_runtime("texo.knowledge.reconcile", error))?;
+        let view = assemble_current_view()?;
+        let snapshot =
+            latest_source_snapshot(Some(view.frontier))?.ok_or_else(|| TexoError::OpInput {
+                op: "texo.knowledge.reconcile".to_string(),
+                detail: "no source snapshot exists; run `texo index` first".to_string(),
+            })?;
+        let loaded = load_code_artifact_at(view.frontier, &snapshot.snapshot_id)?;
+        let artifact = loaded.artifact.ok_or_else(|| TexoError::OpInput {
+            op: "texo.knowledge.reconcile".to_string(),
+            detail: "the current source snapshot has no available code index; run `texo index`"
+                .to_string(),
+        })?;
+        let claims = reconcile_claims(&view)?;
+        let plan = plan_candidates(&claims, &artifact, limits);
+        let candidates_considered = plan.candidates.len();
+        let evidence = evidence_projection_through(view.frontier)?;
+        let mut already_linked = 0;
+        let candidates = plan
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                let linked = evidence
+                    .for_claim(candidate.claim_id.as_str())
+                    .iter()
+                    .any(|item| {
+                        item.occurrence.occurrence_id == candidate.occurrence.occurrence_id
+                    });
+                already_linked += usize::from(linked);
+                !linked
+            })
+            .collect::<Vec<_>>();
+        let (root, gateway) =
+            env::with(|op_env| (op_env.root.clone(), op_env.config.gateway.clone()))?;
+        let backend = evaluate_with_backends(
+            &root,
+            gateway.as_ref(),
+            &candidates,
+            std::time::Duration::from_secs(budget_secs),
+            concurrency,
+        )?;
+        let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+        let ReconcileBackendOutput {
+            proposals,
+            unresolved: backend_unresolved,
+            judge_fingerprint,
+        } = backend;
+        let (accepted, rejected) = append_reconciliation_proposals(
+            cx,
+            &workspace_id,
+            input.observed_at_ms,
+            limits.min_score_ppm,
+            &judge_fingerprint,
+            proposals,
+        )?;
+        let unresolved = backend_unresolved
+            .iter()
+            .map(reconcile_unresolved_row)
+            .collect::<Vec<_>>();
+        let mut coverage = artifact.coverage;
+        if plan.truncated {
+            coverage.truncated = true;
+            if !coverage
+                .gaps
+                .iter()
+                .any(|gap| gap.kind == CoverageGapKind::BudgetExceeded)
+            {
+                coverage.gaps.push(CoverageGap {
+                    path: None,
+                    kind: CoverageGapKind::BudgetExceeded,
+                });
+            }
+        }
+        let partial = coverage.truncated || !coverage.gaps.is_empty() || !unresolved.is_empty();
+        Ok(KnowledgeReconcileOutput {
+            outcome: if partial {
+                ReconcileCompletion::Partial
+            } else {
+                ReconcileCompletion::Complete
+            },
+            snapshot_id: snapshot.snapshot_id,
+            candidates_considered,
+            already_linked,
+            accepted,
+            rejected,
+            unresolved,
+            coverage,
+            receipts: take_receipts()?,
+        })
+    })
+}
+
+#[syncbat::operation(
     descriptor = STATS_READ,
     register = register_stats_read,
     register_item = stats_read_item,
@@ -1006,7 +1458,7 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let projection_path = root
             .join(".texo/cache/workspace-view")
             .join(format!("{}.bin", view.workspace_id));
-        let context = build_agent_context_from_view(&view, None, true)?;
+        let context = build_agent_context_from_view(&view, None, true, snapshot_for_view(&view)?)?;
         let agent_context_bytes = serde_json::to_vec(&context)?.len();
         Ok(StatsReadOutput {
             claims_total: view.claims.len(),
@@ -1025,21 +1477,22 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     register_item = workspace_status_item,
     name = "texo.workspace.status",
     effect = Inspect,
-    input_schema = "texo.workspace.status.input.v1",
-    output_schema = "texo.workspace.status.output.v1",
-    receipt_kind = "receipt.texo.workspace.status.v1",
+    input_schema = "texo.workspace.status.input.v2",
+    output_schema = "texo.workspace.status.output.v2",
+    receipt_kind = "receipt.texo.workspace.status.v2",
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
 fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.workspace.status", || {
-        let _input: WorkspaceStatusInput = parse_input("texo.workspace.status", input)?;
+        let input: WorkspaceStatusInput = parse_input("texo.workspace.status", input)?;
         cx.projection_read_handle()
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.workspace.status", error))?;
-        let view = assemble_current_view()?;
-        let settlement = authoritative_settlements()?;
+        let (view, snapshot) = assemble_snapshot_view(input.snapshot.as_deref())?;
+        let settlement = authoritative_settlements(Some(view.frontier))?;
         let unresolved_pairs = settlement.unresolved_pairs;
+        let (coverage, code_index_available) = status_coverage(&view, &snapshot)?;
         Ok(WorkspaceStatusOutput {
             workspace_id: view.workspace_id.clone(),
             frontier: view.frontier,
@@ -1049,11 +1502,14 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             settlement_complete: unresolved_pairs == 0,
             unresolved_pairs,
             authority_warnings: settlement.warnings.len(),
+            code_index_available,
+            coverage,
+            snapshot,
         })
     })
 }
 
-const DOMAIN_KINDS: [EventKind; 10] = [
+const DOMAIN_KINDS: [EventKind; 16] = [
     <SourceObservedV2 as EventPayload>::KIND,
     <ClaimRecordedV2 as EventPayload>::KIND,
     <ClaimSupersededV2 as EventPayload>::KIND,
@@ -1064,6 +1520,12 @@ const DOMAIN_KINDS: [EventKind; 10] = [
     <SessionTurnV1 as EventPayload>::KIND,
     <RelationJudgedV1 as EventPayload>::KIND,
     <RelationDeferredV1 as EventPayload>::KIND,
+    <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+    <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+    <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
+    <crate::events::payloads::CodeIndexRecordedV1 as EventPayload>::KIND,
+    <SourceSnapshotRelationV1 as EventPayload>::KIND,
+    <EvidenceReconciliationAcceptedV1 as EventPayload>::KIND,
 ];
 
 /// Return the operation registration items.
@@ -1074,6 +1536,7 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         ingest_run_item(),
         claims_list_item(),
         claims_search_item(),
+        knowledge_search_item(),
         claim_explain_item(),
         claim_supersede_item(),
         verify_run_item(),
@@ -1086,6 +1549,10 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
         relate_run_item(),
         host_fingerprint_item(),
         stats_read_item(),
+        knowledge_index_item(),
+        code_index_build_item(),
+        knowledge_reconcile_item(),
+        knowledge_triangulate_item(),
         workspace_status_item(),
     ]
 }
@@ -1100,6 +1567,7 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_ingest_run(builder)?;
     register_claims_list(builder)?;
     register_claims_search(builder)?;
+    register_knowledge_search(builder)?;
     register_claim_explain(builder)?;
     register_claim_supersede(builder)?;
     register_verify_run(builder)?;
@@ -1112,6 +1580,10 @@ pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError
     register_relate_run(builder)?;
     register_host_fingerprint(builder)?;
     register_stats_read(builder)?;
+    register_knowledge_index(builder)?;
+    register_code_index_build(builder)?;
+    register_knowledge_reconcile(builder)?;
+    register_knowledge_triangulate(builder)?;
     register_workspace_status(builder)?;
     Ok(())
 }
@@ -1122,10 +1594,135 @@ struct WorkspaceInitInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct KnowledgeIndexInput {
+    observed_at_ms: u64,
+    #[serde(default)]
+    max_files: Option<usize>,
+    #[serde(default)]
+    max_file_bytes: Option<u64>,
+    #[serde(default)]
+    max_total_bytes: Option<u64>,
+}
+
+impl KnowledgeIndexInput {
+    fn validated_limits(&self) -> Result<CaptureLimits, TexoError> {
+        let defaults = CaptureLimits::default();
+        let limits = CaptureLimits {
+            max_files: self.max_files.unwrap_or(defaults.max_files),
+            max_file_bytes: self.max_file_bytes.unwrap_or(defaults.max_file_bytes),
+            max_total_bytes: self.max_total_bytes.unwrap_or(defaults.max_total_bytes),
+        };
+        if limits.max_files == 0
+            || limits.max_files > 100_000
+            || limits.max_file_bytes == 0
+            || limits.max_file_bytes > 16 * 1024 * 1024
+            || limits.max_total_bytes == 0
+            || limits.max_total_bytes > 512 * 1024 * 1024
+        {
+            return Err(TexoError::OpInput {
+                op: "texo.knowledge.index".to_string(),
+                detail: "capture limits must be non-zero and at most 100000 files, 16 MiB per file, and 512 MiB total".to_string(),
+            });
+        }
+        Ok(limits)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeIndexOutput {
+    workspace_id: String,
+    snapshot_id: crate::knowledge::SourceSnapshotId,
+    base_commit: crate::knowledge::GitObjectId,
+    dirty: bool,
+    sources_captured: usize,
+    evidence_recorded: usize,
+    claims_linked: usize,
+    relations_recorded: usize,
+    supersessions_applied: usize,
+    supersessions_held: usize,
+    held_supersessions: Vec<HeldExplicitSupersession>,
+    already_indexed: bool,
+    coverage: KnowledgeCoverage,
+    receipts: Vec<ReceiptNote>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeIndexBuildInput {
+    #[serde(default)]
+    snapshot_id: Option<crate::knowledge::SourceSnapshotId>,
+    #[serde(default)]
+    scip_path: Option<PathBuf>,
+    observed_at_ms: u64,
+    #[serde(default)]
+    max_scip_bytes: Option<u64>,
+    #[serde(default)]
+    max_documents: Option<usize>,
+    #[serde(default)]
+    max_occurrences: Option<usize>,
+    #[serde(default)]
+    analysis_budget_secs: Option<u64>,
+}
+
+impl CodeIndexBuildInput {
+    fn can_reuse_default(&self) -> bool {
+        self.scip_path.is_none()
+            && self.max_scip_bytes.is_none()
+            && self.max_documents.is_none()
+            && self.max_occurrences.is_none()
+            && self.analysis_budget_secs.is_none()
+    }
+
+    fn validated_limits(&self) -> Result<CodeIndexLimits, TexoError> {
+        let defaults = CodeIndexLimits::default();
+        let limits = CodeIndexLimits {
+            max_scip_bytes: self.max_scip_bytes.unwrap_or(defaults.max_scip_bytes),
+            max_documents: self.max_documents.unwrap_or(defaults.max_documents),
+            max_occurrences: self.max_occurrences.unwrap_or(defaults.max_occurrences),
+            analysis_budget: std::time::Duration::from_secs(
+                self.analysis_budget_secs
+                    .unwrap_or(defaults.analysis_budget.as_secs()),
+            ),
+        };
+        if limits.max_scip_bytes == 0
+            || limits.max_scip_bytes > 256 * 1024 * 1024
+            || limits.max_documents == 0
+            || limits.max_documents > 100_000
+            || limits.max_occurrences == 0
+            || limits.max_occurrences > 2_000_000
+            || limits.analysis_budget.is_zero()
+            || limits.analysis_budget > std::time::Duration::from_secs(300)
+        {
+            return Err(TexoError::OpInput {
+                op: "texo.code.index.build".to_string(),
+                detail: "code-index limits must be non-zero and at most 256 MiB, 100000 documents, 2000000 occurrences, and 300 seconds".to_string(),
+            });
+        }
+        Ok(limits)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CodeIndexBuildOutput {
+    workspace_id: String,
+    snapshot_id: crate::knowledge::SourceSnapshotId,
+    index_id: CodeIndexId,
+    format: crate::knowledge::CodeIndexFormat,
+    analyzer_fingerprint: String,
+    artifact_digest_hex: String,
+    artifact_path: String,
+    coverage: KnowledgeCoverage,
+    already_indexed: bool,
+    receipt: Option<ReceiptNote>,
+}
+
+#[derive(Debug, Deserialize)]
 struct StatsReadInput {}
 
 #[derive(Debug, Deserialize)]
-struct WorkspaceStatusInput {}
+struct WorkspaceStatusInput {
+    #[serde(default)]
+    snapshot: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 struct StatsReadOutput {
@@ -1147,6 +1744,9 @@ struct WorkspaceStatusOutput {
     settlement_complete: bool,
     unresolved_pairs: usize,
     authority_warnings: usize,
+    code_index_available: bool,
+    snapshot: SnapshotRead,
+    coverage: KnowledgeCoverage,
 }
 
 #[derive(Debug, Serialize)]
@@ -1195,6 +1795,8 @@ struct IngestRunOutput {
     sources_observed: u32,
     claims_recorded: u32,
     claims_superseded: u32,
+    supersessions_held: usize,
+    held_supersessions: Vec<HeldExplicitSupersession>,
     dry_run: bool,
     empty: bool,
     skipped: Vec<SourceSkipRow>,
@@ -1217,6 +1819,8 @@ struct IngestPhaseMs {
 #[derive(Debug, Deserialize)]
 struct ClaimsListInput {
     subject: Option<String>,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1226,6 +1830,8 @@ struct ClaimsSearchInput {
     status: Option<crate::claims::status::ClaimStatus>,
     limit: Option<usize>,
     cursor: Option<String>,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1233,6 +1839,7 @@ struct ClaimsListOutput {
     workspace_id: String,
     frontier: u64,
     claims: Vec<AgentClaimRow>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1245,17 +1852,87 @@ struct ClaimsSearchOutput {
     has_more: bool,
     next_cursor: Option<String>,
     claims: Vec<AgentClaimRow>,
+    snapshot: SnapshotRead,
+}
+
+#[derive(Debug, Deserialize)]
+struct KnowledgeSearchInput {
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    status: Option<crate::claims::status::ClaimStatus>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    snapshot: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeSearchOutput {
+    workspace_id: String,
+    frontier: u64,
+    total: usize,
+    returned: usize,
+    has_more: bool,
+    next_cursor: Option<String>,
+    results: Vec<KnowledgeSearchResult>,
+    code_index_available: bool,
+    coverage: KnowledgeCoverage,
+    snapshot: SnapshotRead,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum KnowledgeSearchResult {
+    Claim { claim: AgentClaimRow },
+    Code { occurrence: CodeOccurrence },
+}
+
+struct RankedKnowledgeResult {
+    rank: u8,
+    key: String,
+    result: KnowledgeSearchResult,
 }
 
 #[derive(Debug, Deserialize)]
 struct ClaimExplainInput {
     claim_id: String,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct ClaimExplainOutput {
     card: ClaimCard,
     timeline: Vec<TimelineEntry>,
+    answer_state: AnswerState,
+    evidence: Vec<ClaimEvidence>,
+    coverage: KnowledgeCoverage,
+    snapshot: SnapshotRead,
+}
+
+#[derive(Debug, Deserialize)]
+struct KnowledgeTriangulateInput {
+    target: TriangulationTarget,
+    #[serde(default)]
+    snapshot: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeTriangulateOutput {
+    target: TriangulationTarget,
+    answer_state: AnswerState,
+    assertions: Vec<AgentClaimRow>,
+    evidence: Vec<ClaimEvidence>,
+    structural_evidence: Vec<CodeOccurrence>,
+    uncertainty: Vec<UncertaintyReason>,
+    coverage: KnowledgeCoverage,
+    settlement_complete: bool,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1291,6 +1968,8 @@ struct VerifyRunOutput {
 #[derive(Debug, Deserialize)]
 struct StalenessCheckInput {
     path: PathBuf,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1299,6 +1978,7 @@ struct StalenessReport {
     checked_path: String,
     replayed_through_sequence: u64,
     diagnostics: Vec<StaleDiagnostic>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1335,6 +2015,8 @@ struct ContextAgentInput {
     include_stale: bool,
     #[serde(default)]
     strict_settlement: bool,
+    #[serde(default)]
+    snapshot: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1346,6 +2028,7 @@ struct AgentContextOutput {
     stale_claims: Vec<AgentStaleClaimRow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     conflicts: Vec<AgentConflictRow>,
+    snapshot: SnapshotRead,
 }
 
 #[derive(Debug, Serialize)]
@@ -1609,6 +2292,954 @@ pub(crate) fn assemble_current_view() -> Result<std::sync::Arc<WorkspaceView>, T
     })?
 }
 
+fn assemble_snapshot_view(
+    requested: Option<&str>,
+) -> Result<(std::sync::Arc<WorkspaceView>, SnapshotRead), TexoError> {
+    let Some(requested) = requested else {
+        let view = assemble_current_view()?;
+        let snapshot = snapshot_for_view(&view)?;
+        return Ok((view, snapshot));
+    };
+    let (store, workspace) = env::with(|op_env| {
+        (
+            std::sync::Arc::clone(&op_env.store),
+            op_env.workspace_id.clone(),
+        )
+    })?;
+    let workspace_id = WorkspaceId::new(workspace.clone())?;
+    let descriptor =
+        SnapshotToken::resolve_for_workspace(requested, &workspace_id).map_err(|error| {
+            TexoError::Snapshot {
+                kind: SnapshotFailureKind::InvalidToken,
+                detail: error.to_string(),
+            }
+        })?;
+    let available_source =
+        latest_source_snapshot(Some(descriptor.frontier))?.map(|snapshot| snapshot.snapshot_id);
+    if available_source != descriptor.source_snapshot_id {
+        return Err(TexoError::Snapshot {
+            kind: SnapshotFailureKind::SourceUnavailable,
+            detail: "the token's source snapshot is unavailable at its journal frontier"
+                .to_string(),
+        });
+    }
+    validate_snapshot_anchor(&store, &workspace, &descriptor)?;
+    let view = assemble_through(&store, &workspace, descriptor.frontier).map_err(|error| {
+        TexoError::Snapshot {
+            kind: SnapshotFailureKind::Unavailable,
+            detail: error.to_string(),
+        }
+    })?;
+    Ok((view, SnapshotRead::new(descriptor)))
+}
+
+fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
+    let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+    let anchor_event_id_hex = env::with(|op_env| {
+        anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)
+    })??;
+    let source_snapshot_id =
+        latest_source_snapshot(Some(view.frontier))?.map(|snapshot| snapshot.snapshot_id);
+    Ok(SnapshotRead::new(SnapshotDescriptor {
+        workspace_id,
+        frontier: view.frontier,
+        anchor_event_id_hex,
+        source_snapshot_id,
+    }))
+}
+
+fn validate_snapshot_anchor(
+    store: &batpak::store::Store<batpak::store::Open>,
+    workspace_id: &str,
+    descriptor: &SnapshotDescriptor,
+) -> Result<(), TexoError> {
+    let actual = anchor_at_frontier(store, workspace_id, descriptor.frontier)?;
+    if actual != descriptor.anchor_event_id_hex {
+        return Err(TexoError::Snapshot {
+            kind: SnapshotFailureKind::AnchorMismatch,
+            detail: format!(
+                "journal anchor at frontier {} differs from the token",
+                descriptor.frontier
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn anchor_at_frontier(
+    store: &batpak::store::Store<batpak::store::Open>,
+    workspace_id: &str,
+    frontier: u64,
+) -> Result<String, TexoError> {
+    if frontier == 0 {
+        return Ok(String::new());
+    }
+    let region = Region::scope(scope_for_workspace(workspace_id));
+    let entry = store
+        .query_entries_after(&region, Some(frontier.saturating_sub(1)), 1)
+        .into_iter()
+        .next()
+        .filter(|entry| entry.global_sequence() == frontier)
+        .ok_or_else(|| TexoError::Snapshot {
+            kind: SnapshotFailureKind::Unavailable,
+            detail: format!("workspace frontier {frontier} is unavailable"),
+        })?;
+    Ok(format!("{:032x}", entry.event_id().as_u128()))
+}
+
+fn claim_timeline_through(entity: &str, frontier: u64) -> Result<ClaimTimeline, TexoError> {
+    env::with(|op_env| {
+        let mut timeline = ClaimTimeline::default();
+        for entry in op_env.store.by_entity(entity) {
+            if entry.global_sequence() > frontier {
+                break;
+            }
+            let raw = op_env.store.read_raw(entry.event_id())?;
+            timeline.apply_event(&raw.event);
+        }
+        Ok::<_, TexoError>(timeline)
+    })?
+}
+
+fn coverage_for_view(
+    view: &WorkspaceView,
+    snapshot: &SnapshotRead,
+) -> Result<KnowledgeCoverage, TexoError> {
+    // Only a genuinely missing snapshot (`Ok(None)`) or a mismatched identity
+    // degrades to `Unavailable`; a decode/corruption error must bubble up rather
+    // than masquerade as an ordinary absent snapshot.
+    if let Some(recorded) = latest_source_snapshot(Some(view.frontier))? {
+        if Some(&recorded.snapshot_id) == snapshot.descriptor.source_snapshot_id.as_ref() {
+            return Ok(recorded.coverage);
+        }
+    }
+    Ok(KnowledgeCoverage {
+        analysis_quality: AnalysisQuality::Unavailable,
+        sources_examined: u64::try_from(view.sources.len()).unwrap_or(u64::MAX),
+        occurrences: u64::try_from(view.claims.len()).unwrap_or(u64::MAX),
+        truncated: false,
+        gaps: vec![CoverageGap {
+            path: None,
+            kind: CoverageGapKind::SourceSnapshotUnavailable,
+        }],
+    })
+}
+
+fn status_coverage(
+    view: &WorkspaceView,
+    snapshot: &SnapshotRead,
+) -> Result<(KnowledgeCoverage, bool), TexoError> {
+    let mut coverage = coverage_for_view(view, snapshot)?;
+    let Some(source_snapshot_id) = snapshot.descriptor.source_snapshot_id.as_ref() else {
+        return Ok((coverage, false));
+    };
+    let loaded = load_code_artifact_at(view.frontier, source_snapshot_id)?;
+    if let Some(code_coverage) = loaded.coverage {
+        merge_coverage(&mut coverage, &code_coverage);
+    }
+    if loaded.unavailable {
+        coverage.gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::CodeIndexUnavailable,
+        });
+    }
+    Ok((coverage, !loaded.unavailable))
+}
+
+/// Reconstruct the capture bounds a snapshot was recorded with so code indexing
+/// recaptures the same bounded world instead of the defaults.
+fn recorded_capture_limits(recorded: &SourceSnapshotRecordedV1) -> CaptureLimits {
+    CaptureLimits {
+        max_files: usize::try_from(recorded.capture_max_files).unwrap_or(usize::MAX),
+        max_file_bytes: recorded.capture_max_file_bytes,
+        max_total_bytes: recorded.capture_max_total_bytes,
+    }
+}
+
+fn latest_source_snapshot(
+    frontier: Option<u64>,
+) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
+    Ok(source_snapshots_through(frontier)?.pop())
+}
+
+/// The recorded snapshot with this content-addressed id, regardless of whether a
+/// newer snapshot was recorded afterward (revisiting a prior commit re-derives an
+/// existing id rather than appending a new record).
+fn source_snapshot_by_id(
+    snapshot_id: &crate::knowledge::SourceSnapshotId,
+) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
+    Ok(source_snapshots_through(None)?
+        .into_iter()
+        .rev()
+        .find(|snapshot| &snapshot.snapshot_id == snapshot_id))
+}
+
+fn source_snapshots_through(
+    frontier: Option<u64>,
+) -> Result<Vec<SourceSnapshotRecordedV1>, TexoError> {
+    env::with(|op_env| {
+        let region = Region::scope(scope_for_workspace(&op_env.workspace_id));
+        let mut after = None;
+        let mut snapshots = Vec::new();
+        'pages: loop {
+            let page = op_env.store.query_entries_after(&region, after, 256);
+            if page.is_empty() {
+                break;
+            }
+            for entry in &page {
+                if frontier.is_some_and(|frontier| entry.global_sequence() > frontier) {
+                    break 'pages;
+                }
+                if entry.event_kind() == <SourceSnapshotRecordedV1 as EventPayload>::KIND {
+                    let raw = op_env.store.read_raw(entry.event_id())?;
+                    snapshots.push(
+                        batpak::encoding::from_bytes::<SourceSnapshotRecordedV1>(
+                            &raw.event.payload,
+                        )
+                        .map_err(|error| TexoError::Decode {
+                            entity: entry.coord().entity().to_string(),
+                            detail: error.to_string(),
+                        })?,
+                    );
+                }
+            }
+            after = page.last().map(batpak::store::IndexEntry::global_sequence);
+        }
+        Ok::<_, TexoError>(snapshots)
+    })?
+}
+
+fn plan_snapshot_relations(
+    root: &Path,
+    workspace_id: &WorkspaceId,
+    capture: &crate::git_source::GitCapture,
+    previous: &[SourceSnapshotRecordedV1],
+    observed_at_ms: u64,
+) -> Result<(Vec<SourceSnapshotRelationV1>, Vec<CoverageGap>), TexoError> {
+    let skipped = previous
+        .len()
+        .saturating_sub(MAX_TEMPORAL_SNAPSHOT_COMPARISONS);
+    let mut gaps = Vec::new();
+    if skipped > 0 {
+        gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::BudgetExceeded,
+        });
+    }
+    let mut relations = Vec::new();
+    for prior in previous.iter().skip(skipped) {
+        if prior.snapshot_id == capture.snapshot_id {
+            continue;
+        }
+        let comparison = if prior.repository_id == capture.repository_id {
+            overlay_aware_comparison(root, prior, capture)?
+        } else {
+            crate::git_source::GitComparison {
+                relation: TemporalRelation::Unknown,
+                gap: Some(CoverageGapKind::MissingObject),
+            }
+        };
+        if let Some(kind) = comparison.gap {
+            let gap = CoverageGap { path: None, kind };
+            if !gaps.contains(&gap) {
+                gaps.push(gap);
+            }
+        }
+        // Never journal an `Unknown` ordering: the relation idempotency key is
+        // (workspace, left, right) and replay keeps the first fact, so a durable
+        // Unknown from shallow history or an exhausted walk would permanently
+        // shadow the real Before/After discoverable once full history arrives.
+        // Its absence already reads as Unknown, and the gap above records why.
+        if comparison.relation == TemporalRelation::Unknown {
+            continue;
+        }
+        relations.push(SourceSnapshotRelationV1 {
+            workspace_id: workspace_id.clone(),
+            repository_id: capture.repository_id.clone(),
+            left_snapshot_id: prior.snapshot_id.clone(),
+            right_snapshot_id: capture.snapshot_id.clone(),
+            left_commit: prior.base_commit.clone(),
+            right_commit: capture.base_commit.clone(),
+            relation: comparison.relation,
+            observed_at_ms,
+        });
+    }
+    Ok((relations, gaps))
+}
+
+fn overlay_aware_comparison(
+    root: &Path,
+    prior: &SourceSnapshotRecordedV1,
+    capture: &crate::git_source::GitCapture,
+) -> Result<crate::git_source::GitComparison, TexoError> {
+    use crate::git_source::GitComparison;
+
+    if prior.base_commit == capture.base_commit {
+        return Ok(GitComparison {
+            relation: match (prior.dirty, capture.dirty) {
+                (false, true) => TemporalRelation::Before,
+                (true, false) => TemporalRelation::After,
+                (true, true) => TemporalRelation::Concurrent,
+                (false, false) => TemporalRelation::Same,
+            },
+            gap: None,
+        });
+    }
+    let comparison = compare_commits(
+        root,
+        &prior.base_commit,
+        &capture.base_commit,
+        MAX_GIT_ANCESTRY_WALK,
+    )?;
+    let relation = match comparison.relation {
+        TemporalRelation::Before if prior.dirty => TemporalRelation::Concurrent,
+        TemporalRelation::After if capture.dirty => TemporalRelation::Concurrent,
+        TemporalRelation::Same => TemporalRelation::Same,
+        TemporalRelation::Before => TemporalRelation::Before,
+        TemporalRelation::After => TemporalRelation::After,
+        TemporalRelation::Concurrent => TemporalRelation::Concurrent,
+        TemporalRelation::Unknown => TemporalRelation::Unknown,
+    };
+    Ok(GitComparison {
+        relation,
+        gap: comparison.gap,
+    })
+}
+
+fn plan_and_attach_snapshot_relations(
+    root: &Path,
+    workspace_id: &WorkspaceId,
+    capture: &mut crate::git_source::GitCapture,
+    previous: &[SourceSnapshotRecordedV1],
+    observed_at_ms: u64,
+) -> Result<Vec<SourceSnapshotRelationV1>, TexoError> {
+    let (relations, gaps) =
+        plan_snapshot_relations(root, workspace_id, capture, previous, observed_at_ms)?;
+    for gap in gaps {
+        if capture.coverage.gaps.len() < 256 && !capture.coverage.gaps.contains(&gap) {
+            capture.coverage.gaps.push(gap);
+        }
+    }
+    Ok(relations)
+}
+
+fn evidence_projection_through(frontier: u64) -> Result<EvidenceProjection, TexoError> {
+    env::with(|op_env| assemble_evidence_through(&op_env.store, &op_env.workspace_id, frontier))?
+}
+
+fn temporal_projection_through(frontier: u64) -> Result<TemporalProjection, TexoError> {
+    env::with(|op_env| assemble_temporal_through(&op_env.store, &op_env.workspace_id, frontier))?
+}
+
+pub(crate) fn workspace_temporal_policy(
+    view: &WorkspaceView,
+) -> Result<RelateTemporalPolicy, TexoError> {
+    workspace_temporal_policy_through(view, view.frontier)
+}
+
+fn workspace_temporal_policy_through(
+    view: &WorkspaceView,
+    frontier: u64,
+) -> Result<RelateTemporalPolicy, TexoError> {
+    let evidence = evidence_projection_through(frontier)?;
+    let relations = temporal_projection_through(frontier)?;
+    let mut policy = RelateTemporalPolicy::default();
+    for claim in &view.claims {
+        let claim_id = ClaimId::try_from(claim.card.claim_id.as_str())?;
+        if let Some(latest) = evidence
+            .for_claim(claim_id.as_str())
+            .iter()
+            .filter(|item| {
+                item.method == EvidenceLinkMethod::Deterministic
+                    && item.stance == EvidenceStance::Supports
+            })
+            .max_by_key(|item| item.link_sequence)
+        {
+            policy.bind_claim(&claim_id, &latest.occurrence.snapshot_id);
+        }
+    }
+    for (left, right, relation) in relations.facts() {
+        policy.insert_relation_ids(left, right, relation);
+    }
+    Ok(policy)
+}
+
+fn semantic_temporal_policy(view: &WorkspaceView) -> Result<RelateTemporalPolicy, TexoError> {
+    workspace_temporal_policy(view)
+}
+
+fn triangulate_from_view(
+    view: &WorkspaceView,
+    snapshot: &SnapshotRead,
+    target: TriangulationTarget,
+) -> Result<KnowledgeTriangulateOutput, TexoError> {
+    validate_triangulation_target(&target)?;
+    let projection = evidence_projection_through(view.frontier)?;
+    let claim_ids = triangulation_claim_ids(view, &target)?;
+    let assertions = claim_list_rows(view, None)?
+        .into_iter()
+        .filter(|claim| claim_ids.contains(&claim.claim_id))
+        .collect::<Vec<_>>();
+    let mut evidence = claim_ids
+        .iter()
+        .flat_map(|claim_id| projection.for_claim(claim_id).iter().cloned())
+        .collect::<Vec<_>>();
+    evidence.retain(|item| evidence_matches_target(item, &target));
+    let mut coverage = coverage_for_view(view, snapshot)?;
+    let code = code_evidence_for_target(view.frontier, snapshot, &target)?;
+    if let Some(code_coverage) = &code.coverage {
+        merge_coverage(&mut coverage, code_coverage);
+    }
+    if projection.is_incomplete() {
+        coverage.gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::AnalysisIncomplete,
+        });
+    }
+    let settlement = authoritative_settlements(Some(view.frontier))?;
+    let settlement_complete = settlement.unresolved_pairs == 0;
+    let mut uncertainty = BTreeSet::new();
+    if snapshot.descriptor.source_snapshot_id.is_none() {
+        uncertainty.insert(UncertaintyReason::SourceSnapshotUnavailable);
+    }
+    if coverage.truncated || !coverage.gaps.is_empty() {
+        uncertainty.insert(UncertaintyReason::PartialCoverage);
+    }
+    if !settlement_complete {
+        uncertainty.insert(UncertaintyReason::SettlementIncomplete);
+    }
+    if matches!(target, TriangulationTarget::Symbol { .. }) && code.unavailable {
+        uncertainty.insert(UncertaintyReason::CodeIndexUnavailable);
+        if !coverage
+            .gaps
+            .iter()
+            .any(|gap| gap.kind == CoverageGapKind::CodeIndexUnavailable)
+        {
+            coverage.gaps.push(CoverageGap {
+                path: None,
+                kind: CoverageGapKind::CodeIndexUnavailable,
+            });
+        }
+    }
+    if !assertions.is_empty() && evidence.is_empty() {
+        uncertainty.insert(UncertaintyReason::ExactEvidenceUnavailable);
+    }
+    let answer_state = answer_state_for_rows(&assertions, &evidence, &code.rows);
+    Ok(KnowledgeTriangulateOutput {
+        target,
+        answer_state,
+        assertions,
+        evidence,
+        structural_evidence: code.rows,
+        uncertainty: uncertainty.into_iter().collect(),
+        coverage,
+        settlement_complete,
+        snapshot: snapshot.clone(),
+    })
+}
+
+#[derive(Default)]
+struct CodeEvidenceLookup {
+    rows: Vec<CodeOccurrence>,
+    coverage: Option<KnowledgeCoverage>,
+    unavailable: bool,
+}
+
+#[derive(Default)]
+struct LoadedCodeArtifact {
+    artifact: Option<CodeIndexArtifact>,
+    coverage: Option<KnowledgeCoverage>,
+    unavailable: bool,
+}
+
+fn code_evidence_for_target(
+    frontier: u64,
+    snapshot: &SnapshotRead,
+    target: &TriangulationTarget,
+) -> Result<CodeEvidenceLookup, TexoError> {
+    let Some(source_snapshot_id) = snapshot.descriptor.source_snapshot_id.as_ref() else {
+        return Ok(CodeEvidenceLookup {
+            unavailable: true,
+            ..CodeEvidenceLookup::default()
+        });
+    };
+    let loaded = load_code_artifact_at(frontier, source_snapshot_id)?;
+    let Some(artifact) = loaded.artifact else {
+        return Ok(CodeEvidenceLookup {
+            coverage: loaded.coverage,
+            unavailable: loaded.unavailable,
+            ..CodeEvidenceLookup::default()
+        });
+    };
+    let mut rows = artifact
+        .occurrences
+        .into_iter()
+        .filter(|occurrence| code_occurrence_matches(occurrence, target))
+        .take(MAX_TRIANGULATION_CODE_OCCURRENCES + 1)
+        .collect::<Vec<_>>();
+    let mut coverage = artifact.coverage;
+    if rows.len() > MAX_TRIANGULATION_CODE_OCCURRENCES {
+        rows.truncate(MAX_TRIANGULATION_CODE_OCCURRENCES);
+        coverage.truncated = true;
+        if !coverage
+            .gaps
+            .iter()
+            .any(|gap| gap.path.is_none() && gap.kind == CoverageGapKind::BudgetExceeded)
+        {
+            coverage.gaps.push(CoverageGap {
+                path: None,
+                kind: CoverageGapKind::BudgetExceeded,
+            });
+        }
+    }
+    Ok(CodeEvidenceLookup {
+        rows,
+        coverage: Some(coverage),
+        unavailable: false,
+    })
+}
+
+fn load_code_artifact_at(
+    frontier: u64,
+    source_snapshot_id: &crate::knowledge::SourceSnapshotId,
+) -> Result<LoadedCodeArtifact, TexoError> {
+    let Some(recorded) = latest_code_index(Some(frontier), source_snapshot_id)? else {
+        return Ok(LoadedCodeArtifact {
+            unavailable: true,
+            ..LoadedCodeArtifact::default()
+        });
+    };
+    let artifact = env::with(|op_env| {
+        load_code_index(
+            &op_env.root,
+            &recorded.index_id,
+            &recorded.artifact_digest_hex,
+        )
+    })??;
+    if artifact
+        .as_ref()
+        .is_some_and(|artifact| artifact.snapshot_id != *source_snapshot_id)
+    {
+        return Err(TexoError::Snapshot {
+            kind: SnapshotFailureKind::SourceUnavailable,
+            detail: "code-index artifact belongs to a different source snapshot".to_string(),
+        });
+    }
+    Ok(LoadedCodeArtifact {
+        unavailable: artifact.is_none(),
+        coverage: Some(recorded.coverage),
+        artifact,
+    })
+}
+
+fn latest_code_index(
+    frontier: Option<u64>,
+    snapshot_id: &crate::knowledge::SourceSnapshotId,
+) -> Result<Option<CodeIndexRecordedV1>, TexoError> {
+    env::with(|op_env| {
+        let region = Region::scope(scope_for_workspace(&op_env.workspace_id));
+        let mut after = None;
+        let mut latest = None;
+        'pages: loop {
+            let page = op_env.store.query_entries_after(&region, after, 256);
+            if page.is_empty() {
+                break;
+            }
+            for entry in &page {
+                if frontier.is_some_and(|frontier| entry.global_sequence() > frontier) {
+                    break 'pages;
+                }
+                if entry.event_kind() == <CodeIndexRecordedV1 as EventPayload>::KIND {
+                    let raw = op_env.store.read_raw(entry.event_id())?;
+                    let payload =
+                        batpak::encoding::from_bytes::<CodeIndexRecordedV1>(&raw.event.payload)
+                            .map_err(|error| TexoError::Decode {
+                                entity: entry.coord().entity().to_string(),
+                                detail: error.to_string(),
+                            })?;
+                    if payload.snapshot_id == *snapshot_id {
+                        latest = Some(payload);
+                    }
+                }
+            }
+            after = page.last().map(batpak::store::IndexEntry::global_sequence);
+        }
+        Ok::<_, TexoError>(latest)
+    })?
+}
+
+fn code_occurrence_matches(occurrence: &CodeOccurrence, target: &TriangulationTarget) -> bool {
+    match target {
+        TriangulationTarget::Claim { .. } => false,
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => {
+            occurrence.path == *path
+                && line_start.is_none_or(|start| occurrence.line_range.end >= start)
+                && line_end.is_none_or(|end| occurrence.line_range.start <= end)
+        }
+        TriangulationTarget::Symbol { symbol } => {
+            occurrence.symbol == *symbol || occurrence.display_name == *symbol
+        }
+    }
+}
+
+fn merge_coverage(target: &mut KnowledgeCoverage, code: &KnowledgeCoverage) {
+    if analysis_quality_rank(code.analysis_quality) > analysis_quality_rank(target.analysis_quality)
+    {
+        target.analysis_quality = code.analysis_quality;
+    }
+    target.sources_examined = target.sources_examined.max(code.sources_examined);
+    target.occurrences = target.occurrences.saturating_add(code.occurrences);
+    target.truncated |= code.truncated;
+    for gap in &code.gaps {
+        if target.gaps.len() >= 256 {
+            target.truncated = true;
+            break;
+        }
+        if !target.gaps.contains(gap) {
+            target.gaps.push(gap.clone());
+        }
+    }
+}
+
+const fn analysis_quality_rank(quality: AnalysisQuality) -> u8 {
+    match quality {
+        AnalysisQuality::Precise => 3,
+        AnalysisQuality::Syntactic => 2,
+        AnalysisQuality::Lexical => 1,
+        AnalysisQuality::Unavailable => 0,
+    }
+}
+
+fn validate_triangulation_target(target: &TriangulationTarget) -> Result<(), TexoError> {
+    match target {
+        TriangulationTarget::Claim { claim_id } if claim_id.is_empty() => Err(TexoError::OpInput {
+            op: "texo.knowledge.triangulate".to_string(),
+            detail: "claim_id must not be empty".to_string(),
+        }),
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => {
+            let safe = !path.is_empty()
+                && !Path::new(path).is_absolute()
+                && Path::new(path)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)));
+            let valid_range = match (*line_start, *line_end) {
+                (None, None) => true,
+                (Some(start), Some(end)) => start > 0 && start <= end,
+                _ => false,
+            };
+            if safe && valid_range {
+                Ok(())
+            } else {
+                Err(TexoError::OpInput {
+                    op: "texo.knowledge.triangulate".to_string(),
+                    detail: "path must be repository-relative and line bounds must be absent or an ordered one-based pair".to_string(),
+                })
+            }
+        }
+        TriangulationTarget::Symbol { symbol } if symbol.is_empty() || symbol.len() > 1024 => {
+            Err(TexoError::OpInput {
+                op: "texo.knowledge.triangulate".to_string(),
+                detail: "symbol must contain between 1 and 1024 bytes".to_string(),
+            })
+        }
+        TriangulationTarget::Claim { .. } | TriangulationTarget::Symbol { .. } => Ok(()),
+    }
+}
+
+fn triangulation_claim_ids(
+    view: &WorkspaceView,
+    target: &TriangulationTarget,
+) -> Result<BTreeSet<String>, TexoError> {
+    match target {
+        TriangulationTarget::Claim { claim_id } => {
+            if view
+                .claims
+                .iter()
+                .any(|claim| claim.card.claim_id == *claim_id)
+            {
+                Ok(BTreeSet::from([claim_id.clone()]))
+            } else {
+                Err(TexoError::MissingEntity {
+                    entity: entity_for_claim(claim_id),
+                })
+            }
+        }
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => Ok(view
+            .claims
+            .iter()
+            .filter(|claim| claim.card.source_path == *path)
+            .filter(|claim| {
+                line_start.is_none_or(|start| claim.card.line_end >= start)
+                    && line_end.is_none_or(|end| claim.card.line_start <= end)
+            })
+            .map(|claim| claim.card.claim_id.clone())
+            .collect()),
+        TriangulationTarget::Symbol { .. } => Ok(BTreeSet::new()),
+    }
+}
+
+fn evidence_matches_target(evidence: &ClaimEvidence, target: &TriangulationTarget) -> bool {
+    match target {
+        TriangulationTarget::Claim { .. } => true,
+        TriangulationTarget::Path {
+            path,
+            line_start,
+            line_end,
+        } => {
+            evidence.occurrence.path == *path
+                && line_start.is_none_or(|start| evidence.occurrence.line_range.end >= start)
+                && line_end.is_none_or(|end| evidence.occurrence.line_range.start <= end)
+        }
+        TriangulationTarget::Symbol { .. } => false,
+    }
+}
+
+fn answer_state_for_rows(
+    assertions: &[AgentClaimRow],
+    evidence: &[ClaimEvidence],
+    structural_evidence: &[CodeOccurrence],
+) -> AnswerState {
+    use crate::claims::status::ClaimStatus;
+    if evidence
+        .iter()
+        .any(|item| item.stance == EvidenceStance::Contradicts)
+    {
+        AnswerState::Contradicted
+    } else if assertions
+        .iter()
+        .any(|claim| claim.status == ClaimStatus::Conflicting)
+    {
+        AnswerState::Incomparable
+    } else if assertions
+        .iter()
+        .any(|claim| claim.status == ClaimStatus::Superseded)
+    {
+        AnswerState::Stale
+    } else if (!assertions.is_empty()
+        && evidence
+            .iter()
+            .any(|item| item.stance == EvidenceStance::Supports))
+        || !structural_evidence.is_empty()
+    {
+        AnswerState::Supported
+    } else {
+        AnswerState::Unverified
+    }
+}
+
+fn answer_state_for_claim(
+    status: Option<crate::claims::status::ClaimStatus>,
+    evidence: &[ClaimEvidence],
+) -> AnswerState {
+    use crate::claims::status::ClaimStatus;
+    match status {
+        Some(ClaimStatus::Superseded) => AnswerState::Stale,
+        Some(ClaimStatus::Conflicting) => AnswerState::Incomparable,
+        Some(ClaimStatus::Current)
+            if evidence
+                .iter()
+                .any(|item| item.stance == EvidenceStance::Contradicts) =>
+        {
+            AnswerState::Contradicted
+        }
+        Some(ClaimStatus::Current)
+            if evidence
+                .iter()
+                .any(|item| item.stance == EvidenceStance::Supports) =>
+        {
+            AnswerState::Supported
+        }
+        Some(ClaimStatus::Current) | None => AnswerState::Unverified,
+    }
+}
+
+struct EvidencePlan {
+    rows: Vec<(EvidenceOccurrence, ClaimEvidenceLinkedV1)>,
+    gaps: Vec<CoverageGap>,
+}
+
+fn append_knowledge_plan(
+    cx: &mut syncbat::Ctx<'_>,
+    workspace_id: &WorkspaceId,
+    snapshot: &SourceSnapshotRecordedV1,
+    rows: &[(EvidenceOccurrence, ClaimEvidenceLinkedV1)],
+    relations: &[SourceSnapshotRelationV1],
+    observed_at_ms: u64,
+) -> Result<Vec<ReceiptNote>, TexoError> {
+    append_json(
+        "texo.knowledge.index",
+        cx,
+        <SourceSnapshotRecordedV1 as EventPayload>::KIND,
+        snapshot,
+    )?;
+    for (occurrence, link) in rows {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <EvidenceOccurrenceRecordedV1 as EventPayload>::KIND,
+            &EvidenceOccurrenceRecordedV1 {
+                workspace_id: workspace_id.clone(),
+                occurrence: occurrence.clone(),
+                observed_at_ms,
+            },
+        )?;
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <ClaimEvidenceLinkedV1 as EventPayload>::KIND,
+            link,
+        )?;
+    }
+    for relation in relations {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <SourceSnapshotRelationV1 as EventPayload>::KIND,
+            relation,
+        )?;
+    }
+    take_receipts()
+}
+
+fn plan_claim_evidence(
+    view: &WorkspaceView,
+    sources: &[CapturedSource],
+    snapshot_id: &crate::knowledge::SourceSnapshotId,
+    observed_at_ms: u64,
+) -> Result<EvidencePlan, TexoError> {
+    let by_path = sources
+        .iter()
+        .map(|source| (source.path.as_str(), source))
+        .collect::<BTreeMap<_, _>>();
+    let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
+    let mut rows = Vec::new();
+    let mut gaps = Vec::new();
+    for claim in &view.claims {
+        let Some(source) = by_path.get(claim.card.source_path.as_str()) else {
+            continue;
+        };
+        let source_digest_hex = crate::events::ids::blake3_bytes_hex(&source.bytes);
+        let captured_source_id = crate::events::ids::source_id_from_hash(&source_digest_hex)?;
+        if captured_source_id.as_str() != claim.card.source_id {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::AnalysisIncomplete,
+            });
+            continue;
+        }
+        let Some((start, end)) =
+            line_byte_range(&source.bytes, claim.card.line_start, claim.card.line_end)
+        else {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::AnalysisIncomplete,
+            });
+            continue;
+        };
+        let excerpt_bytes = &source.bytes[start..end];
+        let Ok(excerpt) = std::str::from_utf8(excerpt_bytes) else {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::UnsupportedEncoding,
+            });
+            continue;
+        };
+        if excerpt.len() > MAX_EVIDENCE_EXCERPT_BYTES {
+            gaps.push(CoverageGap {
+                path: Some(source.path.clone()),
+                kind: CoverageGapKind::SourceTooLarge,
+            });
+            continue;
+        }
+        let material = format!(
+            "texo.evidence.occurrence.v1\u{1f}{snapshot_id}\u{1f}{}\u{1f}{start}\u{1f}{end}\u{1f}{}",
+            source.path, claim.card.claim_id
+        );
+        let occurrence_id = EvidenceOccurrenceId::derive(&material);
+        let occurrence = EvidenceOccurrence {
+            occurrence_id: occurrence_id.clone(),
+            snapshot_id: snapshot_id.clone(),
+            source_kind: match source.layer {
+                CapturedLayer::Committed => EvidenceSourceKind::GitBlob,
+                CapturedLayer::Worktree => EvidenceSourceKind::WorktreeOverlay,
+            },
+            path: source.path.clone(),
+            byte_range: ByteRange::new(
+                u64::try_from(start).unwrap_or(u64::MAX),
+                u64::try_from(end).unwrap_or(u64::MAX),
+            )
+            .map_err(|error| TexoError::Source {
+                path: source.path.clone(),
+                detail: error.to_string(),
+            })?,
+            line_range: LineRange::new(claim.card.line_start, claim.card.line_end).map_err(
+                |error| TexoError::Source {
+                    path: source.path.clone(),
+                    detail: error.to_string(),
+                },
+            )?,
+            git_blob: source.blob_id.clone(),
+            source_digest_hex,
+            excerpt: excerpt.to_string(),
+            analyzer_fingerprint: format!(
+                "{}:{}:{}",
+                claim.card.extractor_kind, claim.card.extractor_model, claim.card.prompt_version
+            ),
+            analysis_quality: AnalysisQuality::Syntactic,
+        };
+        occurrence.validate().map_err(|error| TexoError::Source {
+            path: source.path.clone(),
+            detail: error.to_string(),
+        })?;
+        let link = ClaimEvidenceLinkedV1 {
+            workspace_id: workspace_id.clone(),
+            claim_id: ClaimId::try_from(claim.card.claim_id.as_str())?,
+            occurrence_id,
+            stance: EvidenceStance::Supports,
+            method: EvidenceLinkMethod::Deterministic,
+            observed_at_ms,
+        };
+        rows.push((occurrence, link));
+    }
+    Ok(EvidencePlan { rows, gaps })
+}
+
+fn line_byte_range(bytes: &[u8], start_line: u32, end_line: u32) -> Option<(usize, usize)> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+    let mut line = 1_u32;
+    let mut line_start = 0_usize;
+    let mut range_start = None;
+    for offset in 0..=bytes.len() {
+        let boundary = offset == bytes.len() || bytes.get(offset) == Some(&b'\n');
+        if !boundary {
+            continue;
+        }
+        if line == start_line {
+            range_start = Some(line_start);
+        }
+        if line == end_line {
+            return range_start.map(|start| (start, offset));
+        }
+        line = line.saturating_add(1);
+        line_start = offset.saturating_add(1);
+    }
+    None
+}
+
 struct SettlementAuthority {
     verdicts: BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
     cache_keys: BTreeMap<(String, String), String>,
@@ -1616,7 +3247,7 @@ struct SettlementAuthority {
     unresolved_pairs: usize,
 }
 
-fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
+fn authoritative_settlements(frontier: Option<u64>) -> Result<SettlementAuthority, TexoError> {
     env::with(|op_env| {
         let scope = scope_for_workspace(&op_env.workspace_id);
         let region = Region::scope(&scope);
@@ -1628,10 +3259,19 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
                 break;
             }
             for entry in &page {
+                if frontier.is_some_and(|frontier| entry.global_sequence() > frontier) {
+                    break;
+                }
                 let entity = entry.coord().entity();
                 if entity.starts_with("relation:") {
                     entities.insert(entity.to_string());
                 }
+            }
+            if page
+                .last()
+                .is_some_and(|entry| frontier.is_some_and(|value| entry.global_sequence() > value))
+            {
+                break;
             }
             after = page.last().map(batpak::store::IndexEntry::global_sequence);
         }
@@ -1641,14 +3281,27 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
         let mut warnings = Vec::new();
         let mut unresolved_pairs = 0;
         for entity in entities {
-            let Some(card) = op_env
-                .store
-                .project::<crate::claims::settlement::SettlementCard>(
-                    &entity,
-                    &Freshness::Consistent,
-                )?
-            else {
-                continue;
+            let card = if let Some(frontier) = frontier {
+                let mut card = crate::claims::settlement::SettlementCard::default();
+                for entry in op_env.store.by_entity(&entity) {
+                    if entry.global_sequence() > frontier {
+                        break;
+                    }
+                    let raw = op_env.store.read_raw(entry.event_id())?;
+                    card.apply_event(&raw.event);
+                }
+                card
+            } else {
+                let Some(card) = op_env
+                    .store
+                    .project::<crate::claims::settlement::SettlementCard>(
+                        &entity,
+                        &Freshness::Consistent,
+                    )?
+                else {
+                    continue;
+                };
+                card
             };
             let Some(authoritative) = card.authoritative.as_ref() else {
                 if !card.deferrals.is_empty() {
@@ -1693,7 +3346,7 @@ fn authoritative_settlements() -> Result<SettlementAuthority, TexoError> {
 }
 
 fn require_complete_settlement() -> Result<(), TexoError> {
-    let unresolved = authoritative_settlements()?.unresolved_pairs;
+    let unresolved = authoritative_settlements(None)?.unresolved_pairs;
     if unresolved == 0 {
         return Ok(());
     }
@@ -1895,7 +3548,8 @@ pub(crate) fn run_relate_pass(
             op_env.config.gateway.clone(),
         )
     })?;
-    let authority = authoritative_settlements()?;
+    let authority = authoritative_settlements(None)?;
+    let temporal = semantic_temporal_policy(&view)?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -1907,6 +3561,7 @@ pub(crate) fn run_relate_pass(
         &claims,
         RelateThresholds { cluster, prefilter },
         &authority.verdicts,
+        &temporal,
         std::time::Duration::from_secs(budget_secs),
     )?;
     for (pair, cache_key) in &authority.cache_keys {
@@ -2127,11 +3782,12 @@ fn relate_with_backends(
     claims: &[(ClaimId, SemanticClaimView)],
     thresholds: RelateThresholds,
     settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    temporal: &RelateTemporalPolicy,
     budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     use crate::extract::cache::CachingRelater;
     use crate::semantics::openrouter::{OpenRouterEmbedder, OpenRouterRelater};
-    use crate::semantics::pipeline::relate_claims_settled_parallel;
+    use crate::semantics::pipeline::relate_claims_settled_parallel_temporal;
     use crate::semantics::ClaimRelater as _;
 
     let embedder = OpenRouterEmbedder::new(None, gateway).map_err(semantic_error)?;
@@ -2150,14 +3806,17 @@ fn relate_with_backends(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(4)
         .clamp(1, 16);
-    let relation_output = relate_claims_settled_parallel(
+    let relation_output = relate_claims_settled_parallel_temporal(
         claims,
         &embedder,
         &caching_relater,
         thresholds,
         settled,
-        budget,
-        concurrency,
+        ParallelRelateOptions {
+            temporal,
+            budget,
+            concurrency,
+        },
     )
     .map_err(semantic_error)?;
     let cache_keys = relate_cache_keys(&caching_relater, claims, &relation_output);
@@ -2175,6 +3834,7 @@ fn relate_with_backends(
     _claims: &[(ClaimId, SemanticClaimView)],
     _thresholds: RelateThresholds,
     _settled: &BTreeMap<(ClaimId, ClaimId), crate::semantics::RelationVerdict>,
+    _temporal: &RelateTemporalPolicy,
     _budget: std::time::Duration,
 ) -> Result<SemanticRelateOutput, TexoError> {
     Err(TexoError::Semantics {
@@ -2426,11 +4086,129 @@ fn saturating_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Closed reason an explicit replacement proposal could not become authority.
+pub enum ExplicitSupersessionHoldReason {
+    /// The proposed successor is on an older source revision.
+    TemporalReversed,
+    /// Both source revisions are valid but incomparable.
+    TemporalConcurrent,
+    /// Available source evidence cannot establish an order.
+    TemporalUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One explicit replacement proposal held by temporal policy.
+pub struct HeldExplicitSupersession {
+    /// Claim that would have been retired.
+    pub old_claim_id: ClaimId,
+    /// Proposed successor claim.
+    pub new_claim_id: ClaimId,
+    /// Typed reason no authority-bearing event was appended.
+    pub reason: ExplicitSupersessionHoldReason,
+}
+
+/// Applied and held outcomes from the shared explicit-replacement policy.
+pub(crate) struct ExplicitSupersessionOutcome {
+    /// Authority-bearing supersession events safe to append.
+    pub applied: Vec<ClaimSupersededV2>,
+    /// Proposals withheld pending authoritative source order.
+    pub held: Vec<HeldExplicitSupersession>,
+}
+
+#[derive(Clone)]
+struct ExplicitReplacementCandidate {
+    claim_id: ClaimId,
+    workspace_id: String,
+    source_id: String,
+    normalized_text: String,
+    subject_hint: Option<String>,
+}
+
 pub(crate) fn infer_supersessions(
     view: &WorkspaceView,
     new_claims: &[ClaimRecordedV2],
     observed_at_ms: u64,
-) -> Vec<ClaimSupersededV2> {
+    temporal: &RelateTemporalPolicy,
+) -> Result<ExplicitSupersessionOutcome, TexoError> {
+    let candidates = new_claims
+        .iter()
+        .map(|claim| {
+            Ok(ExplicitReplacementCandidate {
+                claim_id: ClaimId::try_from(claim.claim_id.as_str())?,
+                workspace_id: claim.workspace_id.clone(),
+                source_id: claim.source_id.clone(),
+                normalized_text: claim.normalized_text.clone(),
+                subject_hint: claim.subject_hint.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, TexoError>>()?;
+    Ok(infer_explicit_supersessions(
+        view,
+        &candidates,
+        observed_at_ms,
+        temporal,
+    ))
+}
+
+fn infer_indexed_supersessions(
+    view: &WorkspaceView,
+    new_claim_ids: &BTreeSet<ClaimId>,
+    observed_at_ms: u64,
+    temporal: &RelateTemporalPolicy,
+) -> ExplicitSupersessionOutcome {
+    let candidates = view
+        .claims
+        .iter()
+        .filter_map(|claim| {
+            let claim_id = ClaimId::try_from(claim.card.claim_id.as_str()).ok()?;
+            new_claim_ids
+                .contains(&claim_id)
+                .then(|| ExplicitReplacementCandidate {
+                    claim_id,
+                    workspace_id: claim.card.workspace_id.clone(),
+                    source_id: claim.card.source_id.clone(),
+                    normalized_text: claim.card.normalized_text.clone(),
+                    subject_hint: claim.card.subject_hint.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    infer_explicit_supersessions(view, &candidates, observed_at_ms, temporal)
+}
+
+fn settle_indexed_explicit_supersessions(
+    cx: &mut syncbat::Ctx<'_>,
+    view: &WorkspaceView,
+    new_claim_ids: &BTreeSet<ClaimId>,
+    observed_at_ms: u64,
+    receipts: &mut Vec<ReceiptNote>,
+) -> Result<ExplicitSupersessionOutcome, TexoError> {
+    let evidence_frontier = receipts
+        .iter()
+        .map(|receipt| receipt.global_sequence)
+        .max()
+        .unwrap_or(view.frontier);
+    let temporal = workspace_temporal_policy_through(view, evidence_frontier)?;
+    let outcome = infer_indexed_supersessions(view, new_claim_ids, observed_at_ms, &temporal);
+    for supersession in &outcome.applied {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <ClaimSupersededV2 as EventPayload>::KIND,
+            supersession,
+        )?;
+    }
+    receipts.extend(take_receipts()?);
+    Ok(outcome)
+}
+
+fn infer_explicit_supersessions(
+    view: &WorkspaceView,
+    new_claims: &[ExplicitReplacementCandidate],
+    observed_at_ms: u64,
+    temporal: &RelateTemporalPolicy,
+) -> ExplicitSupersessionOutcome {
     let mut by_subject: BTreeMap<Option<String>, Vec<&ClaimView>> = BTreeMap::new();
     for claim in &view.claims {
         by_subject
@@ -2438,7 +4216,8 @@ pub(crate) fn infer_supersessions(
             .or_default()
             .push(claim);
     }
-    let mut out = Vec::new();
+    let mut applied = Vec::new();
+    let mut held = Vec::new();
     let mut seen_old = BTreeSet::new();
     for new_claim in new_claims {
         if !replacement_signal(&new_claim.normalized_text) {
@@ -2448,19 +4227,44 @@ pub(crate) fn infer_supersessions(
             continue;
         };
         for old in candidates {
-            if old.card.claim_id == new_claim.claim_id
+            if old.card.claim_id == new_claim.claim_id.as_str()
                 || old.card.phase != 1
                 || old.card.normalized_text == new_claim.normalized_text
-                || !seen_old.insert(old.card.claim_id.clone())
             {
                 continue;
             }
+            let Ok(old_claim_id) = ClaimId::try_from(old.card.claim_id.as_str()) else {
+                continue;
+            };
+            let hold_reason = match temporal.compare_claims(&old_claim_id, &new_claim.claim_id) {
+                None | Some(TemporalRelation::Same | TemporalRelation::Before) => None,
+                Some(TemporalRelation::After) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalReversed)
+                }
+                Some(TemporalRelation::Concurrent) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalConcurrent)
+                }
+                Some(TemporalRelation::Unknown) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalUnknown)
+                }
+            };
+            if !seen_old.insert(old.card.claim_id.clone()) {
+                continue;
+            }
+            if let Some(reason) = hold_reason {
+                held.push(HeldExplicitSupersession {
+                    old_claim_id,
+                    new_claim_id: new_claim.claim_id.clone(),
+                    reason,
+                });
+                continue;
+            }
             let old_entity = entity_for_claim(&old.card.claim_id);
-            out.push(ClaimSupersededV2 {
+            applied.push(ClaimSupersededV2 {
                 old_claim_id: old.card.claim_id.clone(),
-                new_claim_id: new_claim.claim_id.clone(),
+                new_claim_id: new_claim.claim_id.to_string(),
                 workspace_id: new_claim.workspace_id.clone(),
-                reason: "superseded by newer ingest claim".to_string(),
+                reason: "explicit replacement wording accepted by temporal policy".to_string(),
                 decided_by: "texo.ingest.run".to_string(),
                 observed_at_ms,
                 transition: transition_record(
@@ -2477,12 +4281,17 @@ pub(crate) fn infer_supersessions(
             });
         }
     }
-    out.sort_by(|left, right| {
+    applied.sort_by(|left, right| {
         left.old_claim_id
             .cmp(&right.old_claim_id)
             .then_with(|| left.new_claim_id.cmp(&right.new_claim_id))
     });
-    out
+    held.sort_by(|left, right| {
+        left.old_claim_id
+            .cmp(&right.old_claim_id)
+            .then_with(|| left.new_claim_id.cmp(&right.new_claim_id))
+    });
+    ExplicitSupersessionOutcome { applied, held }
 }
 
 fn replacement_signal(normalized_text: &str) -> bool {
@@ -2522,6 +4331,194 @@ fn claim_list_rows(
     Ok(rows)
 }
 
+fn search_knowledge_from_view(
+    view: &WorkspaceView,
+    snapshot: SnapshotRead,
+    input: &KnowledgeSearchInput,
+) -> Result<KnowledgeSearchOutput, TexoError> {
+    let query = input.query.as_deref().unwrap_or("");
+    if query.len() > 256 {
+        return Err(TexoError::OpInput {
+            op: "texo.knowledge.search".to_string(),
+            detail: "query exceeds 256 bytes".to_string(),
+        });
+    }
+    let limit = input.limit.unwrap_or(25);
+    if !(1..=100).contains(&limit) {
+        return Err(TexoError::OpInput {
+            op: "texo.knowledge.search".to_string(),
+            detail: "limit must be between 1 and 100".to_string(),
+        });
+    }
+    let cursor_identity = knowledge_search_identity(&snapshot, query, input);
+    let offset = parse_knowledge_search_cursor(input.cursor.as_deref(), &cursor_identity)?;
+    let query_lower = query.to_ascii_lowercase();
+    let mut ranked = claim_list_rows(view, input.subject.as_deref())?
+        .into_iter()
+        .filter(|claim| input.status.is_none_or(|status| claim.status == status))
+        .filter_map(|claim| {
+            claim_search_rank(&claim, &query_lower).map(|rank| RankedKnowledgeResult {
+                rank,
+                key: format!("claim:{}", claim.claim_id),
+                result: KnowledgeSearchResult::Claim { claim },
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut coverage = coverage_for_view(view, &snapshot)?;
+    // A subject/status filter searches only the claim plane; the code plane is
+    // deliberately not consulted, which is "not searched", not "unavailable".
+    let code_searched = input.subject.is_none() && input.status.is_none();
+    let mut code_index_available = false;
+    if code_searched {
+        if let Some(source_snapshot_id) = snapshot.descriptor.source_snapshot_id.as_ref() {
+            let loaded = load_code_artifact_at(view.frontier, source_snapshot_id)?;
+            if let Some(code_coverage) = &loaded.coverage {
+                merge_coverage(&mut coverage, code_coverage);
+            }
+            if let Some(artifact) = loaded.artifact {
+                code_index_available = true;
+                ranked.extend(artifact.occurrences.into_iter().filter_map(|occurrence| {
+                    code_search_rank(&occurrence, &query_lower).map(|rank| RankedKnowledgeResult {
+                        rank,
+                        key: format!(
+                            "code:{}:{}:{}",
+                            occurrence.symbol, occurrence.path, occurrence.byte_range.start
+                        ),
+                        result: KnowledgeSearchResult::Code { occurrence },
+                    })
+                }));
+            }
+        }
+    }
+    // Only assert the code index is unavailable when it was actually searched and
+    // found absent — never for a filtered search that skipped it by design.
+    if code_searched
+        && !code_index_available
+        && !coverage
+            .gaps
+            .iter()
+            .any(|gap| gap.kind == CoverageGapKind::CodeIndexUnavailable)
+    {
+        coverage.gaps.push(CoverageGap {
+            path: None,
+            kind: CoverageGapKind::CodeIndexUnavailable,
+        });
+    }
+    ranked.sort_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    let total = ranked.len();
+    let results = ranked
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|ranked| ranked.result)
+        .collect::<Vec<_>>();
+    let returned = results.len();
+    let next_offset = offset.saturating_add(returned);
+    let has_more = next_offset < total;
+    Ok(KnowledgeSearchOutput {
+        workspace_id: view.workspace_id.clone(),
+        frontier: view.frontier,
+        total,
+        returned,
+        has_more,
+        next_cursor: has_more.then(|| format!("texo-knowledge-v1:{cursor_identity}:{next_offset}")),
+        results,
+        code_index_available,
+        coverage,
+        snapshot,
+    })
+}
+
+fn knowledge_search_identity(
+    snapshot: &SnapshotRead,
+    query: &str,
+    input: &KnowledgeSearchInput,
+) -> String {
+    let material = format!(
+        "texo.knowledge.search.v1\u{1f}{}\u{1f}{query}\u{1f}{}\u{1f}{}",
+        snapshot.token.as_str(),
+        input.subject.as_deref().unwrap_or(""),
+        input
+            .status
+            .map_or("", crate::claims::status::ClaimStatus::as_str)
+    );
+    blake3::hash(material.as_bytes()).to_hex()[..16].to_string()
+}
+
+fn parse_knowledge_search_cursor(
+    cursor: Option<&str>,
+    expected_identity: &str,
+) -> Result<usize, TexoError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let Some(rest) = cursor.strip_prefix("texo-knowledge-v1:") else {
+        return Err(invalid_knowledge_cursor());
+    };
+    let Some((identity, offset)) = rest.split_once(':') else {
+        return Err(invalid_knowledge_cursor());
+    };
+    if identity != expected_identity {
+        return Err(invalid_knowledge_cursor());
+    }
+    offset.parse().map_err(|_| invalid_knowledge_cursor())
+}
+
+fn invalid_knowledge_cursor() -> TexoError {
+    TexoError::OpInput {
+        op: "texo.knowledge.search".to_string(),
+        detail: "cursor is invalid for this query and snapshot".to_string(),
+    }
+}
+
+fn claim_search_rank(claim: &AgentClaimRow, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let text = claim.text.to_ascii_lowercase();
+    let subject = claim
+        .subject_hint
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path = claim.source.path.to_ascii_lowercase();
+    if text == query || subject == query {
+        Some(0)
+    } else if text.starts_with(query) || subject.starts_with(query) {
+        Some(1)
+    } else if text.contains(query) || subject.contains(query) {
+        Some(2)
+    } else if path.contains(query) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+fn code_search_rank(occurrence: &CodeOccurrence, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(1);
+    }
+    let name = occurrence.display_name.to_ascii_lowercase();
+    let symbol = occurrence.symbol.to_ascii_lowercase();
+    let path = occurrence.path.to_ascii_lowercase();
+    if name == query || symbol == query {
+        Some(0)
+    } else if name.starts_with(query) {
+        Some(1)
+    } else if name.contains(query) || symbol.contains(query) {
+        Some(2)
+    } else if path.contains(query) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
 fn parse_claim_search_cursor(cursor: Option<&str>) -> Result<usize, TexoError> {
     let Some(cursor) = cursor else {
         return Ok(0);
@@ -2556,6 +4553,7 @@ fn build_agent_context_from_view(
     view: &WorkspaceView,
     subject: Option<&str>,
     include_stale: bool,
+    snapshot: SnapshotRead,
 ) -> Result<AgentContextOutput, TexoError> {
     let claims = claim_list_rows(view, subject)?
         .into_iter()
@@ -2622,6 +4620,7 @@ fn build_agent_context_from_view(
         claims,
         stale_claims,
         conflicts,
+        snapshot,
     })
 }
 
@@ -2630,6 +4629,7 @@ fn check_staleness_from_view(
     workspace_id: &str,
     root: &Path,
     input: &Path,
+    snapshot: SnapshotRead,
 ) -> Result<StalenessReport, TexoError> {
     let checked_path = input
         .strip_prefix(root)
@@ -2728,6 +4728,7 @@ fn check_staleness_from_view(
         checked_path,
         replayed_through_sequence: view.frontier,
         diagnostics,
+        snapshot,
     })
 }
 

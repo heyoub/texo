@@ -13,6 +13,18 @@ test:
 test-invariants:
     cargo test --test projection_laws --test compile_fail --test spike_family
 
+demo-intelligence:
+    cargo build --bin texo
+    scripts/demo-intelligence-e2e.sh
+
+verify-old-store:
+    cargo build --bin texo
+    scripts/verify-old-store.sh
+
+measure-intelligence:
+    cargo build --bin texo
+    scripts/measure-intelligence.sh
+
 test-hygiene:
     #!/usr/bin/env bash
     set -euo pipefail

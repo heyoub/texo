@@ -193,6 +193,74 @@ fn out_of_band_manifest_pin_detects_coordinated_manifest_rewrite() -> TestResult
     Ok(())
 }
 
+#[test]
+fn restore_publishes_only_a_verified_fresh_workspace() -> TestResult {
+    let source = TempDir::new()?;
+    let outside = TempDir::new()?;
+    assert!(run(source.path(), &["init", "--workspace", "demo"])?
+        .status
+        .success());
+    let backup = outside.path().join("portable-backup");
+    let created = create_backup(source.path(), &backup)?;
+    let expected = created["manifest_hash_hex"]
+        .as_str()
+        .ok_or("manifest hash")?;
+    let restored = outside.path().join("restored-workspace");
+
+    let output = run(
+        &restored,
+        &[
+            "backup",
+            "restore",
+            path(&backup)?,
+            "--expect-manifest-hash",
+            expected,
+            "--json",
+        ],
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["schema"], "texo.backup-restore.v1");
+    assert_eq!(report["chain_verified"], true);
+    assert!(restored.join(".texo/config.toml").is_file());
+    assert!(!restored.join(".texo/cache").exists());
+    let verified = run(&restored, &["verify", "--json"])?;
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+
+    let before = fingerprint(&restored)?;
+    let overwrite = run(&restored, &["backup", "restore", path(&backup)?, "--json"])?;
+    assert!(!overwrite.status.success());
+    assert_eq!(fingerprint(&restored)?, before);
+
+    let tampered = outside.path().join("tampered-backup");
+    create_backup(source.path(), &tampered)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(tampered.join("config.toml"))?
+        .write_all(b"\n# changed\n")?;
+    let refused = outside.path().join("refused-restore");
+    let output = run(&refused, &["backup", "restore", path(&tampered)?, "--json"])?;
+    assert!(!output.status.success());
+    assert!(!refused.exists());
+    assert!(std::fs::read_dir(outside.path())?.all(|entry| {
+        entry.ok().is_none_or(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".texo-restore-")
+        })
+    }));
+    Ok(())
+}
+
 fn create_backup(root: &std::path::Path, dest: &std::path::Path) -> TestResult<Value> {
     let output = run(root, &["backup", "create", path(dest)?, "--json"])?;
     if !output.status.success() {

@@ -17,7 +17,8 @@ fn cli_operation_discovery_uses_the_shared_catalog() -> TestResult {
         .as_array()
         .ok_or("operations array")?;
     assert!(operations.iter().any(|operation| {
-        operation["name"] == "texo.claims.search" && operation["agent_tool"] == "search_claims"
+        operation["name"] == "texo.knowledge.search"
+            && operation["agent_tool"] == "search_knowledge"
     }));
     Ok(())
 }

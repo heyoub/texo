@@ -32,7 +32,7 @@ use crate::events::payloads::{
 use crate::ops::env::{self, ReceiptNote};
 use crate::ops::handlers::{
     append_json, assemble_current_view, infer_supersessions, op_runtime, parse_input, plan_sources,
-    run_op, run_relate_pass, take_receipts,
+    run_op, run_relate_pass, take_receipts, workspace_temporal_policy,
 };
 
 /// Directory under the workspace root where session transcripts land.
@@ -286,7 +286,7 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.agent.session.end",
     effect = Persist,
     input_schema = "texo.agent.session.end.input.v2",
-    output_schema = "texo.agent.session.end.output.v2",
+    output_schema = "texo.agent.session.end.output.v3",
     receipt_kind = "receipt.texo.agent.session.end.v2",
     appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e009", "evt.e00a"],
     reads_events = ["evt.e008"],
@@ -349,7 +349,9 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .iter()
             .flat_map(|source| source.claims.iter().cloned())
             .collect::<Vec<_>>();
-        let supersessions = infer_supersessions(&view, &new_claims, input.observed_at_ms);
+        let temporal = workspace_temporal_policy(&view)?;
+        let supersessions =
+            infer_supersessions(&view, &new_claims, input.observed_at_ms, &temporal)?;
         for source in &planned.sources {
             append_json(
                 "texo.agent.session.end",
@@ -366,7 +368,7 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 )?;
             }
         }
-        for supersession in &supersessions {
+        for supersession in &supersessions.applied {
             append_json(
                 "texo.agent.session.end",
                 cx,
@@ -395,7 +397,9 @@ fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 .to_string(),
             sources_observed: u32::try_from(planned.sources.len()).unwrap_or(u32::MAX),
             claims_recorded: u32::try_from(new_claims.len()).unwrap_or(u32::MAX),
-            ingest_supersessions: u32::try_from(supersessions.len()).unwrap_or(u32::MAX),
+            ingest_supersessions: u32::try_from(supersessions.applied.len()).unwrap_or(u32::MAX),
+            supersessions_held: supersessions.held.len(),
+            held_supersessions: supersessions.held,
             relate,
         })
     })
@@ -560,6 +564,10 @@ pub struct SessionEndReport {
     pub claims_recorded: u32,
     /// Supersessions journaled during ingest.
     pub ingest_supersessions: u32,
+    /// Explicit replacements held because source order was not authoritative.
+    pub supersessions_held: usize,
+    /// Typed held-pair evidence for retry after source indexing.
+    pub held_supersessions: Vec<crate::ops::handlers::HeldExplicitSupersession>,
     /// Relate outcome.
     pub relate: RelateOutcome,
 }

@@ -42,6 +42,26 @@ pub fn entity_for_relation_pair(pair_id: &str) -> String {
     format!("relation:{pair_id}")
 }
 
+/// Entity string for one frozen source snapshot.
+pub fn entity_for_source_snapshot(snapshot_id: &str) -> String {
+    format!("source-snapshot:{snapshot_id}")
+}
+
+/// Entity string for one evidence occurrence.
+pub fn entity_for_evidence(occurrence_id: &str) -> String {
+    format!("evidence:{occurrence_id}")
+}
+
+/// Entity string for one disposable code-index registration.
+pub fn entity_for_code_index(index_id: &str) -> String {
+    format!("code-index:{index_id}")
+}
+
+/// Entity string for one directional frozen-snapshot comparison.
+pub fn entity_for_source_relation(left_snapshot_id: &str, right_snapshot_id: &str) -> String {
+    format!("source-relation:{left_snapshot_id}:{right_snapshot_id}")
+}
+
 /// Build a claim coordinate.
 ///
 /// # Errors
@@ -142,6 +162,63 @@ pub fn coordinate_for_relation_pair(
     )
 }
 
+/// Build a frozen source-snapshot coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_source_snapshot(
+    workspace_id: &str,
+    snapshot_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_source_snapshot(snapshot_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
+/// Build an evidence-occurrence coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_evidence(
+    workspace_id: &str,
+    occurrence_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_evidence(occurrence_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
+/// Build a code-index registration coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_code_index(
+    workspace_id: &str,
+    index_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_code_index(index_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
+/// Build a frozen source-snapshot relation coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_source_relation(
+    workspace_id: &str,
+    left_snapshot_id: &str,
+    right_snapshot_id: &str,
+) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_source_relation(left_snapshot_id, right_snapshot_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
 /// Deterministically map a session id to a non-zero `BatPak` lane.
 pub fn session_lane(session_id: &str) -> u32 {
     let hash = blake3::hash(session_id.as_bytes());
@@ -162,6 +239,19 @@ mod tests {
         assert_eq!(entity_for_onboarding_projection(), "projection:onboarding");
         assert_eq!(entity_for_workspace_meta("demo"), "workspace-meta:demo");
         assert_eq!(entity_for_session("s1"), "session:s1");
+        assert_eq!(
+            entity_for_source_snapshot("snapshot_abc"),
+            "source-snapshot:snapshot_abc"
+        );
+        assert_eq!(entity_for_evidence("evidence_abc"), "evidence:evidence_abc");
+        assert_eq!(
+            entity_for_code_index("code_index_abc"),
+            "code-index:code_index_abc"
+        );
+        assert_eq!(
+            entity_for_source_relation("snapshot_a", "snapshot_b"),
+            "source-relation:snapshot_a:snapshot_b"
+        );
     }
 
     #[test]
@@ -173,6 +263,12 @@ mod tests {
             coordinate_for_onboarding_projection("demo").expect("projection coordinate"),
             coordinate_for_workspace_meta("demo").expect("workspace metadata coordinate"),
             coordinate_for_session("demo", "session_abc").expect("session coordinate"),
+            coordinate_for_source_snapshot("demo", "snapshot_abc")
+                .expect("source snapshot coordinate"),
+            coordinate_for_evidence("demo", "evidence_abc").expect("evidence coordinate"),
+            coordinate_for_code_index("demo", "code_index_abc").expect("code index coordinate"),
+            coordinate_for_source_relation("demo", "snapshot_a", "snapshot_b")
+                .expect("source relation coordinate"),
         ];
 
         for coord in coords {

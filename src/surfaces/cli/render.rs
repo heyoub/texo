@@ -405,6 +405,22 @@ pub fn backup(value: &Value) {
                     .unwrap_or_default()
             );
         }
+    } else if value.get("chain_verified").and_then(Value::as_bool) == Some(true) {
+        println!(
+            "backup restored: {} ({} files, {} bytes; chain verified)",
+            value
+                .get("dest")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("store_file_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            value
+                .get("store_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        );
     } else {
         println!(
             "backup created: {} ({} files, {} bytes)",
@@ -460,5 +476,30 @@ pub fn relate(value: &Value) {
             .get("conflicts")
             .and_then(Value::as_array)
             .map_or(0, Vec::len)
+    );
+}
+
+/// Print semantic claim↔code reconciliation summary.
+#[expect(clippy::print_stdout, reason = "CLI output contract")]
+pub fn reconcile(value: &Value) {
+    println!(
+        "reconciliation {}: {} accepted, {} rejected, {} unresolved, {} already linked",
+        value
+            .get("outcome")
+            .and_then(Value::as_str)
+            .unwrap_or("partial"),
+        value
+            .get("accepted")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value.get("rejected").and_then(Value::as_u64).unwrap_or(0),
+        value
+            .get("unresolved")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value
+            .get("already_linked")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
     );
 }

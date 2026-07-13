@@ -389,19 +389,22 @@ fn runtime_error(error: RuntimeError) -> TexoError {
             name,
             code,
             message,
-        } if code == "invalid_input" => TexoError::OpInput {
-            detail: input_error_detail(&name, &message),
-            op: name,
-        },
-        RuntimeError::Handler {
-            name,
-            code,
-            message,
-        } => TexoError::OpRuntime {
-            op: name,
-            detail: format!("{code}: {message}"),
-            denied: false,
-        },
+        } => {
+            if code == "invalid_input" {
+                TexoError::OpInput {
+                    detail: input_error_detail(&name, &message),
+                    op: name,
+                }
+            } else if let Some((kind, detail)) = snapshot_error_detail(&message) {
+                TexoError::Snapshot { kind, detail }
+            } else {
+                TexoError::OpRuntime {
+                    op: name,
+                    detail: format!("{code}: {message}"),
+                    denied: false,
+                }
+            }
+        }
         RuntimeError::UnknownOperation { name } => TexoError::OpRuntime {
             op: name,
             detail: "unknown operation".to_string(),
@@ -433,6 +436,26 @@ fn input_error_detail(operation: &str, message: &str) -> String {
         .strip_prefix(&operation_prefix)
         .unwrap_or(message)
         .to_string()
+}
+
+fn snapshot_error_detail(message: &str) -> Option<(crate::error::SnapshotFailureKind, String)> {
+    use crate::error::SnapshotFailureKind;
+    let classes = [
+        ("snapshot.invalid", SnapshotFailureKind::InvalidToken),
+        ("snapshot.unavailable", SnapshotFailureKind::Unavailable),
+        ("snapshot.anchor", SnapshotFailureKind::AnchorMismatch),
+        (
+            "snapshot.source_unavailable",
+            SnapshotFailureKind::SourceUnavailable,
+        ),
+    ];
+    classes.into_iter().find_map(|(code, kind)| {
+        let offset = message.find(code)?;
+        let detail = message[offset + code.len()..]
+            .trim_start_matches([':', ' '])
+            .to_string();
+        Some((kind, detail))
+    })
 }
 
 #[cfg(test)]

@@ -3,8 +3,9 @@
 Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 
 ```txt
-markdown / session transcript
+markdown / Git snapshot / code index / session transcript
   -> extractor: heuristic or LLM record-once cache
+  -> bounded evidence occurrence + analysis quality
   -> syncbat op
   -> TexoEffectBackend
   -> BatPak Store<Open>
@@ -38,14 +39,29 @@ checks. texo owns domain schema, projections, and user surfaces.
   read hooks.
 - `doctor` and `backup`: composed operator diagnostics and an evidence-backed
   journal/config portability boundary.
+- `knowledge`: snapshot tokens, Git object identities, evidence occurrences,
+  temporal partial-order results, coverage gaps, and code-analysis quality.
+- `code_index`: bounded SCIP import, a pinned Rust tree-sitter tags analyzer,
+  the universal lexical floor, and authenticated disposable normalized
+  artifacts.
+- `reconcile`: bounded code-only candidate generation, concurrent cached model
+  proposals, and deterministic evidence-acceptance policy.
+- `claims::evidence`: a replay-only projection that joins exact occurrence
+  events to claim links at a requested frontier; missing disposable indexes do
+  not alter this view.
+
+The evidence, structural, and belief planes and their replay boundary are
+frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 
 ## Operation Catalog
 
 The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 21 operations:
+contains 26 operations:
 
 `texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
-`texo.claims.list`, `texo.claims.search`,
+`texo.knowledge.index`, `texo.code.index.build`, `texo.knowledge.triangulate`,
+`texo.knowledge.reconcile`,
+`texo.claims.list`, `texo.claims.search`, `texo.knowledge.search`,
 `texo.claim.explain`, `texo.claim.supersede`, `texo.staleness.check`,
 `texo.context.agent`, `texo.compile.run`, `texo.conflicts.list`,
 `texo.conflicts.commit`, `texo.conflict.resolve`, `texo.verify.run`,
