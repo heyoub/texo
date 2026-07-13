@@ -92,7 +92,7 @@ fn tampered_snapshot_token_fails_with_snapshot_facts() -> TestResult {
             &json!({
                 "subject": null,
                 "include_stale": false,
-                "snapshot": "texo_snap_v1.1.deadbeef.none.deadbeef"
+                "snapshot": "texo_snap_v2.1.deadbeef.none.deadbeef"
             }),
         )
         .expect_err("tampered token must fail");

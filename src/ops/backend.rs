@@ -523,6 +523,13 @@ mod tests {
         }
     }
 
+    fn test_journal() -> crate::topology::ResolvedJournal {
+        crate::config::TexoRootConfig::demo()
+            .resolve_journal(Some("demo"), None)
+            .expect("test journal")
+            .1
+    }
+
     #[test]
     fn keyed_source_retry_returns_original_event_and_appends_once() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -537,6 +544,7 @@ mod tests {
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
             host_interface: test_host_interface(),
+            journal: test_journal(),
         };
         let payload = SourceObservedV2 {
             source_id: "src_aaaaaaaaaaaa".to_string(),
@@ -575,6 +583,7 @@ mod tests {
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
             host_interface: test_host_interface(),
+            journal: test_journal(),
         };
         let payload = RelationJudgedV1 {
             workspace_id: WorkspaceId::try_from("demo").expect("workspace"),

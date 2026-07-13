@@ -113,10 +113,12 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         root_config
             .default_workspace
             .clone_from(&input.workspace_id);
-        root_config.upsert_workspace(
-            &input.workspace_id,
-            WorkspaceEntry::for_id(&input.workspace_id),
-        );
+        if !root_config.workspaces.contains_key(&input.workspace_id) {
+            root_config.upsert_workspace(
+                &input.workspace_id,
+                WorkspaceEntry::for_id(&input.workspace_id),
+            );
+        }
 
         let raw = toml::to_string_pretty(&root_config).map_err(|error| TexoError::Config {
             detail: error.to_string(),
@@ -1447,14 +1449,22 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.stats.read", error))?;
         let view = assemble_current_view()?;
-        let (root, config) = env::with(|op_env| (op_env.root.clone(), op_env.config.clone()))?;
+        let (root, config, journal) = env::with(|op_env| {
+            (
+                op_env.root.clone(),
+                op_env.config.clone(),
+                op_env.journal.clone(),
+            )
+        })?;
         let store_path = config.store_path_buf(&root);
         let projection_path = root
             .join(".texo/cache/workspace-view")
-            .join(format!("{}.bin", view.workspace_id));
+            .join(format!("{}--{}.bin", view.workspace_id, journal.id));
         let context = build_agent_context_from_view(&view, None, true, snapshot_for_view(&view)?)?;
         let agent_context_bytes = serde_json::to_vec(&context)?.len();
         Ok(StatsReadOutput {
+            journal_id: journal.id,
+            journal_role: journal.role,
             claims_total: view.claims.len(),
             events_total: workspace_event_count()?,
             journal_bytes: journal_file_bytes(&store_path)?,
@@ -1487,8 +1497,13 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let settlement = authoritative_settlements(Some(view.frontier))?;
         let unresolved_pairs = settlement.unresolved_pairs;
         let (coverage, code_index_available) = status_coverage(&view, &snapshot)?;
+        let journal = env::with(|op_env| op_env.journal.clone())?;
         Ok(WorkspaceStatusOutput {
             workspace_id: view.workspace_id.clone(),
+            journal_id: journal.id,
+            journal_role: journal.role,
+            source_journal: journal.source_journal,
+            replica_mode: journal.replica_mode,
             frontier: view.frontier,
             freshness: view.freshness,
             claims_total: view.claims.len(),
@@ -1720,6 +1735,8 @@ struct WorkspaceStatusInput {
 
 #[derive(Debug, Serialize)]
 struct StatsReadOutput {
+    journal_id: crate::topology::JournalId,
+    journal_role: crate::topology::JournalRole,
     claims_total: usize,
     events_total: usize,
     journal_bytes: u64,
@@ -1731,6 +1748,10 @@ struct StatsReadOutput {
 #[derive(Debug, Serialize)]
 struct WorkspaceStatusOutput {
     workspace_id: String,
+    journal_id: crate::topology::JournalId,
+    journal_role: crate::topology::JournalRole,
+    source_journal: Option<crate::topology::JournalId>,
+    replica_mode: Option<crate::topology::ReplicaMode>,
     frontier: u64,
     freshness: crate::claims::workspace::ProjectionFreshness,
     claims_total: usize,
@@ -2298,19 +2319,18 @@ fn assemble_snapshot_view(
         let snapshot = snapshot_for_view(&view)?;
         return Ok((view, snapshot));
     };
-    let (store, workspace) = env::with(|op_env| {
+    let (store, workspace, journal_id) = env::with(|op_env| {
         (
             std::sync::Arc::clone(&op_env.store),
             op_env.workspace_id.clone(),
+            op_env.journal.id.clone(),
         )
     })?;
     let workspace_id = WorkspaceId::new(workspace.clone())?;
-    let descriptor =
-        SnapshotToken::resolve_for_workspace(requested, &workspace_id).map_err(|error| {
-            TexoError::Snapshot {
-                kind: SnapshotFailureKind::InvalidToken,
-                detail: error.to_string(),
-            }
+    let descriptor = SnapshotToken::resolve_for_journal(requested, &workspace_id, &journal_id)
+        .map_err(|error| TexoError::Snapshot {
+            kind: SnapshotFailureKind::InvalidToken,
+            detail: error.to_string(),
         })?;
     let available_source =
         latest_source_snapshot(Some(descriptor.frontier))?.map(|snapshot| snapshot.snapshot_id);
@@ -2333,13 +2353,17 @@ fn assemble_snapshot_view(
 
 fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
     let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
-    let anchor_event_id_hex = env::with(|op_env| {
-        anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)
+    let (anchor_event_id_hex, journal_id) = env::with(|op_env| {
+        Ok::<_, TexoError>((
+            anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)?,
+            op_env.journal.id.clone(),
+        ))
     })??;
     let source_snapshot_id =
         latest_source_snapshot(Some(view.frontier))?.map(|snapshot| snapshot.snapshot_id);
     Ok(SnapshotRead::new(SnapshotDescriptor {
         workspace_id,
+        journal_id,
         frontier: view.frontier,
         anchor_event_id_hex,
         source_snapshot_id,

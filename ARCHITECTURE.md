@@ -57,6 +57,24 @@ and user surfaces.
 The evidence, structural, and belief planes and their replay boundary are
 frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 
+## Journal Topology
+
+A workspace declares a normalized map of stable journal ids and one default
+canonical journal. Single-writer ownership is per physical `BatPak` data
+directory, not a system-wide ceiling. Canonical journals own authority-bearing
+operations; replica journals are derived read models and the host admission
+guard refuses persist/emit/control operations before dispatch. Distinct stores
+therefore open and serve concurrently without weakening deterministic ordering
+inside any one log.
+
+Every frontier is journal-local. Snapshot tokens bind `(workspace_id,
+journal_id, local_sequence, anchor_event_id, source_snapshot_id)` and fail
+checksum validation when reused against a different journal. Projection
+sidecars are likewise keyed by workspace and journal. Imported read replicas
+may have destination-local event ids and sequences; exact forks and imported
+read models are separate typed replica modes and neither is silently promoted
+to canonical authority.
+
 ## Operation Catalog
 
 The catalog, its canonical schemas, and all appendable domain-event bindings

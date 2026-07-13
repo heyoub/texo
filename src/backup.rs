@@ -354,7 +354,13 @@ pub fn restore(
         .get(&manifest.workspace_id)
         .cloned()
         .ok_or_else(|| backup_error("backup config does not contain its workspace"))?;
-    workspace.store_path = crate::config::WorkspaceEntry::for_id(&manifest.workspace_id).store_path;
+    let restore_store_path = crate::config::WorkspaceEntry::for_id(&manifest.workspace_id)
+        .primary()
+        .map_err(|error| backup_error(error.to_string()))?
+        .store_path;
+    workspace
+        .set_primary_store_path(restore_store_path.clone())
+        .map_err(|error| backup_error(error.to_string()))?;
     let mut workspaces = std::collections::BTreeMap::new();
     workspaces.insert(manifest.workspace_id.clone(), workspace.clone());
     let restored_config = crate::config::TexoRootConfig {
@@ -368,7 +374,7 @@ pub fn restore(
     let config_bytes = toml::to_string_pretty(&restored_config)
         .map_err(|error| backup_error(error.to_string()))?;
     write_new_synced(&texo_dir.join(CONFIG_FILE), config_bytes.as_bytes())?;
-    let store_dest = destination.path().join(&workspace.store_path);
+    let store_dest = destination.path().join(&restore_store_path);
     fs::create_dir_all(&store_dest)?;
     copy_verified_store(&backup.join(STORE_DIR), &store_dest, &manifest.store_files)?;
     let store = Store::<ReadOnly>::open_read_only(StoreConfig::new(&store_dest))?;

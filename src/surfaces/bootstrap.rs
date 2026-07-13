@@ -120,7 +120,11 @@ pub fn ensure_workspace(
     workspaces.insert(
         workspace_id.to_string(),
         WorkspaceEntry {
-            store_path: format!(".texo/stores/{workspace_id}"),
+            primary_journal: "canonical".to_string(),
+            journals: BTreeMap::from([(
+                "canonical".to_string(),
+                crate::topology::JournalEntry::canonical(format!(".texo/stores/{workspace_id}")),
+            )]),
             docs_glob: format!("{}/**/*.md", crate::ops::agent::SESSIONS_DIR),
             extractor_cmd: decision.extractor_cmd.clone(),
             semantics: decision.semantics_enabled.then(|| SemanticsConfig {

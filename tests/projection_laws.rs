@@ -264,7 +264,9 @@ fn missing_or_swapped_sidecar_rebuilds_to_source_truth() -> TestResult {
     let _ = assemble(&first_store, WORKSPACE, &mut first_cache)?;
     first_cache.save(first_dir.path(), WORKSPACE)?;
 
-    let sidecar = first_dir.path().join(".texo/cache/workspace-view/demo.bin");
+    let sidecar = first_dir
+        .path()
+        .join(".texo/cache/workspace-view/demo--canonical.bin");
     std::fs::remove_file(&sidecar)?;
     let mut missing = WorkspaceCache::load(first_dir.path(), WORKSPACE);
     let rebuilt = assemble(&first_store, WORKSPACE, &mut missing)?;

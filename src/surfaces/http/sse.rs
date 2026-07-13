@@ -44,6 +44,8 @@ pub fn serve(
         &json!({
             "kind": "hello",
             "frontier": frontier,
+            "journal_id": host.journal_id(),
+            "journal_role": host.journal_role(),
             "fingerprint": interface.fingerprints.interface_fingerprint
         }),
     )?;

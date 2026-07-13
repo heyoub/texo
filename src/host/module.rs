@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 
 use batpak::event::EventPayload;
 use hostbat::{
-    DiagnosticRustType, GoldenVector, HostModule, HostModuleBuilder, SchemaDescriptor, SchemaId,
-    SchemaRole, SchemaVersion,
+    DiagnosticRustType, GoldenVector, GuardDescriptor, HostModule, HostModuleBuilder,
+    SchemaDescriptor, SchemaId, SchemaRole, SchemaVersion,
 };
-use syncbat::OperationDescriptor;
+use syncbat::{AdmissionDecision, OperationDescriptor};
 
 use crate::error::TexoError;
 use crate::events::payloads::{
@@ -17,6 +17,7 @@ use crate::events::payloads::{
     SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
     WorkspaceInitializedV2,
 };
+use crate::topology::JournalRole;
 
 /// Stable module id folded into the `hostbat` composition fingerprint.
 pub const MODULE_ID: &str = "texo.domain";
@@ -28,13 +29,30 @@ pub const MODULE_VERSION: u32 = 1;
 /// # Errors
 /// Returns [`TexoError::Host`] when a descriptor, schema, binding, or module
 /// invariant fails closed.
-pub fn build() -> Result<HostModule, TexoError> {
+pub fn build(role: JournalRole) -> Result<HostModule, TexoError> {
     let catalog = crate::ops::catalog();
     let descriptors = catalog
         .iter()
         .map(|item| item.descriptor().clone())
         .collect::<Vec<_>>();
     let mut builder = HostModule::builder(MODULE_ID, MODULE_VERSION);
+    builder = builder
+        .guard(
+            GuardDescriptor::new("texo.journal-role.v1"),
+            move |descriptor: &OperationDescriptor, _input: &[u8], _cx: &mut syncbat::Ctx<'_>| {
+                let writes = !descriptor.effect_row().appends_events().is_empty()
+                    || matches!(descriptor.effect.as_str(), "persist" | "emit" | "control");
+                if role == JournalRole::Replica && writes {
+                    AdmissionDecision::deny(
+                        "journal.read_only_replica",
+                        "authority-bearing operations must target a canonical journal",
+                    )
+                } else {
+                    AdmissionDecision::Admit
+                }
+            },
+        )
+        .map_err(host_error)?;
     builder = declare_operation_schemas(builder, &descriptors)?;
     builder = declare_event_payloads(builder)?;
     for item in catalog {
@@ -157,7 +175,7 @@ mod tests {
 
     #[test]
     fn module_seals_the_complete_catalog_and_event_surface() {
-        let module = build().expect("module");
+        let module = build(JournalRole::Canonical).expect("module");
         assert!(module.manifest().verify_hash().expect("manifest hash"));
         assert_eq!(
             module.manifest().operations().count(),
@@ -168,7 +186,7 @@ mod tests {
 
     #[test]
     fn every_declared_append_kind_has_one_payload_binding() {
-        let module = build().expect("module");
+        let module = build(JournalRole::Canonical).expect("module");
         let bound = module
             .manifest()
             .event_payload_bindings()

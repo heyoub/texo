@@ -42,7 +42,26 @@ The latter intentionally fails when the immutable 0.9 fixture archive is not
 available; `test-invariants` is substrate smoke coverage, not old-store proof.
 
 Multi-workspace scopes live in `.texo/config.toml` under
-`[workspaces.<id>]`. Use `--workspace <id>` on any CLI command.
+`[workspaces.<id>]`. Each workspace carries a normalized journal map:
+
+```toml
+[workspaces.demo]
+primary_journal = "canonical"
+docs_glob = "docs/**/*.md"
+
+[workspaces.demo.journals.canonical]
+role = "canonical"
+store_path = ".texo/store"
+
+[workspaces.demo.journals.codex]
+role = "replica"
+store_path = ".texo/replicas/codex"
+source_journal = "canonical"
+replica_mode = "imported_read_model"
+```
+
+Use `--workspace <id>` on any CLI command. Canonical journals own writes;
+replicas are independently materialized, journal-affine read surfaces.
 
 ## Commands
 

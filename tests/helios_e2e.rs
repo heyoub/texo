@@ -48,12 +48,16 @@ fn write_config(root: &Path, bin: &Path) -> TestResult {
         r#"default_workspace = "helios"
 
 [workspaces.helios]
-store_path = ".texo/helios-store"
+primary_journal = "canonical"
 docs_glob = "examples/helios/docs/**/*.md"
 extractor_cmd = "{extract}"
 
 [workspaces.helios.semantics]
 enabled = true
+
+[workspaces.helios.journals.canonical]
+role = "canonical"
+store_path = ".texo/helios-store"
 "#
     );
     std::fs::write(config_dir.join("config.toml"), raw)?;

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::ids::WorkspaceId;
 use crate::gateway::GatewayConfig;
+use crate::topology::{self, JournalEntry, ResolvedJournal};
 
 const DEFAULT_WORKSPACE_ID: &str = "demo";
 const DEFAULT_STORE_PATH: &str = ".texo/store";
@@ -88,8 +89,10 @@ pub struct WorkspaceConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceEntry {
-    /// Relative or absolute path to the `BatPak` store directory.
-    pub store_path: String,
+    /// Default authoritative journal selected when no journal is requested.
+    pub primary_journal: String,
+    /// Normalized physical journals keyed by stable workspace-local id.
+    pub journals: BTreeMap<String, JournalEntry>,
     /// Glob for default markdown sources.
     pub docs_glob: String,
     /// Optional external extractor command.
@@ -117,8 +120,14 @@ pub struct TexoRootConfig {
 impl WorkspaceEntry {
     /// Defaults for the demo workspace.
     pub fn demo() -> Self {
+        let mut journals = BTreeMap::new();
+        journals.insert(
+            "canonical".to_string(),
+            JournalEntry::canonical(DEFAULT_STORE_PATH),
+        );
         Self {
-            store_path: DEFAULT_STORE_PATH.to_string(),
+            primary_journal: "canonical".to_string(),
+            journals,
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
@@ -130,12 +139,46 @@ impl WorkspaceEntry {
         if workspace_id == DEFAULT_WORKSPACE_ID {
             return Self::demo();
         }
+        let mut journals = BTreeMap::new();
+        journals.insert(
+            "canonical".to_string(),
+            JournalEntry::canonical(format!(".texo/stores/{workspace_id}")),
+        );
         Self {
-            store_path: format!(".texo/stores/{workspace_id}"),
+            primary_journal: "canonical".to_string(),
+            journals,
             docs_glob: "sample_sources/**/*.md".to_string(),
             extractor_cmd: None,
             semantics: None,
         }
+    }
+
+    /// Resolve the default canonical journal declaration.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Topology`] when the topology is invalid.
+    pub fn primary(&self) -> Result<ResolvedJournal, ConfigError> {
+        topology::resolve_journal(&self.primary_journal, &self.journals, None)
+            .map_err(ConfigError::from)
+    }
+
+    /// Replace only the default canonical journal's physical path.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Topology`] when the primary declaration is absent
+    /// or invalid.
+    pub fn set_primary_store_path(
+        &mut self,
+        store_path: impl Into<String>,
+    ) -> Result<(), ConfigError> {
+        let primary = self.primary()?;
+        let entry = self.journals.get_mut(primary.id.as_str()).ok_or_else(|| {
+            ConfigError::Topology(crate::topology::TopologyError::MissingJournal(
+                primary.id.to_string(),
+            ))
+        })?;
+        entry.store_path = store_path.into();
+        Ok(())
     }
 }
 
@@ -184,19 +227,36 @@ impl TexoRootConfig {
     /// Returns [`ConfigError::UnknownWorkspace`] when the requested (or default)
     /// id has no entry in [`Self::workspaces`].
     pub fn resolve(&self, workspace_id: Option<&str>) -> Result<WorkspaceConfig, ConfigError> {
+        self.resolve_journal(workspace_id, None)
+            .map(|(workspace, _journal)| workspace)
+    }
+
+    /// Resolve a workspace and one selected physical journal.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::UnknownWorkspace`] or [`ConfigError::Topology`]
+    /// when the normalized topology cannot resolve the selection.
+    pub fn resolve_journal(
+        &self,
+        workspace_id: Option<&str>,
+        journal_id: Option<&str>,
+    ) -> Result<(WorkspaceConfig, ResolvedJournal), ConfigError> {
         let id = workspace_id.unwrap_or(self.default_workspace.as_str());
         let entry = self
             .workspaces
             .get(id)
             .ok_or_else(|| ConfigError::UnknownWorkspace(id.to_string()))?;
-        Ok(WorkspaceConfig {
+        let journal =
+            topology::resolve_journal(&entry.primary_journal, &entry.journals, journal_id)?;
+        let workspace = WorkspaceConfig {
             workspace_id: id.to_string(),
-            store_path: entry.store_path.clone(),
+            store_path: journal.store_path.clone(),
             docs_glob: entry.docs_glob.clone(),
             extractor_cmd: entry.extractor_cmd.clone(),
             semantics: entry.semantics.clone(),
             gateway: self.gateway.clone(),
-        })
+        };
+        Ok((workspace, journal))
     }
 
     /// Insert or update a workspace entry and set it as default when first.
@@ -246,7 +306,11 @@ impl WorkspaceConfig {
         root.workspaces.insert(
             self.workspace_id.clone(),
             WorkspaceEntry {
-                store_path: self.store_path.clone(),
+                primary_journal: "canonical".to_string(),
+                journals: BTreeMap::from([(
+                    "canonical".to_string(),
+                    JournalEntry::canonical(self.store_path.clone()),
+                )]),
                 docs_glob: self.docs_glob.clone(),
                 extractor_cmd: self.extractor_cmd.clone(),
                 semantics: self.semantics.clone(),
@@ -322,6 +386,9 @@ pub enum ConfigError {
     /// Unknown workspace id in root config.
     #[error("unknown workspace: {0}")]
     UnknownWorkspace(String),
+    /// Invalid journal topology or selection.
+    #[error("topology: {0}")]
+    Topology(#[from] crate::topology::TopologyError),
 }
 
 #[cfg(test)]
@@ -339,12 +406,20 @@ mod tests {
 default_workspace = "demo"
 
 [workspaces.demo]
-store_path = ".texo/store"
+primary_journal = "canonical"
 docs_glob = "sample_sources/**/*.md"
 
+[workspaces.demo.journals.canonical]
+role = "canonical"
+store_path = ".texo/store"
+
 [workspaces.staging]
-store_path = ".texo/stores/staging"
+primary_journal = "canonical"
 docs_glob = "docs/**/*.md"
+
+[workspaces.staging.journals.canonical]
+role = "canonical"
+store_path = ".texo/stores/staging"
 "#,
         )
         .expect("write");
@@ -364,8 +439,12 @@ docs_glob = "docs/**/*.md"
 default_workspace = "demo"
 
 [workspaces.demo]
-store_path = ".texo/store"
+primary_journal = "canonical"
 docs_glob = "docs/**/*.md"
+
+[workspaces.demo.journals.canonical]
+role = "canonical"
+store_path = ".texo/store"
 
 [gateway.providers.dashscope]
 base_url = "https://dashscope.example/v1"
@@ -519,7 +598,10 @@ response_format = "json_schema"
             WorkspaceEntry::demo()
         );
         let other = WorkspaceEntry::for_id("staging");
-        assert_eq!(other.store_path, ".texo/stores/staging");
+        assert_eq!(
+            other.primary().expect("primary").store_path,
+            ".texo/stores/staging"
+        );
     }
 
     #[test]

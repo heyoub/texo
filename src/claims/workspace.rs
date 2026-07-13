@@ -21,7 +21,7 @@ use crate::events::payloads::{
 };
 
 const PAGE_LIMIT: usize = 256;
-const SIDECAR_VERSION: u32 = 2;
+const SIDECAR_VERSION: u32 = 3;
 
 /// Explicit state of the disposable workspace projection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +79,7 @@ pub struct WorkspaceCache {
 struct PersistedWorkspace {
     version: u32,
     workspace_id: String,
+    journal_id: String,
     frontier: u64,
     anchor_event_id_hex: String,
     cache: BTreeMap<String, (u64, CachedCard)>,
@@ -91,6 +92,7 @@ struct PersistedWorkspace {
 struct PersistedWorkspaceRef<'a> {
     version: u32,
     workspace_id: &'a str,
+    journal_id: &'a str,
     frontier: u64,
     anchor_event_id_hex: &'a str,
     cache: &'a BTreeMap<String, (u64, CachedCard)>,
@@ -106,7 +108,13 @@ impl WorkspaceCache {
     /// to an invalid cache; the next assemble performs a source-truth rebuild.
     #[must_use]
     pub fn load(root: &Path, workspace_id: &str) -> Self {
-        let path = sidecar_path(root, workspace_id);
+        Self::load_journal(root, workspace_id, "canonical")
+    }
+
+    /// Load one journal-affine disposable sidecar.
+    #[must_use]
+    pub fn load_journal(root: &Path, workspace_id: &str, journal_id: &str) -> Self {
+        let path = sidecar_path(root, workspace_id, journal_id);
         let Ok(bytes) = std::fs::read(&path) else {
             return Self::default();
         };
@@ -116,7 +124,10 @@ impl WorkspaceCache {
                 ..Self::default()
             };
         };
-        if persisted.version != SIDECAR_VERSION || persisted.workspace_id != workspace_id {
+        if persisted.version != SIDECAR_VERSION
+            || persisted.workspace_id != workspace_id
+            || persisted.journal_id != journal_id
+        {
             return Self {
                 freshness: ProjectionFreshness::Invalid,
                 ..Self::default()
@@ -151,7 +162,20 @@ impl WorkspaceCache {
     /// Returns I/O or encoding failures; callers may warn and continue because
     /// the journal remains the sole authority.
     pub fn save(&self, root: &Path, workspace_id: &str) -> Result<(), TexoError> {
-        let path = sidecar_path(root, workspace_id);
+        self.save_journal(root, workspace_id, "canonical")
+    }
+
+    /// Persist one journal-affine disposable sidecar.
+    ///
+    /// # Errors
+    /// Returns I/O or encoding failures; the journal remains authoritative.
+    pub fn save_journal(
+        &self,
+        root: &Path,
+        workspace_id: &str,
+        journal_id: &str,
+    ) -> Result<(), TexoError> {
+        let path = sidecar_path(root, workspace_id, journal_id);
         let Some(parent) = path.parent() else {
             return Ok(());
         };
@@ -159,6 +183,7 @@ impl WorkspaceCache {
         let persisted = PersistedWorkspaceRef {
             version: SIDECAR_VERSION,
             workspace_id,
+            journal_id,
             frontier: self.frontier,
             anchor_event_id_hex: &self.anchor_event_id_hex,
             cache: &self.cards,
@@ -180,11 +205,11 @@ impl WorkspaceCache {
     }
 }
 
-fn sidecar_path(root: &Path, workspace_id: &str) -> PathBuf {
+fn sidecar_path(root: &Path, workspace_id: &str, journal_id: &str) -> PathBuf {
     root.join(".texo")
         .join("cache")
         .join("workspace-view")
-        .join(format!("{workspace_id}.bin"))
+        .join(format!("{workspace_id}--{journal_id}.bin"))
 }
 
 /// Cached card by entity kind. Cards are `Arc`-shared with assembled views so

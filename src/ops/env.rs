@@ -12,6 +12,7 @@ use crate::claims::workspace::WorkspaceCache;
 use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
 use crate::host::HostInterface;
+use crate::topology::ResolvedJournal;
 
 /// Per-invocation environment installed around syncbat handler execution.
 pub struct OpEnv {
@@ -31,6 +32,8 @@ pub struct OpEnv {
     pub observed_at_ms: u64,
     /// Actual mounted `hostbat` interface for the fingerprint operation.
     pub host_interface: HostInterface,
+    /// Selected physical journal and its authority role.
+    pub journal: ResolvedJournal,
 }
 
 /// Compact receipt note returned by operation JSON outputs.
@@ -94,6 +97,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::topology::{JournalId, JournalRole};
 
     fn test_env(root: &TempDir, workspace_id: &str) -> Rc<OpEnv> {
         let store =
@@ -107,6 +111,13 @@ mod tests {
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
             host_interface: test_host_interface(),
+            journal: ResolvedJournal {
+                id: JournalId::new("canonical").expect("valid test journal id"),
+                role: JournalRole::Canonical,
+                store_path: "store".to_string(),
+                source_journal: None,
+                replica_mode: None,
+            },
         })
     }
 

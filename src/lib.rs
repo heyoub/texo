@@ -46,3 +46,5 @@ pub mod ops;
 pub mod host;
 /// User-facing surfaces.
 pub mod surfaces;
+/// Explicit multi-journal workspace topology and replica roles.
+pub mod topology;

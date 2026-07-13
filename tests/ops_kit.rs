@@ -125,6 +125,10 @@ fn test_env(dir: &TempDir, store: Arc<Store>) -> Rc<OpEnv> {
             },
             operations: Vec::new(),
         },
+        journal: texo::config::TexoRootConfig::demo()
+            .resolve_journal(Some("demo"), None)
+            .expect("test journal")
+            .1,
     })
 }
 
