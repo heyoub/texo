@@ -58,6 +58,12 @@ base but incomparable with other overlays. Concurrent, shallow, or otherwise
 unknown source pairs are held back and never sent to a relation model as if one
 were newer.
 
+The same rule governs the free lexical replacement heuristic. Words such as
+“now” and “moved” propose a supersession; they do not authorize one across an
+unknown or concurrent Git boundary. Ingest and session-end return typed held
+rows, and a later descendant index resumes an accepted proposal without a paid
+call. Workspaces with no Git evidence keep immediate observation-order behavior.
+
 `texo reconcile` uses a model only to propose claim↔code relations. Content-keyed
 results are record-once acceleration. Deterministic policy accepts sufficiently
 confident support/contradiction evidence, journals exact bounded context plus the

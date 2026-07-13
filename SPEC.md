@@ -35,6 +35,13 @@ All domain events are BatPak payloads in category `0xE`.
 Claim and conflict state changes carry `TransitionRecordV1` evidence with a
 deterministic blake3 transition id and explicit causes.
 
+All supersession mechanisms share the source-order policy. Explicit replacement
+wording is a proposal: no-Git and same-snapshot pairs may use observation order,
+Git descendants authorize only the ancestry direction, and reversed,
+concurrent, or unknown pairs return typed held evidence without appending type
+3. Source indexing retries held explicit proposals after it journals exact claim
+evidence and snapshot relations.
+
 ## Demo Narrative
 
 1. `deploy_schedule.md` says deploys happen on Friday.

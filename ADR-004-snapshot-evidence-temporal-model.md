@@ -54,6 +54,14 @@ parallel branches into a total order. Automatic supersession requires `after`
 and an authority policy that permits the transition. `concurrent` produces a
 conflict or holdback; `unknown` remains unresolved.
 
+Replacement wording such as “now”, “moved”, or “as of” is an explicit semantic
+proposal, not an exemption from this order. The shared supersession policy
+applies proposals immediately only when neither claim has Git evidence, when
+both bind to the same snapshot, or when the proposed successor descends from
+the old claim's snapshot. Reversed, concurrent, and one-sided/unknown evidence
+returns a typed held row and appends no supersession. A later authoritative
+`texo index` resumes the same proposal without a model call.
+
 ### Freeze snapshots before agent reads
 
 An indexed source snapshot resolves a Git ref once, records the resulting object
@@ -153,7 +161,8 @@ disposable paid-result cache entry.
 3. Deleting every derived index changes coverage/performance, never belief.
 4. One snapshot token never names two different source or journal states.
 5. Git-ref movement during indexing cannot change the captured base revision.
-6. Concurrent or unknown revisions are never ordered by timestamp.
+6. Concurrent or unknown revisions are never ordered by timestamp, including
+   ingest/session replacement-word heuristics.
 7. Partial coverage never masquerades as a negative fact or complete result.
 8. Precise, syntactic, and lexical evidence remain distinguishable end to end.
 9. Existing event bytes, claim ids, and old-store replay remain unchanged.

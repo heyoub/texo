@@ -183,7 +183,7 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.ingest.run",
     effect = Persist,
     input_schema = "texo.ingest.run.input.v2",
-    output_schema = "texo.ingest.run.output.v2",
+    output_schema = "texo.ingest.run.output.v3",
     receipt_kind = "receipt.texo.ingest.run.v2",
     appends_events = ["evt.e001", "evt.e002", "evt.e003"],
     queries_projections = ["texo.workspace.view.v2"]
@@ -239,6 +239,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let mut source_count = 0_u32;
         let mut claim_count = 0_u32;
         let mut supersede_count = 0_u32;
+        let mut held_supersessions = Vec::new();
         let mut append_ms = 0_u64;
 
         if input.dry_run {
@@ -282,8 +283,11 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     .iter()
                     .flat_map(|source| source.claims.iter().cloned())
                     .collect::<Vec<_>>();
+                let temporal = workspace_temporal_policy(&view)?;
+                let inference =
+                    infer_supersessions(&view, &new_claims, input.observed_at_ms, &temporal)?;
                 let append_started = Instant::now();
-                for superseded in infer_supersessions(&view, &new_claims, input.observed_at_ms) {
+                for superseded in inference.applied {
                     append_json(
                         "texo.ingest.run",
                         cx,
@@ -292,6 +296,7 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                     )?;
                     supersede_count = supersede_count.saturating_add(1);
                 }
+                held_supersessions = inference.held;
                 append_ms = append_ms.saturating_add(elapsed_ms(append_started));
             }
         }
@@ -310,6 +315,8 @@ fn ingest_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             sources_observed: source_count,
             claims_recorded: claim_count,
             claims_superseded: supersede_count,
+            supersessions_held: held_supersessions.len(),
+            held_supersessions,
             dry_run: input.dry_run,
             empty: plan.empty,
             skipped,
@@ -1084,9 +1091,9 @@ fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     name = "texo.knowledge.index",
     effect = Persist,
     input_schema = "texo.knowledge.index.input.v1",
-    output_schema = "texo.knowledge.index.output.v1",
+    output_schema = "texo.knowledge.index.output.v2",
     receipt_kind = "receipt.texo.knowledge.index.v1",
-    appends_events = ["evt.e00b", "evt.e00c", "evt.e00d", "evt.e00f"],
+    appends_events = ["evt.e003", "evt.e00b", "evt.e00c", "evt.e00d", "evt.e00f"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
@@ -1113,23 +1120,8 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             |snapshot| snapshot.repository_id,
         );
         let mut capture = capture_git(&root, repository_id, limits)?;
-        if latest_source_snapshot(Some(view.frontier))?
-            .is_some_and(|existing| existing.snapshot_id == capture.snapshot_id)
-        {
-            return Ok(KnowledgeIndexOutput {
-                workspace_id,
-                snapshot_id: capture.snapshot_id,
-                base_commit: capture.base_commit,
-                dirty: capture.dirty,
-                sources_captured: capture.sources.len(),
-                evidence_recorded: 0,
-                claims_linked: 0,
-                relations_recorded: 0,
-                already_indexed: true,
-                coverage: capture.coverage,
-                receipts: Vec::new(),
-            });
-        }
+        let already_indexed = latest_source_snapshot(Some(view.frontier))?
+            .is_some_and(|existing| existing.snapshot_id == capture.snapshot_id);
 
         let planned = plan_claim_evidence(
             &view,
@@ -1167,13 +1159,25 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             coverage: capture.coverage.clone(),
             observed_at_ms: input.observed_at_ms,
         };
-        let receipts = append_knowledge_plan(
+        let indexed_claim_ids = planned
+            .rows
+            .iter()
+            .map(|(_, link)| link.claim_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut receipts = append_knowledge_plan(
             cx,
             &workspace,
             &snapshot,
             &planned.rows,
             &relations,
             input.observed_at_ms,
+        )?;
+        let supersessions = settle_indexed_explicit_supersessions(
+            cx,
+            &view,
+            &indexed_claim_ids,
+            input.observed_at_ms,
+            &mut receipts,
         )?;
         Ok(KnowledgeIndexOutput {
             workspace_id,
@@ -1184,7 +1188,10 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             evidence_recorded: planned.rows.len(),
             claims_linked: planned.rows.len(),
             relations_recorded: relations.len(),
-            already_indexed: false,
+            supersessions_applied: supersessions.applied.len(),
+            supersessions_held: supersessions.held.len(),
+            held_supersessions: supersessions.held,
+            already_indexed,
             coverage: capture.coverage,
             receipts,
         })
@@ -1622,6 +1629,9 @@ struct KnowledgeIndexOutput {
     evidence_recorded: usize,
     claims_linked: usize,
     relations_recorded: usize,
+    supersessions_applied: usize,
+    supersessions_held: usize,
+    held_supersessions: Vec<HeldExplicitSupersession>,
     already_indexed: bool,
     coverage: KnowledgeCoverage,
     receipts: Vec<ReceiptNote>,
@@ -1776,6 +1786,8 @@ struct IngestRunOutput {
     sources_observed: u32,
     claims_recorded: u32,
     claims_superseded: u32,
+    supersessions_held: usize,
+    held_supersessions: Vec<HeldExplicitSupersession>,
     dry_run: bool,
     empty: bool,
     skipped: Vec<SourceSkipRow>,
@@ -2574,14 +2586,21 @@ fn temporal_projection_through(frontier: u64) -> Result<TemporalProjection, Texo
     env::with(|op_env| assemble_temporal_through(&op_env.store, &op_env.workspace_id, frontier))?
 }
 
-fn semantic_temporal_policy(
+pub(crate) fn workspace_temporal_policy(
     view: &WorkspaceView,
-    claims: &[(ClaimId, SemanticClaimView)],
 ) -> Result<RelateTemporalPolicy, TexoError> {
-    let evidence = evidence_projection_through(view.frontier)?;
-    let relations = temporal_projection_through(view.frontier)?;
+    workspace_temporal_policy_through(view, view.frontier)
+}
+
+fn workspace_temporal_policy_through(
+    view: &WorkspaceView,
+    frontier: u64,
+) -> Result<RelateTemporalPolicy, TexoError> {
+    let evidence = evidence_projection_through(frontier)?;
+    let relations = temporal_projection_through(frontier)?;
     let mut policy = RelateTemporalPolicy::default();
-    for (claim_id, _) in claims {
+    for claim in &view.claims {
+        let claim_id = ClaimId::try_from(claim.card.claim_id.as_str())?;
         if let Some(latest) = evidence
             .for_claim(claim_id.as_str())
             .iter()
@@ -2591,13 +2610,17 @@ fn semantic_temporal_policy(
             })
             .max_by_key(|item| item.link_sequence)
         {
-            policy.bind_claim(claim_id, &latest.occurrence.snapshot_id);
+            policy.bind_claim(&claim_id, &latest.occurrence.snapshot_id);
         }
     }
     for (left, right, relation) in relations.facts() {
         policy.insert_relation_ids(left, right, relation);
     }
     Ok(policy)
+}
+
+fn semantic_temporal_policy(view: &WorkspaceView) -> Result<RelateTemporalPolicy, TexoError> {
+    workspace_temporal_policy(view)
 }
 
 fn triangulate_from_view(
@@ -3481,7 +3504,7 @@ pub(crate) fn run_relate_pass(
         )
     })?;
     let authority = authoritative_settlements(None)?;
-    let temporal = semantic_temporal_policy(&view, &claims)?;
+    let temporal = semantic_temporal_policy(&view)?;
     let budget_secs = std::env::var("TEXO_RELATE_BUDGET_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -4018,11 +4041,129 @@ fn saturating_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Closed reason an explicit replacement proposal could not become authority.
+pub enum ExplicitSupersessionHoldReason {
+    /// The proposed successor is on an older source revision.
+    TemporalReversed,
+    /// Both source revisions are valid but incomparable.
+    TemporalConcurrent,
+    /// Available source evidence cannot establish an order.
+    TemporalUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One explicit replacement proposal held by temporal policy.
+pub struct HeldExplicitSupersession {
+    /// Claim that would have been retired.
+    pub old_claim_id: ClaimId,
+    /// Proposed successor claim.
+    pub new_claim_id: ClaimId,
+    /// Typed reason no authority-bearing event was appended.
+    pub reason: ExplicitSupersessionHoldReason,
+}
+
+/// Applied and held outcomes from the shared explicit-replacement policy.
+pub(crate) struct ExplicitSupersessionOutcome {
+    /// Authority-bearing supersession events safe to append.
+    pub applied: Vec<ClaimSupersededV2>,
+    /// Proposals withheld pending authoritative source order.
+    pub held: Vec<HeldExplicitSupersession>,
+}
+
+#[derive(Clone)]
+struct ExplicitReplacementCandidate {
+    claim_id: ClaimId,
+    workspace_id: String,
+    source_id: String,
+    normalized_text: String,
+    subject_hint: Option<String>,
+}
+
 pub(crate) fn infer_supersessions(
     view: &WorkspaceView,
     new_claims: &[ClaimRecordedV2],
     observed_at_ms: u64,
-) -> Vec<ClaimSupersededV2> {
+    temporal: &RelateTemporalPolicy,
+) -> Result<ExplicitSupersessionOutcome, TexoError> {
+    let candidates = new_claims
+        .iter()
+        .map(|claim| {
+            Ok(ExplicitReplacementCandidate {
+                claim_id: ClaimId::try_from(claim.claim_id.as_str())?,
+                workspace_id: claim.workspace_id.clone(),
+                source_id: claim.source_id.clone(),
+                normalized_text: claim.normalized_text.clone(),
+                subject_hint: claim.subject_hint.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, TexoError>>()?;
+    Ok(infer_explicit_supersessions(
+        view,
+        &candidates,
+        observed_at_ms,
+        temporal,
+    ))
+}
+
+fn infer_indexed_supersessions(
+    view: &WorkspaceView,
+    new_claim_ids: &BTreeSet<ClaimId>,
+    observed_at_ms: u64,
+    temporal: &RelateTemporalPolicy,
+) -> ExplicitSupersessionOutcome {
+    let candidates = view
+        .claims
+        .iter()
+        .filter_map(|claim| {
+            let claim_id = ClaimId::try_from(claim.card.claim_id.as_str()).ok()?;
+            new_claim_ids
+                .contains(&claim_id)
+                .then(|| ExplicitReplacementCandidate {
+                    claim_id,
+                    workspace_id: claim.card.workspace_id.clone(),
+                    source_id: claim.card.source_id.clone(),
+                    normalized_text: claim.card.normalized_text.clone(),
+                    subject_hint: claim.card.subject_hint.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    infer_explicit_supersessions(view, &candidates, observed_at_ms, temporal)
+}
+
+fn settle_indexed_explicit_supersessions(
+    cx: &mut syncbat::Ctx<'_>,
+    view: &WorkspaceView,
+    new_claim_ids: &BTreeSet<ClaimId>,
+    observed_at_ms: u64,
+    receipts: &mut Vec<ReceiptNote>,
+) -> Result<ExplicitSupersessionOutcome, TexoError> {
+    let evidence_frontier = receipts
+        .iter()
+        .map(|receipt| receipt.global_sequence)
+        .max()
+        .unwrap_or(view.frontier);
+    let temporal = workspace_temporal_policy_through(view, evidence_frontier)?;
+    let outcome = infer_indexed_supersessions(view, new_claim_ids, observed_at_ms, &temporal);
+    for supersession in &outcome.applied {
+        append_json(
+            "texo.knowledge.index",
+            cx,
+            <ClaimSupersededV2 as EventPayload>::KIND,
+            supersession,
+        )?;
+    }
+    receipts.extend(take_receipts()?);
+    Ok(outcome)
+}
+
+fn infer_explicit_supersessions(
+    view: &WorkspaceView,
+    new_claims: &[ExplicitReplacementCandidate],
+    observed_at_ms: u64,
+    temporal: &RelateTemporalPolicy,
+) -> ExplicitSupersessionOutcome {
     let mut by_subject: BTreeMap<Option<String>, Vec<&ClaimView>> = BTreeMap::new();
     for claim in &view.claims {
         by_subject
@@ -4030,7 +4171,8 @@ pub(crate) fn infer_supersessions(
             .or_default()
             .push(claim);
     }
-    let mut out = Vec::new();
+    let mut applied = Vec::new();
+    let mut held = Vec::new();
     let mut seen_old = BTreeSet::new();
     for new_claim in new_claims {
         if !replacement_signal(&new_claim.normalized_text) {
@@ -4040,19 +4182,44 @@ pub(crate) fn infer_supersessions(
             continue;
         };
         for old in candidates {
-            if old.card.claim_id == new_claim.claim_id
+            if old.card.claim_id == new_claim.claim_id.as_str()
                 || old.card.phase != 1
                 || old.card.normalized_text == new_claim.normalized_text
-                || !seen_old.insert(old.card.claim_id.clone())
             {
                 continue;
             }
+            let Ok(old_claim_id) = ClaimId::try_from(old.card.claim_id.as_str()) else {
+                continue;
+            };
+            let hold_reason = match temporal.compare_claims(&old_claim_id, &new_claim.claim_id) {
+                None | Some(TemporalRelation::Same | TemporalRelation::Before) => None,
+                Some(TemporalRelation::After) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalReversed)
+                }
+                Some(TemporalRelation::Concurrent) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalConcurrent)
+                }
+                Some(TemporalRelation::Unknown) => {
+                    Some(ExplicitSupersessionHoldReason::TemporalUnknown)
+                }
+            };
+            if !seen_old.insert(old.card.claim_id.clone()) {
+                continue;
+            }
+            if let Some(reason) = hold_reason {
+                held.push(HeldExplicitSupersession {
+                    old_claim_id,
+                    new_claim_id: new_claim.claim_id.clone(),
+                    reason,
+                });
+                continue;
+            }
             let old_entity = entity_for_claim(&old.card.claim_id);
-            out.push(ClaimSupersededV2 {
+            applied.push(ClaimSupersededV2 {
                 old_claim_id: old.card.claim_id.clone(),
-                new_claim_id: new_claim.claim_id.clone(),
+                new_claim_id: new_claim.claim_id.to_string(),
                 workspace_id: new_claim.workspace_id.clone(),
-                reason: "superseded by newer ingest claim".to_string(),
+                reason: "explicit replacement wording accepted by temporal policy".to_string(),
                 decided_by: "texo.ingest.run".to_string(),
                 observed_at_ms,
                 transition: transition_record(
@@ -4069,12 +4236,17 @@ pub(crate) fn infer_supersessions(
             });
         }
     }
-    out.sort_by(|left, right| {
+    applied.sort_by(|left, right| {
         left.old_claim_id
             .cmp(&right.old_claim_id)
             .then_with(|| left.new_claim_id.cmp(&right.new_claim_id))
     });
-    out
+    held.sort_by(|left, right| {
+        left.old_claim_id
+            .cmp(&right.old_claim_id)
+            .then_with(|| left.new_claim_id.cmp(&right.new_claim_id))
+    });
+    ExplicitSupersessionOutcome { applied, held }
 }
 
 fn replacement_signal(normalized_text: &str) -> bool {

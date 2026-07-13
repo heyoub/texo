@@ -317,7 +317,11 @@ impl RelateTemporalPolicy {
             .or_insert(relation);
     }
 
-    fn compare_claims(&self, left: &ClaimId, right: &ClaimId) -> Option<TemporalRelation> {
+    pub(crate) fn compare_claims(
+        &self,
+        left: &ClaimId,
+        right: &ClaimId,
+    ) -> Option<TemporalRelation> {
         let left = self.claim_snapshots.get(left.as_str());
         let right = self.claim_snapshots.get(right.as_str());
         match (left, right) {

@@ -10,7 +10,7 @@ use serde_json::json;
 use tempfile::TempDir;
 use texo::events::coordinate::scope_for_workspace;
 use texo::events::payloads::{
-    ClaimEvidenceLinkedV1, CodeIndexRecordedV1, EvidenceOccurrenceRecordedV1,
+    ClaimEvidenceLinkedV1, ClaimSupersededV2, CodeIndexRecordedV1, EvidenceOccurrenceRecordedV1,
     SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
 };
 use texo::host::TexoHost;
@@ -96,6 +96,15 @@ fn count_workspace_events(host: &TexoHost) -> usize {
     }
 }
 
+fn count_event_kind(host: &TexoHost, kind: EventKind) -> usize {
+    let region = Region::scope(scope_for_workspace(host.workspace_id()));
+    host.store()
+        .query_entries_after(&region, None, usize::MAX)
+        .into_iter()
+        .filter(|entry| entry.event_kind() == kind)
+        .count()
+}
+
 #[test]
 fn index_journals_snapshot_evidence_links_and_causal_headers_once() -> TestResult {
     let (_root, mut host) = initialized_repository()?;
@@ -158,6 +167,112 @@ fn changed_worktree_never_links_old_claim_as_supporting_evidence() -> TestResult
         .is_some_and(|gaps| gaps.iter().any(|gap| {
             gap["path"] == "docs/decision.md" && gap["kind"] == "analysis_incomplete"
         })));
+    Ok(())
+}
+
+#[test]
+fn explicit_replacement_waits_for_git_authority_then_resumes_without_model() -> TestResult {
+    let root = TempDir::new()?;
+    git(root.path(), &["init", "-q"])?;
+    git(root.path(), &["config", "user.name", "Texo Test"])?;
+    git(
+        root.path(),
+        &["config", "user.email", "texo@example.invalid"],
+    )?;
+    std::fs::write(root.path().join("README.md"), "base\n")?;
+    git(root.path(), &["add", "README.md"])?;
+    git(root.path(), &["commit", "-qm", "base"])?;
+    let base = git_stdout(root.path(), &["branch", "--show-current"])?;
+
+    git(root.path(), &["checkout", "-qb", "left"])?;
+    std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::write(
+        root.path().join("docs/decision.md"),
+        "Decision: the deploy target is Frankfurt.\n",
+    )?;
+    git(root.path(), &["add", "docs/decision.md"])?;
+    git(root.path(), &["commit", "-qm", "Frankfurt target"])?;
+    let mut host = TexoHost::open(root.path(), "demo", 1_700_000_100_000)?;
+    host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
+    host.invoke_json(
+        "texo.ingest.run",
+        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_001_u64}),
+    )?;
+    host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_002_u64}),
+    )?;
+
+    git(root.path(), &["checkout", "-q", &base])?;
+    git(root.path(), &["checkout", "-qb", "right"])?;
+    std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::write(
+        root.path().join("docs/decision.md"),
+        "Decision: the deploy target now is Singapore.\n",
+    )?;
+    git(root.path(), &["add", "docs/decision.md"])?;
+    git(root.path(), &["commit", "-qm", "Singapore target"])?;
+    let before = count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND);
+    let ingest = host.invoke_json(
+        "texo.ingest.run",
+        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_003_u64}),
+    )?;
+    assert_eq!(ingest["claims_superseded"], 0);
+    assert_eq!(ingest["supersessions_held"], 1);
+    assert_eq!(
+        ingest["held_supersessions"][0]["reason"],
+        "temporal_unknown"
+    );
+    assert_eq!(
+        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
+        before
+    );
+
+    let concurrent = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_004_u64}),
+    )?;
+    assert_eq!(concurrent["supersessions_applied"], 0);
+    assert_eq!(concurrent["supersessions_held"], 1);
+    assert_eq!(
+        concurrent["held_supersessions"][0]["reason"],
+        "temporal_concurrent"
+    );
+    assert_eq!(
+        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
+        before
+    );
+
+    git(root.path(), &["checkout", "-q", "left"])?;
+    std::fs::write(
+        root.path().join("docs/decision.md"),
+        "Decision: the deploy target now is Singapore.\n",
+    )?;
+    git(root.path(), &["add", "docs/decision.md"])?;
+    git(
+        root.path(),
+        &["commit", "-qm", "move target after Frankfurt"],
+    )?;
+    let descendant = host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_005_u64}),
+    )?;
+    assert_eq!(descendant["supersessions_applied"], 1);
+    assert_eq!(descendant["supersessions_held"], 0);
+    assert_eq!(
+        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
+        before + 1
+    );
+    let claims = host.invoke_json("texo.claims.list", &json!({"subject":null,"snapshot":null}))?;
+    assert_eq!(
+        claims["claims"]
+            .as_array()
+            .ok_or("claims")?
+            .iter()
+            .filter(|claim| claim["status"] == "superseded")
+            .count(),
+        1
+    );
     Ok(())
 }
 
@@ -263,7 +378,7 @@ fn assert_code_search(host: &mut TexoHost) -> TestResult {
             "snapshot": null
         }),
     )?;
-    assert_eq!(search["code_index_available"], true);
+    assert_eq!(search["code_index_available"], true, "{search}");
     assert!(search["results"].as_array().is_some_and(|rows| {
         rows.iter()
             .any(|row| row["kind"] == "code" && row["occurrence"]["display_name"] == "deploy")
