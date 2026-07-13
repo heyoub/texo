@@ -4036,34 +4036,23 @@ fn extract_heuristic_claims(
 /// Execute the workspace-configured extractor command.
 ///
 /// This is an explicit local-code-execution trust boundary: anyone who can
-/// write workspace configuration can execute as the Texo process via `sh -c`.
-/// A future bvisor adapter belongs at this function boundary; this campaign
-/// does not claim confinement for configured extractors.
+/// write workspace configuration selects code executed by the extractor. Texo
+/// stages only the selected input and runs the command through the fail-closed
+/// bvisor adapter; there is no unconfined fallback.
 fn extract_cmd_claims(
     op: &str,
-    root: &Path,
+    _root: &Path,
     cmd: &str,
     path: &Path,
     doc: &MarkdownDocument,
     workspace_id: &str,
     observed_at_ms: u64,
 ) -> Result<Vec<ClaimRecordedV2>, TexoError> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{cmd} \"$1\""))
-        .arg("texo-extract")
-        .arg(path)
-        .current_dir(root)
-        .output()
-        .map_err(|error| TexoError::Extract {
-            detail: format!("{op}: failed to run extractor: {error}"),
+    let output =
+        crate::compat::bvisor::run_extractor(cmd, path).map_err(|error| TexoError::Extract {
+            detail: format!("{op}: confined extractor failed: {error}"),
         })?;
-    if !output.status.success() {
-        return Err(TexoError::Extract {
-            detail: format!("{op}: extractor exited with {}", output.status),
-        });
-    }
-    let stdout = String::from_utf8(output.stdout).map_err(|error| TexoError::Extract {
+    let stdout = String::from_utf8(output).map_err(|error| TexoError::Extract {
         detail: format!("{op}: extractor stdout was not utf-8: {error}"),
     })?;
     let source_id = SourceId::try_from(doc.source_id.as_str())?;

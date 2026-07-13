@@ -14,13 +14,20 @@ path = "src/lib.rs"
 name = "texo"
 path = "src/bin/texo.rs"
 
+[[bin]]
+name = "texo-bvisor-extractor"
+path = "src/bin/texo-bvisor-extractor.rs"
+required-features = ["bvisor-helper"]
+
 [features]
 default = ["openrouter", "code-rust"]
 openrouter = ["dep:rustls", "dep:webpki-roots"]
 code-rust = ["dep:tree-sitter", "dep:tree-sitter-rust"]
+bvisor-helper = ["dep:bvisor"]
 
 [dependencies]
 batpak = "0.10.0"
+bvisor = { version = "0.10.0", features = ["backend-linux"], optional = true }
 syncbat = "0.10.0"
 hostbat = "0.10.0"
 netbat = "0.10.0"
