@@ -173,10 +173,10 @@ enum Command {
         /// Physical journal id.
         #[arg(long)]
         journal: Option<String>,
-        /// Optional canonical replica-source listener address.
+        /// Optional private-network canonical replica-source listener address.
         #[arg(long)]
         replica_addr: Option<String>,
-        /// Environment variable containing the replica bearer token.
+        /// Environment variable containing the replica MAC secret.
         #[arg(long, default_value = "TEXO_REPLICA_TOKEN")]
         replica_token_env: String,
     },
@@ -682,6 +682,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             )
         }
         Command::Mcp => {
+            refresh_selected_reader(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             crate::surfaces::mcp_stdio::run(
                 &cli.root,
                 cli.workspace.as_deref(),
@@ -1019,7 +1020,14 @@ fn serve(
             detail: error.to_string(),
             source: Some(Box::new(error)),
         })?;
-    let listener = TcpListener::bind(&addr).map_err(|error| TexoError::Surface {
+    let _refresh =
+        crate::replication::refresh_reader(&root, Some(&workspace), selected_journal.id.as_str())?;
+    let socket =
+        crate::compat::netbat::private_socket_addr(&addr).map_err(|error| TexoError::Config {
+            detail: format!("replica listener {addr}: {error}"),
+            source: None,
+        })?;
+    let listener = TcpListener::bind(socket).map_err(|error| TexoError::Surface {
         which: crate::error::SurfaceKind::Http,
         detail: error.to_string(),
     })?;
@@ -1076,6 +1084,35 @@ fn serve(
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_selected_reader(
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Result<(), TexoError> {
+    let config_path = root.join(".texo/config.toml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let config =
+        crate::config::TexoRootConfig::load(&config_path).map_err(|error| TexoError::Config {
+            detail: error.to_string(),
+            source: Some(Box::new(error)),
+        })?;
+    let (workspace_config, selected) =
+        config
+            .resolve_journal(workspace, journal)
+            .map_err(|error| TexoError::Config {
+                detail: error.to_string(),
+                source: Some(Box::new(error)),
+            })?;
+    let _refresh = crate::replication::refresh_reader(
+        root,
+        Some(&workspace_config.workspace_id),
+        selected.id.as_str(),
+    )?;
+    Ok(())
 }
 
 fn start_replica_server(

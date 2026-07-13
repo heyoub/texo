@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build texo and deploy the single binary to the ECS host as a systemd service.
+# Build Texo and its isolated Linux confinement companions for the ECS host.
 # Usage: ./deploy.sh <host-ip> [ssh-user]
 set -euo pipefail
 
@@ -10,6 +10,11 @@ PORT="${PORT:-8787}"
 
 echo "==> release build"
 cargo build --release --bin texo --manifest-path "$REPO_ROOT/Cargo.toml"
+cargo build --release --features bvisor-helper --bin texo-bvisor-extractor \
+  --manifest-path "$REPO_ROOT/Cargo.toml"
+BVISOR_ROOT="$REPO_ROOT/target/bvisor-dist"
+cargo install bvisor --version 0.10.0 --locked --features backend-linux \
+  --bin bvisor-linux-launcher --root "$BVISOR_ROOT"
 
 echo "==> ship binary + unit + env template"
 ssh "${SSH_USER}@${HOST}" '
@@ -26,6 +31,10 @@ ssh "${SSH_USER}@${HOST}" '
   fi
 '
 scp "$REPO_ROOT/target/release/texo" "${SSH_USER}@${HOST}:/opt/texo/bin/texo"
+scp "$REPO_ROOT/target/release/texo-bvisor-extractor" \
+  "${SSH_USER}@${HOST}:/opt/texo/bin/texo-bvisor-extractor"
+scp "$BVISOR_ROOT/bin/bvisor-linux-launcher" \
+  "${SSH_USER}@${HOST}:/opt/texo/bin/bvisor-linux-launcher"
 echo "==> ship built UI (LiteShip dist — served by texo, no node on the box)"
 ssh "${SSH_USER}@${HOST}" 'rm -rf /opt/texo/ui/dist && mkdir -p /opt/texo/ui'
 scp -r "$REPO_ROOT/ui/dist" "${SSH_USER}@${HOST}:/opt/texo/ui/dist"

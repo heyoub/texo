@@ -98,7 +98,9 @@ rejected proposals and missing candidates never become negative facts.
 - Database server, consensus system, Slack crawler, or Google Docs clone.
 - General-purpose vector database or semantic-search engine.
 - General-purpose LLM extraction framework.
-- Distributed replication.
+- Consensus, automatic multi-writer conflict resolution, or transparent
+  promotion of a derived replica to authority. Texo does provide explicit
+  canonical-to-read-model replication with typed lag and identity evidence.
 - Async runtime stack; the rebuilt binary is sync-first by design.
 
 ## Test Anchors

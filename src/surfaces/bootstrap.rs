@@ -116,6 +116,28 @@ pub fn ensure_workspace(
     if config_path.exists() {
         return Ok(());
     }
+    let config = prospective_config(workspace_id, decision);
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let raw = toml::to_string_pretty(&config).map_err(|error| TexoError::Config {
+        detail: error.to_string(),
+        source: Some(Box::new(error)),
+    })?;
+    std::fs::write(&config_path, raw)?;
+    std::fs::create_dir_all(root.join(".texo").join("stores").join(workspace_id))?;
+    Ok(())
+}
+
+/// Build the exact root configuration that first-run bootstrap would persist.
+///
+/// Install planning uses this pure constructor so adapter conflicts can be
+/// rejected before any workspace file is created.
+#[must_use]
+pub(crate) fn prospective_config(
+    workspace_id: &str,
+    decision: &BootstrapDecision,
+) -> TexoRootConfig {
     let mut workspaces = BTreeMap::new();
     workspaces.insert(
         workspace_id.to_string(),
@@ -133,21 +155,11 @@ pub fn ensure_workspace(
             }),
         },
     );
-    let config = TexoRootConfig {
+    TexoRootConfig {
         default_workspace: workspace_id.to_string(),
         workspaces,
         gateway: None,
-    };
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
     }
-    let raw = toml::to_string_pretty(&config).map_err(|error| TexoError::Config {
-        detail: error.to_string(),
-        source: Some(Box::new(error)),
-    })?;
-    std::fs::write(&config_path, raw)?;
-    std::fs::create_dir_all(root.join(".texo").join("stores").join(workspace_id))?;
-    Ok(())
 }
 
 #[cfg(test)]
