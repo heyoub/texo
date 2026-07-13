@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use batpak::coordinate::Coordinate;
 use batpak::event::EventPayload;
@@ -21,6 +22,8 @@ use crate::replica_net::{self, PageRequest, PageResponse};
 use crate::topology::{JournalRole, ReplicaMode, ResolvedJournal};
 
 const STATE_SCHEMA_VERSION: u32 = 2;
+const READER_REFRESH_ATTEMPTS: u32 = 50;
+const READER_REFRESH_BACKOFF: Duration = Duration::from_millis(40);
 
 /// Durable operational cursor for one imported read model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +173,67 @@ pub fn follow_once(
     } else {
         import_from_cursor(root, &circuit, Some(&cursor))
     }
+}
+
+/// Bring an imported reader journal to the latest source frontier before use.
+///
+/// Canonical journals and exact point-in-time forks are intentionally left
+/// untouched. Imported replicas bootstrap when no cursor exists and otherwise
+/// resume from their durable cursor. A short, bounded lease retry lets several
+/// local agent clients start concurrently without weakening `BatPak`'s
+/// single-owner contract for any physical store.
+///
+/// # Errors
+/// Returns a typed replication failure when topology, evidence, transport, or
+/// store ownership cannot be resolved within the bounded retry window.
+pub fn refresh_reader(
+    root: &Path,
+    workspace_id: Option<&str>,
+    journal_id: &str,
+) -> Result<Option<ReplicaReport>, TexoError> {
+    let config = TexoRootConfig::load(&root.join(".texo/config.toml")).map_err(|error| {
+        replication_error(
+            ReplicationFailureKind::InvalidTopology,
+            Committed::No,
+            error.to_string(),
+        )
+    })?;
+    let (workspace, journal) = config
+        .resolve_journal(workspace_id, Some(journal_id))
+        .map_err(|error| {
+            replication_error(
+                ReplicationFailureKind::InvalidTopology,
+                Committed::No,
+                error.to_string(),
+            )
+        })?;
+    if journal.role != JournalRole::Replica
+        || journal.replica_mode != Some(ReplicaMode::ImportedReadModel)
+    {
+        return Ok(None);
+    }
+    for attempt in 1..=READER_REFRESH_ATTEMPTS {
+        let result = if cursor_path(root, &workspace.workspace_id, journal_id).exists() {
+            follow_once(root, Some(&workspace.workspace_id), journal_id)
+        } else {
+            bootstrap(root, Some(&workspace.workspace_id), journal_id)
+        };
+        match result {
+            Ok(report) => return Ok(Some(report)),
+            Err(TexoError::Replication {
+                kind: ReplicationFailureKind::Busy,
+                ..
+            }) if attempt < READER_REFRESH_ATTEMPTS => {
+                std::thread::sleep(READER_REFRESH_BACKOFF);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(replication_error(
+        ReplicationFailureKind::Busy,
+        Committed::No,
+        "replica reader refresh exhausted its bounded lease retries",
+    ))
 }
 
 fn bootstrap_exact(root: &Path, circuit: &Circuit) -> Result<ReplicaReport, TexoError> {
@@ -439,14 +503,21 @@ fn request_remote_page(
     token: &str,
     progress: &RemoteProgress,
 ) -> Result<PageResponse, TexoError> {
-    let request = PageRequest {
-        token: token.to_string(),
-        workspace_id: circuit.workspace.workspace_id.clone(),
-        source_journal: circuit.source.id.to_string(),
-        after: progress.after,
-        after_anchor_event_id_hex: progress.after_anchor.clone(),
-        source_ceiling: progress.source_ceiling,
-    };
+    let request = PageRequest::authenticated(
+        token,
+        circuit.workspace.workspace_id.clone(),
+        circuit.source.id.to_string(),
+        progress.after,
+        progress.after_anchor.clone(),
+        progress.source_ceiling,
+    )
+    .map_err(|error| {
+        replication_error(
+            ReplicationFailureKind::Evidence,
+            committed_after(progress.imported),
+            format!("authenticate remote replica page request: {error}"),
+        )
+    })?;
     let input = batpak::canonical::to_bytes(&request).map_err(|error| {
         replication_error(
             ReplicationFailureKind::Evidence,
@@ -894,7 +965,7 @@ fn ensure_fresh_destination(path: &Path) -> Result<(), TexoError> {
 fn open_store(path: &Path, committed: Committed) -> Result<Store<Open>, TexoError> {
     Store::open(StoreConfig::new(path)).map_err(|error| {
         replication_error(
-            ReplicationFailureKind::Substrate,
+            store_error_kind(&error),
             committed,
             format!("store {}: {error}", path.display()),
         )
@@ -904,11 +975,19 @@ fn open_store(path: &Path, committed: Committed) -> Result<Store<Open>, TexoErro
 fn open_read_only_store(path: &Path, committed: Committed) -> Result<Store<ReadOnly>, TexoError> {
     Store::<ReadOnly>::open_read_only(StoreConfig::new(path)).map_err(|error| {
         replication_error(
-            ReplicationFailureKind::Substrate,
+            store_error_kind(&error),
             committed,
             format!("read-only store {}: {error}", path.display()),
         )
     })
+}
+
+fn store_error_kind(error: &batpak::store::StoreError) -> ReplicationFailureKind {
+    if matches!(error, batpak::store::StoreError::StoreLocked { .. }) {
+        ReplicationFailureKind::Busy
+    } else {
+        ReplicationFailureKind::Substrate
+    }
 }
 
 fn validate_cursor_binding(cursor: &ReplicaCursor, circuit: &Circuit) -> Result<(), TexoError> {

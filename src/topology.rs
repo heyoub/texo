@@ -236,7 +236,8 @@ fn validate_all(journals: &BTreeMap<String, JournalEntry>) -> Result<(), Topolog
                 }
                 match (&entry.source_endpoint, &entry.source_token_env) {
                     (Some(endpoint), Some(token_env))
-                        if !endpoint.trim().is_empty() && valid_env_name(token_env) => {}
+                        if crate::compat::netbat::private_socket_addr(endpoint).is_ok()
+                            && valid_env_name(token_env) => {}
                     (None, None) => {}
                     _ => return Err(TopologyError::InvalidRemoteSource(id.to_string())),
                 }
@@ -396,6 +397,29 @@ mod tests {
         assert!(matches!(
             resolve_journal("canonical", &journals, None),
             Err(TopologyError::DuplicateStorePath { .. })
+        ));
+    }
+
+    #[test]
+    fn remote_topology_refuses_public_plaintext_endpoint() {
+        let journals = BTreeMap::from([
+            (
+                "canonical".to_string(),
+                JournalEntry::canonical(".texo/store"),
+            ),
+            (
+                "remote".to_string(),
+                JournalEntry::remote_replica(
+                    ".texo/replicas/remote",
+                    "canonical",
+                    "8.8.8.8:9000",
+                    "TEXO_REPLICA_TOKEN",
+                ),
+            ),
+        ]);
+        assert!(matches!(
+            resolve_journal("canonical", &journals, Some("remote")),
+            Err(TopologyError::InvalidRemoteSource(id)) if id == "remote"
         ));
     }
 }

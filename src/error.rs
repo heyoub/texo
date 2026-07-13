@@ -99,6 +99,8 @@ pub enum ReplicationFailureKind {
     Substrate,
     /// A bounded remote replica call failed before its response was accepted.
     Transport,
+    /// Another process currently owns one physical journal directory.
+    Busy,
 }
 
 impl ReplicationFailureKind {
@@ -112,6 +114,7 @@ impl ReplicationFailureKind {
             Self::Evidence => "replication.evidence",
             Self::Substrate => "replication.substrate",
             Self::Transport => "replication.transport",
+            Self::Busy => "replication.busy",
         }
     }
 }
@@ -486,12 +489,15 @@ const fn replication_facts(kind: ReplicationFailureKind, committed: Committed) -
             "inspect both journal frontiers and receipts before retrying"
         }
         ReplicationFailureKind::Transport => "resume the replica from its durable cursor",
+        ReplicationFailureKind::Busy => "retry after the current journal owner releases it",
     };
     FailureFacts {
         committed,
         retry_safe: matches!(
             kind,
-            ReplicationFailureKind::Evidence | ReplicationFailureKind::Transport
+            ReplicationFailureKind::Evidence
+                | ReplicationFailureKind::Transport
+                | ReplicationFailureKind::Busy
         ),
         resume: Some(resume),
     }

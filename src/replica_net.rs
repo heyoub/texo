@@ -25,7 +25,7 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PAGE_DESCRIPTOR: OperationDescriptor = OperationDescriptor::new(
     PAGE_OPERATION,
     EffectClass::Inspect,
-    "texo.replica.page.input.v1",
+    "texo.replica.page.input.v2",
     "texo.replica.page.output.v1",
     "texo.replica.page.receipt.v1",
 );
@@ -33,8 +33,10 @@ const PAGE_DESCRIPTOR: OperationDescriptor = OperationDescriptor::new(
 /// Authenticated request for one bounded source page.
 #[derive(Serialize, Deserialize)]
 pub struct PageRequest {
-    /// Bearer secret, sourced only from an environment variable.
-    pub token: String,
+    /// Wire schema.
+    pub schema_version: u32,
+    /// Keyed authentication tag over every remaining request field.
+    pub auth_tag: [u8; 32],
     /// Expected workspace identity.
     pub workspace_id: String,
     /// Expected canonical journal identity.
@@ -45,6 +47,59 @@ pub struct PageRequest {
     pub after_anchor_event_id_hex: Option<String>,
     /// Frozen source ceiling, selected by the first response.
     pub source_ceiling: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct PageAuthBody<'request> {
+    schema_version: u32,
+    workspace_id: &'request str,
+    source_journal: &'request str,
+    after: Option<u64>,
+    after_anchor_event_id_hex: &'request Option<String>,
+    source_ceiling: Option<u64>,
+}
+
+impl PageRequest {
+    /// Build a request authenticated by a secret that never appears on the wire.
+    ///
+    /// # Errors
+    /// Returns a canonical encoding error for the authenticated request body.
+    pub fn authenticated(
+        secret: &str,
+        workspace_id: String,
+        source_journal: String,
+        after: Option<u64>,
+        after_anchor_event_id_hex: Option<String>,
+        source_ceiling: Option<u64>,
+    ) -> Result<Self, String> {
+        let mut request = Self {
+            schema_version: 2,
+            auth_tag: [0_u8; 32],
+            workspace_id,
+            source_journal,
+            after,
+            after_anchor_event_id_hex,
+            source_ceiling,
+        };
+        request.auth_tag = request.authentication_tag(secret)?;
+        Ok(request)
+    }
+
+    fn authentication_tag(&self, secret: &str) -> Result<[u8; 32], String> {
+        let body = PageAuthBody {
+            schema_version: self.schema_version,
+            workspace_id: &self.workspace_id,
+            source_journal: &self.source_journal,
+            after: self.after,
+            after_anchor_event_id_hex: &self.after_anchor_event_id_hex,
+            source_ceiling: self.source_ceiling,
+        };
+        let bytes = batpak::canonical::to_bytes(&body).map_err(|error| error.to_string())?;
+        let key = blake3::derive_key("texo.replica.netbat.auth-key.v2", secret.as_bytes());
+        let mut hasher = blake3::Hasher::new_keyed(&key);
+        hasher.update(&bytes);
+        Ok(*hasher.finalize().as_bytes())
+    }
 }
 
 /// One bounded, source-anchored remote page.
@@ -161,7 +216,7 @@ fn build_core(server: &Server) -> Result<Core, TexoError> {
         store: Arc::clone(&server.store),
         workspace_id: server.workspace_id.clone(),
         journal_id: server.journal_id.clone(),
-        token_hash: token_hash(&server.token),
+        token: server.token.clone(),
     };
     let mut builder = Core::builder();
     builder
@@ -179,14 +234,22 @@ struct PageHandler {
     store: Arc<Store<Open>>,
     workspace_id: String,
     journal_id: String,
-    token_hash: [u8; 32],
+    token: String,
 }
 
 impl Handler for PageHandler {
     fn handle(&mut self, input: &[u8], _context: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let request: PageRequest = batpak::canonical::from_bytes(input)
             .map_err(|error| HandlerError::invalid_input(error.to_string()))?;
-        if !constant_time_equal(&token_hash(&request.token), &self.token_hash) {
+        if request.schema_version != 2 {
+            return Err(HandlerError::invalid_input(
+                "unsupported replica request schema",
+            ));
+        }
+        let expected_tag = request
+            .authentication_tag(&self.token)
+            .map_err(|error| HandlerError::failed(error.clone()))?;
+        if !constant_time_equal(&request.auth_tag, &expected_tag) {
             return Err(HandlerError::failed("replica authentication failed"));
         }
         if request.workspace_id != self.workspace_id || request.source_journal != self.journal_id {
@@ -246,12 +309,6 @@ fn validate_request_anchor(store: &Store<Open>, request: &PageRequest) -> Result
     }
 }
 
-fn token_hash(token: &str) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new_derive_key("texo.replica.netbat.token.v1");
-    hasher.update(token.as_bytes());
-    *hasher.finalize().as_bytes()
-}
-
 fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
     left.iter()
         .zip(right)
@@ -281,13 +338,26 @@ mod tests {
 
     #[test]
     fn token_comparison_is_exact() {
+        let request = PageRequest::authenticated(
+            "same",
+            "workspace".to_string(),
+            "journal".to_string(),
+            None,
+            None,
+            None,
+        )
+        .expect("request");
         assert!(constant_time_equal(
-            &token_hash("same"),
-            &token_hash("same")
+            &request.auth_tag,
+            &request.authentication_tag("same").expect("same tag")
         ));
         assert!(!constant_time_equal(
-            &token_hash("same"),
-            &token_hash("different")
+            &request.auth_tag,
+            &request
+                .authentication_tag("different")
+                .expect("different tag")
         ));
+        let wire = batpak::canonical::to_bytes(&request).expect("wire");
+        assert!(!wire.windows("same".len()).any(|bytes| bytes == b"same"));
     }
 }

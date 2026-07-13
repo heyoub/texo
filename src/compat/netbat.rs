@@ -28,6 +28,9 @@ pub enum ClientError {
     /// Endpoint is not one concrete IP socket address.
     #[error("endpoint must be an IP socket address: {0}")]
     InvalidEndpoint(String),
+    /// Plaintext netbat is restricted to loopback/private network coordinates.
+    #[error("plaintext replica endpoint must be loopback or private: {0}")]
+    PublicEndpoint(String),
     /// Connection, read, or write failed.
     #[error("transport {class}: {detail}")]
     Transport {
@@ -76,9 +79,7 @@ pub fn call(
             max: limits.max_input_bytes,
         });
     }
-    let address = endpoint
-        .parse::<SocketAddr>()
-        .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?;
+    let address = private_socket_addr(endpoint)?;
     let started = Instant::now();
     let mut stream = TcpStream::connect_timeout(&address, timeout)
         .map_err(|error| transport("connect", &error))?;
@@ -86,6 +87,31 @@ pub fn call(
     write_before_deadline(&mut stream, &request, started, timeout)?;
     let line = read_line_before_deadline(&mut stream, started, timeout, limits.max_line_bytes)?;
     decode_response(&line, limits)
+}
+
+/// Parse an endpoint and refuse public or wildcard addresses for plaintext netbat.
+///
+/// The request MAC authenticates the peer request but does not encrypt journal
+/// payloads. Public transport therefore requires an external confidential tunnel;
+/// this direct circuit is intentionally limited to local/private networks.
+///
+/// # Errors
+/// Returns an invalid/public endpoint classification.
+pub fn private_socket_addr(endpoint: &str) -> Result<SocketAddr, ClientError> {
+    let address = endpoint
+        .parse::<SocketAddr>()
+        .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?;
+    let allowed = match address.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+        }
+    };
+    if allowed {
+        Ok(address)
+    } else {
+        Err(ClientError::PublicEndpoint(endpoint.to_string()))
+    }
 }
 
 /// Decode one complete `netbat` response line.
@@ -269,5 +295,29 @@ mod tests {
             decode_response(b"OK 000102\n", &limits),
             Err(ClientError::Malformed(_) | ClientError::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn plaintext_endpoints_are_private_and_concrete() {
+        for endpoint in [
+            "127.0.0.1:9000",
+            "10.2.3.4:9000",
+            "192.168.1.2:9000",
+            "[::1]:9000",
+            "[fd00::1]:9000",
+        ] {
+            assert!(private_socket_addr(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "0.0.0.0:9000",
+            "8.8.8.8:9000",
+            "[::]:9000",
+            "example.com:9000",
+        ] {
+            assert!(matches!(
+                private_socket_addr(endpoint),
+                Err(ClientError::InvalidEndpoint(_) | ClientError::PublicEndpoint(_))
+            ));
+        }
     }
 }
