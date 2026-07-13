@@ -194,7 +194,8 @@ fn parse_object_id(id: &GitObjectId) -> Result<gix::ObjectId, TexoError> {
 /// # Errors
 /// Returns a source error when the repository cannot be opened safely, its
 /// head/tree cannot be read, status cannot be enumerated, or a captured regular
-/// file changes while being bounded and read.
+/// file changes in length or modification time while it is being read (a
+/// length-preserving edit with no timestamp change is not guaranteed detected).
 pub fn capture(
     root: &Path,
     repository_id: RepositoryId,
@@ -272,19 +273,29 @@ fn capture_committed(
             accumulator.gap(Some(path), CoverageGapKind::Gitlink);
             continue;
         }
+        if entry.mode.is_link() {
+            accumulator.gap(Some(path), CoverageGapKind::Symlink);
+            continue;
+        }
+        // Bound the blob by its stored object size before materializing it, so a
+        // large committed file is recorded as a gap and skipped without ever
+        // decompressing or copying its full contents into memory.
+        let header = repo
+            .find_header(entry.oid)
+            .map_err(|error| git_error(repo.git_dir(), error))?;
+        if header.size() > accumulator.limits.max_file_bytes {
+            accumulator.gap(Some(path), CoverageGapKind::SourceTooLarge);
+            continue;
+        }
         let object = repo
             .find_object(entry.oid)
             .map_err(|error| git_error(repo.git_dir(), error))?;
-        let blob = object
+        let mut blob = object
             .try_into_blob()
             .map_err(|error| git_error(repo.git_dir(), error))?;
-        if entry.mode.is_link() {
-            accumulator.gap(Some(path.clone()), CoverageGapKind::Symlink);
-            continue;
-        }
         accumulator.insert(
             path,
-            blob.data.clone(),
+            blob.take_data(),
             Some(git_object_id(entry.oid.to_string())?),
             CapturedLayer::Committed,
         );
@@ -379,7 +390,14 @@ fn capture_overlay(
             continue;
         }
         let bytes = fs::read(&full)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != metadata.len() {
+        // Re-stat after the read: a same-length edit escapes a length-only check,
+        // so compare length and modification time against the pre-read stat.
+        let after = fs::symlink_metadata(&full)?;
+        if !after.is_file()
+            || after.len() != metadata.len()
+            || u64::try_from(bytes.len()).unwrap_or(u64::MAX) != metadata.len()
+            || modified_time_changed(&metadata, &after)
+        {
             return Err(TexoError::Source {
                 path: path.clone(),
                 detail: "worktree file changed while the snapshot was being captured".to_string(),
@@ -529,7 +547,15 @@ fn source_path_is_in_scope(path: &str) -> bool {
     if path.starts_with(".texo/") || path.starts_with("target/") || path.starts_with(".git/") {
         return false;
     }
-    Path::new(path)
+    let candidate = Path::new(path);
+    if candidate
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(is_wellknown_source_basename)
+    {
+        return true;
+    }
+    candidate
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|extension| {
@@ -556,6 +582,42 @@ fn source_path_is_in_scope(path: &str) -> bool {
                     | "sh"
             )
         })
+}
+
+/// Well-known build/config files that carry evidence but have no extension.
+///
+/// Without this, an extension-only scope silently drops a tracked `Makefile` or
+/// `Dockerfile` with neither a source row nor a coverage gap, so search and
+/// triangulation report a real file as absent. Shared with the code index so
+/// capture and indexing scopes stay in agreement.
+pub(crate) fn is_wellknown_source_basename(name: &str) -> bool {
+    matches!(
+        name,
+        "Makefile"
+            | "makefile"
+            | "GNUmakefile"
+            | "Dockerfile"
+            | "Containerfile"
+            | "justfile"
+            | "Justfile"
+            | "Rakefile"
+            | "Gemfile"
+            | "Procfile"
+            | "Jenkinsfile"
+            | "BUILD"
+            | "WORKSPACE"
+    )
+}
+
+/// Detect a length-preserving concurrent edit by comparing modification times.
+///
+/// Returns `false` when either timestamp is unavailable, so the caller falls
+/// back to length-only detection instead of failing a capture spuriously.
+fn modified_time_changed(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    match (before.modified(), after.modified()) {
+        (Ok(before), Ok(after)) => before != after,
+        _ => false,
+    }
 }
 
 fn safe_relative_path(path: &Path) -> bool {
@@ -618,8 +680,13 @@ mod tests {
     #[test]
     fn scope_and_path_guards_are_closed() {
         assert!(source_path_is_in_scope("src/lib.rs"));
+        assert!(source_path_is_in_scope("config/settings.json"));
+        assert!(source_path_is_in_scope("Makefile"));
+        assert!(source_path_is_in_scope("deploy/Dockerfile"));
+        assert!(source_path_is_in_scope("justfile"));
         assert!(!source_path_is_in_scope("target/generated.rs"));
         assert!(!source_path_is_in_scope("assets/image.png"));
+        assert!(!source_path_is_in_scope("notes.txt"));
         assert!(safe_relative_path(Path::new("src/lib.rs")));
         assert!(!safe_relative_path(Path::new("../outside.rs")));
         assert!(!safe_relative_path(Path::new("/absolute.rs")));

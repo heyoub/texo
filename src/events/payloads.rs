@@ -247,6 +247,12 @@ pub struct SourceSnapshotRecordedV1 {
     pub dirty: bool,
     /// Bounded capture coverage and omissions.
     pub coverage: KnowledgeCoverage,
+    /// Maximum source files retained by the capture that recorded this snapshot.
+    pub capture_max_files: u64,
+    /// Maximum bytes retained per source by that capture.
+    pub capture_max_file_bytes: u64,
+    /// Maximum bytes retained across all sources by that capture.
+    pub capture_max_total_bytes: u64,
     /// Observation wall-clock time in milliseconds.
     pub observed_at_ms: u64,
 }
@@ -699,6 +705,9 @@ mod tests {
             overlay_digest_hex: "d".repeat(64),
             dirty: true,
             coverage: coverage.clone(),
+            capture_max_files: 20_000,
+            capture_max_file_bytes: 4 * 1024 * 1024,
+            capture_max_total_bytes: 128 * 1024 * 1024,
             observed_at_ms: 16,
         })?;
         assert_round_trip(&EvidenceOccurrenceRecordedV1 {

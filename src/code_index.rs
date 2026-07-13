@@ -124,10 +124,16 @@ pub fn build(
     let mut indexed_paths = BTreeSet::new();
     let mut analyzer_parts = Vec::new();
     if let Some(bytes) = scip_bytes {
+        let before = builder.occurrences.len();
         let analyzer = import_scip(bytes, &source_map, &mut builder, &mut indexed_paths)?;
         analyzer_parts.push(analyzer);
-        builder.format = CodeIndexFormat::Scip;
-        builder.quality = AnalysisQuality::Precise;
+        // Only claim compiler-precise coverage when SCIP actually contributed
+        // occurrences. An empty index, all-missing documents, or all-skipped
+        // ranges must not promote lexical/syntactic rows to `precise`.
+        if builder.occurrences.len() > before {
+            builder.format = CodeIndexFormat::Scip;
+            builder.quality = AnalysisQuality::Precise;
+        }
     }
     let fallback = analyze_fallbacks(
         &capture.sources,
@@ -822,6 +828,16 @@ fn code_index_path_is_in_scope(path: &str) -> bool {
     {
         return false;
     }
+    // Extensionless build/config files are in the Git capture scope, so they must
+    // be indexable here too or a captured source would silently produce neither an
+    // occurrence nor a gap.
+    if path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(crate::git_source::is_wellknown_source_basename)
+    {
+        return true;
+    }
     path.extension()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|extension| {
@@ -844,6 +860,7 @@ fn code_index_path_is_in_scope(path: &str) -> bool {
                     | "toml"
                     | "yaml"
                     | "yml"
+                    | "json"
             )
         })
 }

@@ -164,6 +164,71 @@ fn scip_is_precise_and_fallback_covers_absent_documents() -> TestResult {
 }
 
 #[test]
+fn empty_scip_index_does_not_claim_precise_coverage() -> TestResult {
+    let root = repository()?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("empty-scip-test"),
+        CaptureLimits::default(),
+    )?;
+    // A valid but empty SCIP index contributes no occurrences; coverage must fall
+    // back to the analyzer that actually produced rows and never report `precise`.
+    let empty = scip::types::Index::new().write_to_bytes()?;
+    let prepared = build(&capture, Some(&empty), CodeIndexLimits::default())?;
+    assert_ne!(
+        prepared.artifact.coverage.analysis_quality,
+        AnalysisQuality::Precise
+    );
+    assert_ne!(prepared.artifact.format, CodeIndexFormat::Scip);
+    Ok(())
+}
+
+#[test]
+fn json_and_extensionless_config_are_captured_and_indexed() -> TestResult {
+    let root = TempDir::new()?;
+    git(root.path(), &["init", "-q"])?;
+    git(root.path(), &["config", "user.name", "Texo Test"])?;
+    git(
+        root.path(),
+        &["config", "user.email", "texo@example.invalid"],
+    )?;
+    std::fs::write(
+        root.path().join("package.json"),
+        "{ \"name\": \"demo\", \"scripts\": { \"build\": \"tsc\" } }\n",
+    )?;
+    std::fs::write(root.path().join("Makefile"), "build:\n\tcargo build\n")?;
+    git(root.path(), &["add", "."])?;
+    git(root.path(), &["commit", "-qm", "config"])?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("config-scope-test"),
+        CaptureLimits::default(),
+    )?;
+    // Both a JSON config and an extensionless build file are captured...
+    assert!(capture
+        .sources
+        .iter()
+        .any(|source| source.path == "package.json"));
+    assert!(capture
+        .sources
+        .iter()
+        .any(|source| source.path == "Makefile"));
+    // ...and the index scope agrees, so neither is a silent capture-without-evidence.
+    let prepared = build(&capture, None, CodeIndexLimits::default())?;
+    assert!(prepared
+        .artifact
+        .occurrences
+        .iter()
+        .any(|occurrence| occurrence.path == "package.json"));
+    assert!(prepared
+        .artifact
+        .occurrences
+        .iter()
+        .any(|occurrence| occurrence.path == "Makefile"));
+    Ok(())
+}
+
+#[test]
 fn normalized_artifact_authenticates_and_tampering_fails_closed() -> TestResult {
     let root = repository()?;
     let capture = capture(

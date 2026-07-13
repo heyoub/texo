@@ -493,7 +493,7 @@ fn claim_explain(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             })?;
         let timeline = claim_timeline_through(&entity, view.frontier)?;
         let evidence = evidence_projection_through(view.frontier)?.take_claim(&input.claim_id);
-        let coverage = coverage_for_view(&view, &snapshot);
+        let coverage = coverage_for_view(&view, &snapshot)?;
         let answer_state = answer_state_for_claim(
             view.claims
                 .iter()
@@ -1157,6 +1157,9 @@ fn knowledge_index(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             overlay_digest_hex: capture.overlay_digest_hex,
             dirty: capture.dirty,
             coverage: capture.coverage.clone(),
+            capture_max_files: u64::try_from(limits.max_files).unwrap_or(u64::MAX),
+            capture_max_file_bytes: limits.max_file_bytes,
+            capture_max_total_bytes: limits.max_total_bytes,
             observed_at_ms: input.observed_at_ms,
         };
         let indexed_claim_ids = planned
@@ -1232,7 +1235,11 @@ fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
                 detail: "requested source snapshot is not the latest indexed snapshot".to_string(),
             });
         }
-        let capture = capture_git(&root, recorded.repository_id, CaptureLimits::default())?;
+        // Reproduce the snapshot with the *recorded* bounds, not the defaults: a
+        // snapshot captured under non-default limits would otherwise omit different
+        // sources here and be misreported as "Git changed" on an unchanged tree.
+        let recorded_limits = recorded_capture_limits(&recorded);
+        let capture = capture_git(&root, recorded.repository_id, recorded_limits)?;
         if capture.snapshot_id != recorded.snapshot_id {
             return Err(TexoError::Snapshot {
                 kind: SnapshotFailureKind::SourceUnavailable,
@@ -2392,13 +2399,19 @@ fn claim_timeline_through(entity: &str, frontier: u64) -> Result<ClaimTimeline, 
     })?
 }
 
-fn coverage_for_view(view: &WorkspaceView, snapshot: &SnapshotRead) -> KnowledgeCoverage {
-    if let Ok(Some(recorded)) = latest_source_snapshot(Some(view.frontier)) {
+fn coverage_for_view(
+    view: &WorkspaceView,
+    snapshot: &SnapshotRead,
+) -> Result<KnowledgeCoverage, TexoError> {
+    // Only a genuinely missing snapshot (`Ok(None)`) or a mismatched identity
+    // degrades to `Unavailable`; a decode/corruption error must bubble up rather
+    // than masquerade as an ordinary absent snapshot.
+    if let Some(recorded) = latest_source_snapshot(Some(view.frontier))? {
         if Some(&recorded.snapshot_id) == snapshot.descriptor.source_snapshot_id.as_ref() {
-            return recorded.coverage;
+            return Ok(recorded.coverage);
         }
     }
-    KnowledgeCoverage {
+    Ok(KnowledgeCoverage {
         analysis_quality: AnalysisQuality::Unavailable,
         sources_examined: u64::try_from(view.sources.len()).unwrap_or(u64::MAX),
         occurrences: u64::try_from(view.claims.len()).unwrap_or(u64::MAX),
@@ -2407,14 +2420,14 @@ fn coverage_for_view(view: &WorkspaceView, snapshot: &SnapshotRead) -> Knowledge
             path: None,
             kind: CoverageGapKind::SourceSnapshotUnavailable,
         }],
-    }
+    })
 }
 
 fn status_coverage(
     view: &WorkspaceView,
     snapshot: &SnapshotRead,
 ) -> Result<(KnowledgeCoverage, bool), TexoError> {
-    let mut coverage = coverage_for_view(view, snapshot);
+    let mut coverage = coverage_for_view(view, snapshot)?;
     let Some(source_snapshot_id) = snapshot.descriptor.source_snapshot_id.as_ref() else {
         return Ok((coverage, false));
     };
@@ -2429,6 +2442,16 @@ fn status_coverage(
         });
     }
     Ok((coverage, !loaded.unavailable))
+}
+
+/// Reconstruct the capture bounds a snapshot was recorded with so code indexing
+/// recaptures the same bounded world instead of the defaults.
+fn recorded_capture_limits(recorded: &SourceSnapshotRecordedV1) -> CaptureLimits {
+    CaptureLimits {
+        max_files: usize::try_from(recorded.capture_max_files).unwrap_or(usize::MAX),
+        max_file_bytes: recorded.capture_max_file_bytes,
+        max_total_bytes: recorded.capture_max_total_bytes,
+    }
 }
 
 fn latest_source_snapshot(
@@ -2640,7 +2663,7 @@ fn triangulate_from_view(
         .flat_map(|claim_id| projection.for_claim(claim_id).iter().cloned())
         .collect::<Vec<_>>();
     evidence.retain(|item| evidence_matches_target(item, &target));
-    let mut coverage = coverage_for_view(view, snapshot);
+    let mut coverage = coverage_for_view(view, snapshot)?;
     let code = code_evidence_for_target(view.frontier, snapshot, &target)?;
     if let Some(code_coverage) = &code.coverage {
         merge_coverage(&mut coverage, code_coverage);
@@ -4319,9 +4342,12 @@ fn search_knowledge_from_view(
             })
         })
         .collect::<Vec<_>>();
-    let mut coverage = coverage_for_view(view, &snapshot);
+    let mut coverage = coverage_for_view(view, &snapshot)?;
+    // A subject/status filter searches only the claim plane; the code plane is
+    // deliberately not consulted, which is "not searched", not "unavailable".
+    let code_searched = input.subject.is_none() && input.status.is_none();
     let mut code_index_available = false;
-    if input.subject.is_none() && input.status.is_none() {
+    if code_searched {
         if let Some(source_snapshot_id) = snapshot.descriptor.source_snapshot_id.as_ref() {
             let loaded = load_code_artifact_at(view.frontier, source_snapshot_id)?;
             if let Some(code_coverage) = &loaded.coverage {
@@ -4342,7 +4368,10 @@ fn search_knowledge_from_view(
             }
         }
     }
-    if !code_index_available
+    // Only assert the code index is unavailable when it was actually searched and
+    // found absent — never for a filtered search that skipped it by design.
+    if code_searched
+        && !code_index_available
         && !coverage
             .gaps
             .iter()
