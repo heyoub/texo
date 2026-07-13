@@ -369,3 +369,25 @@ fn git_dag_comparison_never_uses_commit_timestamps_as_order() -> TestResult {
     assert_eq!(bounded.gap, Some(CoverageGapKind::BudgetExceeded));
     Ok(())
 }
+
+#[test]
+fn out_of_scope_extensionless_file_is_a_visible_gap() -> TestResult {
+    let root = repository()?;
+    std::fs::write(
+        root.path().join("Vagrantfile"),
+        b"Vagrant.configure(\"2\")\n",
+    )?;
+    git(root.path(), &["add", "."])?;
+    git(root.path(), &["commit", "-qm", "vagrant"])?;
+    let captured = capture(root.path(), repo_id(), CaptureLimits::default())?;
+    // An unlisted extensionless config is not captured as a source...
+    assert!(!captured
+        .sources
+        .iter()
+        .any(|source| source.path == "Vagrantfile"));
+    // ...but it is a visible coverage gap, never a silent absence.
+    assert!(captured.coverage.gaps.iter().any(|gap| {
+        gap.path.as_deref() == Some("Vagrantfile") && gap.kind == CoverageGapKind::OutOfScope
+    }));
+    Ok(())
+}

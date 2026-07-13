@@ -620,6 +620,10 @@ pub enum CoverageGapKind {
     WorktreeConflict,
     /// Analyzer reported recovery or incomplete semantic information.
     AnalysisIncomplete,
+    /// Tracked file exists but its type is outside the capture/index scope, so it
+    /// was not indexed. Recorded so its absence reads as "not indexed" rather than
+    /// "not present".
+    OutOfScope,
 }
 
 /// One bounded coverage omission.

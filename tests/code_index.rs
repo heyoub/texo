@@ -184,6 +184,35 @@ fn empty_scip_index_does_not_claim_precise_coverage() -> TestResult {
 }
 
 #[test]
+fn sparse_scip_document_falls_through_to_fallback() -> TestResult {
+    let root = repository()?;
+    let capture = capture(
+        root.path(),
+        RepositoryId::derive("sparse-scip-test"),
+        CaptureLimits::default(),
+    )?;
+    // A SCIP document that matches src/lib.rs but carries no occurrences must not
+    // mark the path indexed and suppress the built-in fallback for that file.
+    let mut index = scip::types::Index::new();
+    let mut document = scip::types::Document::new();
+    document.relative_path = "src/lib.rs".to_string();
+    document.position_encoding =
+        EnumOrUnknown::new(scip::types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart);
+    index.documents.push(document);
+    let sparse = index.write_to_bytes()?;
+    let prepared = build(&capture, Some(&sparse), CodeIndexLimits::default())?;
+    assert!(
+        prepared
+            .artifact
+            .occurrences
+            .iter()
+            .any(|occurrence| occurrence.path == "src/lib.rs"),
+        "fallback must still index src/lib.rs when SCIP contributes nothing for it"
+    );
+    Ok(())
+}
+
+#[test]
 fn json_and_extensionless_config_are_captured_and_indexed() -> TestResult {
     let root = TempDir::new()?;
     git(root.path(), &["init", "-q"])?;

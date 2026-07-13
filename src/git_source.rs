@@ -271,7 +271,10 @@ fn capture_committed(
     for entry in entries {
         let path = match std::str::from_utf8(entry.filepath.as_ref()) {
             Ok(path) if source_path_is_in_scope(path) => path.to_string(),
-            Ok(_) => continue,
+            Ok(path) => {
+                note_out_of_scope(accumulator, path);
+                continue;
+            }
             Err(_) => {
                 accumulator.gap(None, CoverageGapKind::UnsupportedEncoding);
                 continue;
@@ -363,7 +366,12 @@ fn capture_overlay(
             Ok(path) if source_path_is_in_scope(path) && safe_relative_path(Path::new(path)) => {
                 path.to_string()
             }
-            Ok(_) => continue,
+            Ok(path) => {
+                if safe_relative_path(Path::new(path)) {
+                    note_out_of_scope(accumulator, path);
+                }
+                continue;
+            }
             Err(_) => {
                 accumulator.gap(None, CoverageGapKind::UnsupportedEncoding);
                 continue;
@@ -625,6 +633,19 @@ fn modified_time_changed(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     match (before.modified(), after.modified()) {
         (Ok(before), Ok(after)) => before != after,
         _ => false,
+    }
+}
+
+/// Record a tracked but out-of-scope extensionless file as a visible gap.
+///
+/// Extensionless files are almost always config or scripts (`Vagrantfile`,
+/// `Fastfile`, `Podfile`, ...), so any allowlist is inherently incomplete and
+/// their silent absence misleads search/triangulation into treating a real file
+/// as nonexistent. Extensioned assets (images, lockfiles) are legitimately not
+/// source and stay silent to keep coverage free of non-source noise.
+fn note_out_of_scope(accumulator: &mut CaptureAccumulator, path: &str) {
+    if Path::new(path).extension().is_none() {
+        accumulator.gap(Some(path.to_string()), CoverageGapKind::OutOfScope);
     }
 }
 

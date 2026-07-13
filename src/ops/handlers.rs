@@ -1221,20 +1221,22 @@ fn code_index_build(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let limits = input.validated_limits()?;
         let (root, workspace_id) =
             env::with(|op_env| (op_env.root.clone(), op_env.workspace_id.clone()))?;
-        let recorded = latest_source_snapshot(None)?.ok_or_else(|| TexoError::Snapshot {
-            kind: SnapshotFailureKind::SourceUnavailable,
-            detail: "run `texo index` to record a Git source snapshot first".to_string(),
-        })?;
-        if input
-            .snapshot_id
-            .as_ref()
-            .is_some_and(|wanted| wanted != &recorded.snapshot_id)
-        {
-            return Err(TexoError::Snapshot {
+        // Select by the requested id, not "the latest recorded": revisiting a
+        // previously recorded commit re-derives its existing snapshot id (the
+        // record is idempotent), and requiring it to also be the newest one would
+        // reject the id `knowledge.index` just returned whenever an intervening
+        // snapshot exists. Absent an explicit id, fall back to the latest.
+        let recorded = match input.snapshot_id.as_ref() {
+            Some(wanted) => source_snapshot_by_id(wanted)?.ok_or_else(|| TexoError::Snapshot {
                 kind: SnapshotFailureKind::SourceUnavailable,
-                detail: "requested source snapshot is not the latest indexed snapshot".to_string(),
-            });
-        }
+                detail: "requested source snapshot is not recorded; run `texo index` first"
+                    .to_string(),
+            })?,
+            None => latest_source_snapshot(None)?.ok_or_else(|| TexoError::Snapshot {
+                kind: SnapshotFailureKind::SourceUnavailable,
+                detail: "run `texo index` to record a Git source snapshot first".to_string(),
+            })?,
+        };
         // Reproduce the snapshot with the *recorded* bounds, not the defaults: a
         // snapshot captured under non-default limits would otherwise omit different
         // sources here and be misreported as "Git changed" on an unchanged tree.
@@ -2458,6 +2460,18 @@ fn latest_source_snapshot(
     frontier: Option<u64>,
 ) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
     Ok(source_snapshots_through(frontier)?.pop())
+}
+
+/// The recorded snapshot with this content-addressed id, regardless of whether a
+/// newer snapshot was recorded afterward (revisiting a prior commit re-derives an
+/// existing id rather than appending a new record).
+fn source_snapshot_by_id(
+    snapshot_id: &crate::knowledge::SourceSnapshotId,
+) -> Result<Option<SourceSnapshotRecordedV1>, TexoError> {
+    Ok(source_snapshots_through(None)?
+        .into_iter()
+        .rev()
+        .find(|snapshot| &snapshot.snapshot_id == snapshot_id))
 }
 
 fn source_snapshots_through(

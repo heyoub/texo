@@ -325,8 +325,14 @@ fn import_scip(
             );
             continue;
         }
-        indexed_paths.insert(document.relative_path.clone());
+        let before = builder.occurrences.len();
         import_scip_document(document, source, &analyzer, builder);
+        // Only claim the path as SCIP-indexed when the document actually produced
+        // occurrences. A matching-but-empty document must fall through to the
+        // built-in fallback rather than suppress every symbol for that file.
+        if builder.occurrences.len() > before {
+            indexed_paths.insert(document.relative_path.clone());
+        }
     }
     if index.documents.len() > builder.limits.max_documents {
         builder.truncated = true;
