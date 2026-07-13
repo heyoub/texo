@@ -153,8 +153,11 @@ pub fn build(
     occurrences.dedup();
     let occurrence_material = batpak::encoding::to_bytes(&occurrences)
         .map_err(|error| source_error(Path::new(".texo/cache/code-index"), &error.to_string()))?;
-    let raw_digest =
-        scip_bytes.map_or_else(|| blake3_bytes_hex(&occurrence_material), blake3_bytes_hex);
+    // Derive identity from the normalized occurrences actually persisted, not the
+    // raw SCIP bytes: two builds of the same snapshot+SCIP under different limits
+    // truncate differently, and the id must track what lands on disk so the cache
+    // never serves a digest-mismatched or silently truncated artifact.
+    let raw_digest = blake3_bytes_hex(&occurrence_material);
     let index_id = CodeIndexId::derive(&format!(
         "{ARTIFACT_SCHEMA}\u{1f}{}\u{1f}{raw_digest}\u{1f}{analyzer_fingerprint}",
         capture.snapshot_id

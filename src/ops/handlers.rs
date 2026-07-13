@@ -2531,6 +2531,14 @@ fn plan_snapshot_relations(
                 gaps.push(gap);
             }
         }
+        // Never journal an `Unknown` ordering: the relation idempotency key is
+        // (workspace, left, right) and replay keeps the first fact, so a durable
+        // Unknown from shallow history or an exhausted walk would permanently
+        // shadow the real Before/After discoverable once full history arrives.
+        // Its absence already reads as Unknown, and the gap above records why.
+        if comparison.relation == TemporalRelation::Unknown {
+            continue;
+        }
         relations.push(SourceSnapshotRelationV1 {
             workspace_id: workspace_id.clone(),
             repository_id: capture.repository_id.clone(),

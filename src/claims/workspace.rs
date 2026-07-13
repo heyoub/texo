@@ -264,9 +264,16 @@ pub fn assemble(
     }
     if cache.freshness == ProjectionFreshness::Fresh {
         if let Some(view) = &cache.view {
-            cache.counters.warm_view_hits = cache.counters.warm_view_hits.saturating_add(1);
-            trace_assemble(cache);
-            return Ok(Arc::clone(view));
+            // Serve the warm view only when its frontier still matches: a NoDelta
+            // advance over non-card events (code index, snapshot relations,
+            // sessions) moves cache.frontier without touching any card, and
+            // returning the stale frontier would hide those events from reads that
+            // bind lookups (e.g. latest_code_index) to view.frontier.
+            if view.frontier == cache.frontier {
+                cache.counters.warm_view_hits = cache.counters.warm_view_hits.saturating_add(1);
+                trace_assemble(cache);
+                return Ok(Arc::clone(view));
+            }
         }
     }
 

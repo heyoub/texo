@@ -229,9 +229,17 @@ pub fn capture(
         });
     }
     let overlay_digest_hex = overlay_digest(&overlay);
+    // Fold the capture bounds into the identity: a committed file omitted as
+    // too-large under small limits leaves index/overlay digests unchanged, so
+    // without this the same commit re-indexed with larger bounds would collide
+    // on snapshot_id and the recoverable sources could never be recorded.
     let snapshot_material = format!(
-        "{CAPTURE_SCHEMA}\u{1f}{repository_id}\u{1f}{}\u{1f}{}\u{1f}{index_digest_hex}\u{1f}{overlay_digest_hex}",
-        base_commit.hex, base_tree.hex
+        "{CAPTURE_SCHEMA}\u{1f}{repository_id}\u{1f}{}\u{1f}{}\u{1f}{index_digest_hex}\u{1f}{overlay_digest_hex}\u{1f}{}\u{1f}{}\u{1f}{}",
+        base_commit.hex,
+        base_tree.hex,
+        limits.max_files,
+        limits.max_file_bytes,
+        limits.max_total_bytes
     );
     let snapshot_id = SourceSnapshotId::derive(&snapshot_material);
     let (sources, deleted, coverage) = accumulator.finish();

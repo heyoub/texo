@@ -147,10 +147,12 @@ pub fn plan_candidates(
 
 fn is_code_path(path: &str) -> bool {
     let path = std::path::Path::new(path);
+    // Share the capture/index basename scope so reconcile never drops evidence
+    // for an extensionless config file that indexing already accepted.
     if path
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, "Dockerfile" | "Makefile" | "Justfile" | "justfile"))
+        .is_some_and(crate::git_source::is_wellknown_source_basename)
     {
         return true;
     }
