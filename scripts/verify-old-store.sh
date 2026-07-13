@@ -32,19 +32,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The campaign intentionally removed the flat pre-topology config shape. The
+# fixture journal is source truth; config is operator input. Copy each frozen
+# fixture and provide the current normalized topology so this proof reaches the
+# 0.9-written store instead of accidentally testing config compatibility.
+materialize_fixture() {
+  local name=$1
+  local destination=$2
+  cp -a "$fixtures/$name/." "$destination/"
+  cat >"$destination/.texo/config.toml" <<'TOML'
+default_workspace = "demo"
+
+[workspaces.demo]
+primary_journal = "canonical"
+docs_glob = "sample_sources/**/*.md"
+
+[workspaces.demo.journals.canonical]
+role = "canonical"
+store_path = ".texo/store"
+TOML
+}
+
 verified=0
 for name in empty claims claims-twin conflict session self; do
-  "$texo" --root "$fixtures/$name" --workspace demo claims --json \
+  copy="$scratch/verify-$name"
+  materialize_fixture "$name" "$copy"
+  "$texo" --root "$copy" --workspace demo claims --json \
     >"$scratch/$name.claims.json"
   cmp "$scratch/$name.claims.json" "$fixtures/$name.claims.snapshot.json"
-  "$texo" --root "$fixtures/$name" --workspace demo verify --json \
+  "$texo" --root "$copy" --workspace demo verify --json \
     >"$scratch/$name.verify.json"
   jq -e '.journal_ok and .projection_ok and .transitions_ok and (.errors | length == 0)' \
     "$scratch/$name.verify.json" >/dev/null
   verified=$((verified + 1))
 done
 
-if "$texo" --root "$fixtures/corrupted" --workspace demo verify --json \
+corrupted="$scratch/verify-corrupted"
+materialize_fixture corrupted "$corrupted"
+if "$texo" --root "$corrupted" --workspace demo verify --json \
   >"$scratch/corrupted.out" 2>"$scratch/corrupted.err"; then
   echo "corrupted 0.9 fixture unexpectedly verified" >&2
   exit 1
@@ -55,7 +80,7 @@ verified=$((verified + 1))
 reingest_noops=0
 while IFS='|' read -r name source; do
   copy="$scratch/reingest-$name"
-  cp -a "$fixtures/$name/." "$copy/"
+  materialize_fixture "$name" "$copy"
   before=$("$texo" --root "$copy" --workspace demo stats --json | jq -er '.events_total')
   "$texo" --root "$copy" --workspace demo ingest "$source" --json \
     >"$scratch/$name.reingest.json"
@@ -72,7 +97,7 @@ self|$fixtures/self-corpus-src
 EOF
 
 lock_root="$scratch/lock"
-cp -a "$fixtures/empty/." "$lock_root/"
+materialize_fixture empty "$lock_root"
 "$texo" --root "$lock_root" --workspace demo serve --addr 127.0.0.1:0 \
   >"$scratch/lock-server.log" 2>&1 &
 server_pid=$!
