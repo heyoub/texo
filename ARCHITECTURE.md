@@ -6,16 +6,19 @@ Supersedes: see [ADR-003](ADR-003-single-crate-rebuild.md).
 markdown / Git snapshot / code index / session transcript
   -> extractor: heuristic or LLM record-once cache
   -> bounded evidence occurrence + analysis quality
-  -> syncbat op
-  -> TexoEffectBackend
+  -> hostbat content-identified module
+  -> syncbat op + schema/effect validation
+  -> TexoEffectBackend typed append chokepoint
   -> BatPak Store<Open>
   -> per-entity EventSourced projections
   -> CLI / HTTP / SSE / MCP / static compile
 ```
 
 texo is a single-crate, single-binary, sync-first application. BatPak owns the
-append-only journal and receipts. syncbat owns operation declaration and effect
-checks. texo owns domain schema, projections, and user surfaces.
+append-only journal and receipts. hostbat owns content-identified module
+composition and canonical wire validation; syncbat owns operation declaration,
+dispatch, receipts, and effect checks. texo owns domain schema, projections,
+and user surfaces.
 
 ## Modules
 
@@ -30,8 +33,9 @@ checks. texo owns domain schema, projections, and user surfaces.
   transport adapters.
 - `ops`: syncbat operations, thread-local `OpEnv`, effect backend routing, and
   operation catalog.
-- `host`: workspace store opening, capability grants, invocation seam, and the
-  `texo-canonical-v1` interface fingerprint.
+- `host`: workspace store opening, capability grants, a sealed `texo.domain`
+  HostModule, canonical operation/event schemas, invocation, and actual
+  `H_module`/`H_host`/`H_interface` identities from hostbat.
 - `surfaces`: CLI, sync HTTP/1.1 server/client, SSE, OpenAI-compatible edge,
   bootstrap, and MCP stdio.
 - `agent_catalog`, `install`, and `hooks`: the five-tool progressive-disclosure
@@ -55,8 +59,9 @@ frozen in [ADR-004](ADR-004-snapshot-evidence-temporal-model.md).
 
 ## Operation Catalog
 
-The catalog is content-addressed by `texo host fingerprint`. It currently
-contains 26 operations:
+The catalog, its canonical schemas, and all appendable domain-event bindings
+are sealed into one hostbat module. `texo host fingerprint` reports the actual
+mounted composition identities. It currently contains 26 operations:
 
 `texo.workspace.init`, `texo.workspace.status`, `texo.ingest.run`,
 `texo.knowledge.index`, `texo.code.index.build`, `texo.knowledge.triangulate`,

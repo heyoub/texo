@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
+use crate::host::HostInterface;
 
 /// Per-invocation environment installed around syncbat handler execution.
 pub struct OpEnv {
@@ -28,6 +29,8 @@ pub struct OpEnv {
     pub receipts: RefCell<Vec<ReceiptNote>>,
     /// Deterministic operation timestamp supplied by surfaces.
     pub observed_at_ms: u64,
+    /// Actual mounted `hostbat` interface for the fingerprint operation.
+    pub host_interface: HostInterface,
 }
 
 /// Compact receipt note returned by operation JSON outputs.
@@ -103,7 +106,21 @@ mod tests {
             cache: RefCell::new(WorkspaceCache::default()),
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
+            host_interface: test_host_interface(),
         })
+    }
+
+    fn test_host_interface() -> HostInterface {
+        HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: "test".to_string(),
+            fingerprints: crate::host::HostFingerprints {
+                module_digest: "00".repeat(32),
+                host_fingerprint: "00".repeat(32),
+                interface_fingerprint: "00".repeat(32),
+            },
+            operations: Vec::new(),
+        }
     }
 
     #[test]

@@ -37,14 +37,14 @@ pub fn serve(
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\n\r\n",
     ).map_err(surface_error)?;
-    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    let interface = host.interface();
     write_signal(
         stream,
         None,
         &json!({
             "kind": "hello",
             "frontier": frontier,
-            "fingerprint": interface.interface_fingerprint
+            "fingerprint": interface.fingerprints.interface_fingerprint
         }),
     )?;
     if resume_from.is_some() {

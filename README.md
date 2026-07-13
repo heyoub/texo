@@ -97,7 +97,7 @@ commands—never workspace-supplied shell commands.
 - `src/semantics/` - OpenAI-compatible semantic backends and chat builders.
 - `src/reconcile.rs` - bounded doc↔code candidates and proposal-only policy.
 - `src/ops/` - syncbat operation handlers and the Texo effect backend.
-- `src/host/` - store opening, op composition, canonical fingerprints.
+- `src/host/` - store opening and sealed hostbat module composition.
 - `src/surfaces/cli/` - CLI parsing and renderers.
 - `src/surfaces/http/` - hand-rolled sync HTTP/1.1 server/client and SSE.
 - `src/surfaces/mcp_stdio.rs` - sync MCP JSON-RPC 2.0 stdio surface.

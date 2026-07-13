@@ -1,6 +1,6 @@
 //! Host composition for texo operations.
 
-pub mod fingerprint;
+pub mod module;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use batpak::coordinate::Coordinate;
 use batpak::store::{Open, Store, StoreConfig};
 use serde::{Deserialize, Serialize};
-use syncbat::{Core, RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
+use syncbat::{RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::{ConfigError, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
@@ -17,7 +17,6 @@ use crate::error::TexoError;
 use crate::gateway::{resolve_role, ModelRole, RoleOverrides};
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
-use crate::ops::{catalog, register_all};
 
 /// Cross-request checkout slot for the warm workspace projection.
 pub type SharedWorkspaceCache = Arc<Mutex<Option<WorkspaceCache>>>;
@@ -33,11 +32,35 @@ pub struct HostFingerprints {
     pub interface_fingerprint: String,
 }
 
-/// Runnable texo host over a syncbat core.
+/// One public operation in the mounted `hostbat` interface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostOperationView {
+    /// Stable operation name.
+    pub name: String,
+    /// Stable effect class spelling.
+    pub effect: String,
+    /// Stable receipt schema reference.
+    pub receipt_kind: String,
+}
+
+/// Client-visible projection of the actual mounted `hostbat` composition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostInterface {
+    /// Interface schema identifier.
+    pub schema: String,
+    /// Texo binary version.
+    pub version: String,
+    /// Content identities produced by `hostbat`.
+    pub fingerprints: HostFingerprints,
+    /// Canonically ordered mounted operations.
+    pub operations: Vec<HostOperationView>,
+}
+
+/// Runnable Texo host over a content-identified `hostbat` composition.
 pub struct TexoHost {
-    core: Core,
+    host: hostbat::Host,
     env: Rc<OpEnv>,
-    fingerprints: HostFingerprints,
+    interface: HostInterface,
     shared_cache: Option<SharedWorkspaceCache>,
 }
 
@@ -160,20 +183,41 @@ impl TexoHost {
         let receipt_sink = StoreReceiptSink::new(Arc::clone(&store), receipt_coordinate);
         let status_sink = StoreOperationStatusSink::new(Arc::clone(&store));
 
-        let mut builder = Core::builder();
-        register_all(&mut builder).map_err(build_error)?;
-        builder.receipt_sink(receipt_sink);
-        builder.status_sink(status_sink);
-        builder.effect_backend(TexoEffectBackend);
+        let module = module::build()?;
+        let module_digest = module.manifest().digest().to_hex();
+        let mut builder = hostbat::HostBuilder::new()
+            .mount(module)
+            .map_err(build_error)?
+            .receipt_sink(receipt_sink)
+            .status_sink(status_sink)
+            .effect_backend(TexoEffectBackend);
         let model_role = resolve_role(
             ModelRole::Relate,
             &RoleOverrides::default(),
             config.gateway.as_ref(),
         );
         if grants_model_capability(Some(model_role.api_key)) {
-            builder.grant_capability("texo.cap.model");
+            builder = builder.grant_capability("texo.cap.model");
         }
-        let core = builder.build().map_err(build_error)?;
+        let host = builder.build().map_err(build_error)?;
+        let fingerprints = HostFingerprints {
+            module_digest,
+            host_fingerprint: host.fingerprint().to_hex(),
+            interface_fingerprint: host.interface_fingerprint().to_hex(),
+        };
+        let interface = HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            fingerprints,
+            operations: host
+                .operations()
+                .map(|descriptor| HostOperationView {
+                    name: descriptor.name().to_string(),
+                    effect: descriptor.effect.as_str().to_string(),
+                    receipt_kind: descriptor.receipt_kind().to_string(),
+                })
+                .collect(),
+        };
         let cache = shared_cache
             .as_ref()
             .and_then(|slot| slot.lock().ok()?.take())
@@ -186,12 +230,12 @@ impl TexoHost {
             cache: std::cell::RefCell::new(cache),
             receipts: std::cell::RefCell::new(Vec::new()),
             observed_at_ms,
+            host_interface: interface.clone(),
         });
-        let fingerprints = compute_fingerprints()?;
         Ok(Self {
-            core,
+            host,
             env,
-            fingerprints,
+            interface,
             shared_cache,
         })
     }
@@ -207,17 +251,23 @@ impl TexoHost {
         op: &str,
         input: &serde_json::Value,
     ) -> Result<serde_json::Value, TexoError> {
-        let bytes = serde_json::to_vec(input)?;
+        let bytes = batpak::canonical::to_bytes(input).map_err(build_error)?;
         self.env.receipts.borrow_mut().clear();
         let _guard = env::install(Rc::clone(&self.env));
-        let result = self.core.invoke(op, bytes).map_err(runtime_error)?;
-        serde_json::from_slice(result.output()).map_err(TexoError::Json)
+        let result = self.host.invoke(op, bytes).map_err(runtime_error)?;
+        batpak::canonical::from_bytes(result.output()).map_err(build_error)
     }
 
     /// Return deterministic host fingerprints.
     #[must_use]
     pub fn fingerprints(&self) -> HostFingerprints {
-        self.fingerprints.clone()
+        self.interface.fingerprints.clone()
+    }
+
+    /// Return the client-visible mounted interface.
+    #[must_use]
+    pub fn interface(&self) -> HostInterface {
+        self.interface.clone()
     }
 
     /// Return the underlying store for tests and surfaces that need reads.
@@ -338,27 +388,6 @@ fn op_receipt_coordinate(workspace_id: &str) -> Result<Coordinate, TexoError> {
         format!("ops:{workspace_id}"),
     )
     .map_err(TexoError::from)
-}
-
-fn compute_fingerprints() -> Result<HostFingerprints, TexoError> {
-    let interface = fingerprint::canonical_interface(&catalog());
-    let module_digest = digest_hex("texo.module.v2", &interface)?;
-    let host_fingerprint = digest_hex("texo.host.v2", &interface)?;
-    let interface_fingerprint = interface.interface_fingerprint;
-    Ok(HostFingerprints {
-        module_digest,
-        host_fingerprint,
-        interface_fingerprint,
-    })
-}
-
-fn digest_hex<T: Serialize>(domain: &str, value: &T) -> Result<String, TexoError> {
-    let mut bytes = domain.as_bytes().to_vec();
-    let encoded = batpak::canonical::to_bytes(value).map_err(|error| TexoError::Host {
-        detail: format!("fingerprint canonical encoding failed: {error}"),
-    })?;
-    bytes.extend_from_slice(&encoded);
-    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 fn config_error(error: crate::config::ConfigError) -> TexoError {

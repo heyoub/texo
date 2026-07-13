@@ -99,15 +99,18 @@ fn method_not_allowed(allow: &'static str) -> HttpResponse {
 }
 
 fn api_host(state: &RouteState) -> Result<HttpResponse, TexoError> {
-    let _host = open_host(state)?;
-    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    let host = open_host(state)?;
+    let interface = host.interface();
     HttpResponse::json(
         200,
         &json!({
-            "fingerprint": interface.interface_fingerprint,
             "schema": interface.schema,
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": interface.version,
             "workspace_id": state.workspace_id,
+            "module_digest": interface.fingerprints.module_digest,
+            "host_fingerprint": interface.fingerprints.host_fingerprint,
+            "interface_fingerprint": interface.fingerprints.interface_fingerprint,
+            "operations": interface.operations,
         }),
     )
     .map_err(TexoError::Json)

@@ -448,7 +448,11 @@ fn decode<T>(payload_bytes: &[u8]) -> Result<T, TexoError>
 where
     T: serde::de::DeserializeOwned,
 {
-    serde_json::from_slice(payload_bytes).map_err(TexoError::Json)
+    batpak::canonical::from_bytes(payload_bytes).map_err(|error| TexoError::OpRuntime {
+        op: "texo.effect.append".to_string(),
+        detail: format!("canonical effect payload decoding failed: {error}"),
+        denied: false,
+    })
 }
 
 fn verify_and_note(
@@ -506,6 +510,19 @@ mod tests {
     use crate::events::machines::record_claim;
     use crate::relate::settlement::SettledRelation;
 
+    fn test_host_interface() -> crate::host::HostInterface {
+        crate::host::HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: "test".to_string(),
+            fingerprints: crate::host::HostFingerprints {
+                module_digest: "00".repeat(32),
+                host_fingerprint: "00".repeat(32),
+                interface_fingerprint: "00".repeat(32),
+            },
+            operations: Vec::new(),
+        }
+    }
+
     #[test]
     fn keyed_source_retry_returns_original_event_and_appends_once() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -519,6 +536,7 @@ mod tests {
             cache: RefCell::new(WorkspaceCache::default()),
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
+            host_interface: test_host_interface(),
         };
         let payload = SourceObservedV2 {
             source_id: "src_aaaaaaaaaaaa".to_string(),
@@ -528,7 +546,7 @@ mod tests {
             body_hash_hex: "body".to_string(),
             observed_at_ms: 1,
         };
-        let bytes = serde_json::to_vec(&payload).expect("json");
+        let bytes = batpak::canonical::to_bytes(&payload).expect("canonical payload");
         append_domain_event(&env, <SourceObservedV2 as EventPayload>::KIND, &bytes).expect("first");
         append_domain_event(&env, <SourceObservedV2 as EventPayload>::KIND, &bytes).expect("retry");
 
@@ -556,6 +574,7 @@ mod tests {
             cache: RefCell::new(WorkspaceCache::default()),
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
+            host_interface: test_host_interface(),
         };
         let payload = RelationJudgedV1 {
             workspace_id: WorkspaceId::try_from("demo").expect("workspace"),
@@ -567,7 +586,7 @@ mod tests {
             cache_key_hex: "cache".to_string(),
             observed_at_ms: 1,
         };
-        let bytes = serde_json::to_vec(&payload).expect("json");
+        let bytes = batpak::canonical::to_bytes(&payload).expect("canonical payload");
         append_domain_event(&env, <RelationJudgedV1 as EventPayload>::KIND, &bytes).expect("first");
         append_domain_event(&env, <RelationJudgedV1 as EventPayload>::KIND, &bytes).expect("retry");
 

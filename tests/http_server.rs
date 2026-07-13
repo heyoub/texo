@@ -94,10 +94,15 @@ fn agent_flow_guards_and_session_end_idempotence() -> TestResult {
     let host = request(addr, "GET /api/host HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
     assert!(host.contains("HTTP/1.1 200 OK"));
     let host_body: Value = serde_json::from_str(response_body(&host)?)?;
-    assert_eq!(host_body["schema"], "texo-canonical-v1");
+    assert_eq!(host_body["schema"], "hostbat.interface.v1");
+    assert_eq!(host_body["module_digest"].as_str().map(str::len), Some(64));
+    assert_eq!(
+        host_body["host_fingerprint"].as_str().map(str::len),
+        Some(64)
+    );
     assert_eq!(host_body["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(host_body["workspace_id"], "demo");
-    assert!(!host_body["fingerprint"]
+    assert!(!host_body["interface_fingerprint"]
         .as_str()
         .expect("host response carries fingerprint")
         .is_empty());

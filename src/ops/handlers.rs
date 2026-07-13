@@ -1074,13 +1074,7 @@ fn relate_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.host.fingerprint", || {
         let _input: HostFingerprintInput = parse_input("texo.host.fingerprint", input)?;
-        // TODO(batpak-0.10): replace with hostbat HostModule manifest + fingerprints
-        //  once texo bumps past the 0.9.0 HostBuilder gap (freebatteryfactory/batpak#166,
-        //  fixed in #169/0.10.0). This hand-rolled digest is content-addressed over the
-        //  same declared surface and upgrades in place.
-        Ok(crate::host::fingerprint::canonical_interface(
-            &crate::ops::catalog(),
-        ))
+        env::with(|op_env| op_env.host_interface.clone())
     })
 }
 
@@ -2226,7 +2220,7 @@ pub(crate) fn run_op<T: Serialize>(
     f: impl FnOnce() -> Result<T, TexoError>,
 ) -> HandlerResult {
     let output = f()?;
-    serde_json::to_vec(&output).map_err(|error| {
+    batpak::canonical::to_bytes(&output).map_err(|error| {
         HandlerError::from(TexoError::OpRuntime {
             op: op.to_string(),
             detail: error.to_string(),
@@ -2239,7 +2233,7 @@ pub(crate) fn parse_input<T: serde::de::DeserializeOwned>(
     op: &str,
     input: &[u8],
 ) -> Result<T, TexoError> {
-    serde_json::from_slice(input).map_err(|error| TexoError::OpInput {
+    batpak::canonical::from_bytes(input).map_err(|error| TexoError::OpInput {
         op: op.to_string(),
         detail: error.to_string(),
     })
@@ -2251,7 +2245,11 @@ pub(crate) fn append_json<T: Serialize>(
     kind: EventKind,
     payload: &T,
 ) -> Result<(), TexoError> {
-    let bytes = serde_json::to_vec(payload)?;
+    let bytes = batpak::canonical::to_bytes(payload).map_err(|error| TexoError::OpRuntime {
+        op: op.to_string(),
+        detail: format!("canonical effect payload encoding failed: {error}"),
+        denied: false,
+    })?;
     cx.event_append_handle()
         .append_event(kind, &bytes)
         .map_err(|error| op_runtime(op, error))
