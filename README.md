@@ -33,7 +33,13 @@ From this source checkout, a complete clean demo is:
 
 ```sh
 just demo-fresh
+just demo-intelligence
 ```
+
+Release evidence is reproducible through `just measure-intelligence` and the
+literal external-fixture compatibility matrix through `just verify-old-store`.
+The latter intentionally fails when the immutable 0.9 fixture archive is not
+available; `test-invariants` is substrate smoke coverage, not old-store proof.
 
 Multi-workspace scopes live in `.texo/config.toml` under
 `[workspaces.<id>]`. Use `--workspace <id>` on any CLI command.

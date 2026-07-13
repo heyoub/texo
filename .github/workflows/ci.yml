@@ -39,6 +39,7 @@ jobs:
       # Precompiled cargo-deny (no ~2.5min source build per run).
       - uses: taiki-e/install-action@cargo-deny
       - run: just verify
+      - run: just demo-intelligence
       - run: just demo
       - run: just drift
         continue-on-error: true

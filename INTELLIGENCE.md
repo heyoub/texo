@@ -75,8 +75,7 @@ Replay, verify, explanation, and restore make no model call.
 Run the complete committed-plus-dirty appliance flow with no API key:
 
 ```sh
-cargo build
-scripts/demo-intelligence-e2e.sh
+just demo-intelligence
 ```
 
 The script creates a fresh Git repository, ingests one claim, indexes a clean
@@ -85,6 +84,24 @@ indexes a modified plus untracked overlay, triangulates an exact Rust symbol,
 then creates, pins, restores, reopens, and verifies a cache-free backup. It emits
 one `texo.intelligence-demo.v1` JSON report and removes its temporary files.
 
+The remaining release evidence has explicit targets:
+
+```sh
+# Requires the immutable external 0.9 fixture archive. Override its location
+# with TEXO_09_FIXTURES or pass the directory as the script's first argument.
+just verify-old-store
+
+# Emits a machine-readable cold/warm report for the current binary and host.
+just measure-intelligence
+```
+
+`verify-old-store` is the literal compatibility matrix: six 0.9-written stores
+must retain byte-identical claim output and verify cleanly, the corrupted store
+must fail at its pinned CRC location, re-ingests must append nothing, and the
+single-writer lock must hold. The in-repository `spike_family` tests are BatPak
+substrate smoke tests, not a substitute for that external fixture matrix. The
+runner fails rather than claiming coverage when the fixture archive is absent.
+
 The same debug build and warm filesystem produced this Texo-on-Texo comparison;
 absolute numbers vary by machine, while the before/after inputs and limits were
 identical:
@@ -92,19 +109,20 @@ identical:
 | Index behavior | Occurrences | Wall | Peak RSS |
 |---|---:|---:|---:|
 | Unbounded prose/repeated lexical fallback | 92,525 | 23.18 s | 540,028 KiB |
-| Bounded relevant cold index | 16,912 | 5.21 s | 71,260 KiB |
-| Unchanged authenticated reuse | 16,912 | 0.49 s | 53,824 KiB |
+| Bounded relevant cold index | 17,142 | 4.95 s | 72,864 KiB |
+| Unchanged authenticated reuse | 17,142 | 0.51 s | 54,412 KiB |
 
-The final cold run captured 204 files with 16,912 code occurrences, syntactic
-quality, zero coverage gaps, and no truncation. Relative to the first measured
-implementation, cold indexing reduced occurrences by 81.7%, wall time by 77.5%,
-and peak RSS by 86.8%. The command shape used for independent measurement is:
+The final recorded run captured 205 files with 17,142 code occurrences,
+syntactic quality, zero coverage gaps, and no truncation. The exact commit,
+toolchain, host, binary digest, cold measurements, and warm-reuse proof are in
+[`evidence/intelligence-performance.json`](evidence/intelligence-performance.json).
+Timing and RSS are informational host observations; deterministic counts,
+coverage, boundedness, and authenticated reuse are the product contracts.
+Relative to the first measured implementation, this run reduced occurrences by
+81.5%, wall time by 78.6%, and peak RSS by 86.5%. Reproduce the report with:
 
 ```sh
-git clone --no-hardlinks . /tmp/texo-index-proof
-target/debug/texo --root /tmp/texo-index-proof init
-/usr/bin/time -f '%e seconds %M KiB' \
-  target/debug/texo --root /tmp/texo-index-proof index --json
+just measure-intelligence
 ```
 
 For all correctness anchors and hostile fixtures, see
