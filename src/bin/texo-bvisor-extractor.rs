@@ -57,14 +57,9 @@ fn run() -> Result<(), String> {
             ],
         },
         capabilities: vec![
-            Capability::Filesystem {
-                access: FsAccess::ReadWrite,
-                scope: PathSet {
-                    roots: confinement_roots(parent),
-                },
-                recursive: true,
-                confinement: FsConfinement::DeclaredRootsOnly,
-            },
+            filesystem_capability(FsAccess::ReadWrite, vec![parent.display().to_string()]),
+            filesystem_capability(FsAccess::Read, runtime_roots()),
+            filesystem_capability(FsAccess::ReadWrite, device_roots()),
             Capability::Network {
                 policy: NetPolicy::DenyAll,
             },
@@ -183,21 +178,36 @@ fn launcher_path() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn confinement_roots(run: &Path) -> Vec<String> {
+fn filesystem_capability(access: FsAccess, roots: Vec<String>) -> Capability {
+    Capability::Filesystem {
+        access,
+        scope: PathSet { roots },
+        recursive: true,
+        confinement: FsConfinement::DeclaredRootsOnly,
+    }
+}
+
+fn runtime_roots() -> Vec<String> {
     [
-        run,
         Path::new("/bin"),
         Path::new("/usr/bin"),
         Path::new("/lib"),
         Path::new("/lib64"),
         Path::new("/usr/lib"),
         Path::new("/usr/lib64"),
-        Path::new("/dev/null"),
     ]
     .into_iter()
     .filter(|path| path.exists())
     .map(|path| path.display().to_string())
     .collect()
+}
+
+fn device_roots() -> Vec<String> {
+    [Path::new("/dev/null")]
+        .into_iter()
+        .filter(|path| path.exists())
+        .map(|path| path.display().to_string())
+        .collect()
 }
 
 fn extractor_budgets() -> BudgetRequirements {
