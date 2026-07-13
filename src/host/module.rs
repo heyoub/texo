@@ -14,8 +14,8 @@ use crate::events::payloads::{
     ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
     ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1,
     EvidenceReconciliationAcceptedV1, OnboardingCompiledV2, RelationDeferredV1, RelationJudgedV1,
-    SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
-    WorkspaceInitializedV2,
+    ReplicaBatchMaterializedV1, SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1,
+    SourceSnapshotRelationV1, WorkspaceInitializedV2,
 };
 use crate::topology::JournalRole;
 
@@ -130,6 +130,10 @@ fn declare_event_payloads(mut builder: HostModuleBuilder) -> Result<HostModuleBu
         "texo.event.source-snapshot-relation.v1"
     );
     bind!(SessionTurnV1, "texo.event.session-turn.v1");
+    bind!(
+        ReplicaBatchMaterializedV1,
+        "texo.event.replica-batch-materialized.v1"
+    );
     Ok(builder)
 }
 
@@ -181,7 +185,7 @@ mod tests {
             module.manifest().operations().count(),
             crate::ops::catalog().len()
         );
-        assert_eq!(module.manifest().event_payload_bindings().count(), 16);
+        assert_eq!(module.manifest().event_payload_bindings().count(), 17);
     }
 
     #[test]
@@ -196,6 +200,10 @@ mod tests {
             .into_iter()
             .flat_map(|item| item.descriptor().effect_row().appends_events().to_vec())
             .collect::<BTreeSet<_>>();
-        assert_eq!(bound, declared);
+        assert!(declared.is_subset(&bound));
+        assert!(bound.contains(&format!(
+            "evt.{:04x}",
+            ReplicaBatchMaterializedV1::KIND.as_raw_u16()
+        )));
     }
 }

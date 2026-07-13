@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::journal_store::JournalRead;
 use batpak::coordinate::Region;
 use batpak::event::{Event, EventKind, EventPayload, EventSourced};
 use batpak::id::EntityIdType;
-use batpak::store::{Open, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::claims::card::ClaimCard;
@@ -271,8 +271,8 @@ pub struct ClaimView {
 ///
 /// # Errors
 /// Returns [`TexoError::Store`] when `BatPak` projection or replay fails.
-pub fn assemble(
-    store: &Store<Open>,
+pub fn assemble<S: JournalRead + ?Sized>(
+    store: &S,
     workspace_id: &str,
     cache: &mut WorkspaceCache,
 ) -> Result<Arc<WorkspaceView>, TexoError> {
@@ -315,8 +315,8 @@ pub fn assemble(
 /// # Errors
 /// Returns [`TexoError::Store`] when a journal event cannot be read, or
 /// [`TexoError::Decode`] when `frontier` is not an exact workspace frontier.
-pub fn assemble_through(
-    store: &Store<Open>,
+pub fn assemble_through<S: JournalRead + ?Sized>(
+    store: &S,
     workspace_id: &str,
     frontier: u64,
 ) -> Result<Arc<WorkspaceView>, TexoError> {
@@ -404,8 +404,8 @@ fn build_view(workspace_id: &str, cache: &mut WorkspaceCache) -> Arc<WorkspaceVi
     view
 }
 
-fn fold_through(
-    store: &Store<Open>,
+fn fold_through<S: JournalRead + ?Sized>(
+    store: &S,
     region: &Region,
     frontier: u64,
     cache: &mut WorkspaceCache,
@@ -456,7 +456,11 @@ fn trace_assemble(cache: &WorkspaceCache) {
     );
 }
 
-fn anchor_matches(store: &Store<Open>, region: &Region, cache: &WorkspaceCache) -> bool {
+fn anchor_matches<S: JournalRead + ?Sized>(
+    store: &S,
+    region: &Region,
+    cache: &WorkspaceCache,
+) -> bool {
     let after = cache.frontier.saturating_sub(1);
     store
         .query_entries_after(region, Some(after), 1)
@@ -467,8 +471,8 @@ fn anchor_matches(store: &Store<Open>, region: &Region, cache: &WorkspaceCache) 
         })
 }
 
-fn rebuild_cache(
-    store: &Store<Open>,
+fn rebuild_cache<S: JournalRead + ?Sized>(
+    store: &S,
     region: &Region,
     cache: &mut WorkspaceCache,
 ) -> Result<(), TexoError> {
@@ -483,8 +487,8 @@ fn rebuild_cache(
     Ok(())
 }
 
-fn advance_cache(
-    store: &Store<Open>,
+fn advance_cache<S: JournalRead + ?Sized>(
+    store: &S,
     region: &Region,
     cache: &mut WorkspaceCache,
 ) -> Result<(), TexoError> {
@@ -517,8 +521,8 @@ enum FoldOutcome {
 /// everything the fold needs, so no per-entity store replays occur (each
 /// `Store::project` call rebuilds an O(region) replay plan — the quadratic
 /// knee this module previously bent at).
-fn fold_after(
-    store: &Store<Open>,
+fn fold_after<S: JournalRead + ?Sized>(
+    store: &S,
     region: &Region,
     initial_after: Option<u64>,
     cache: &mut WorkspaceCache,

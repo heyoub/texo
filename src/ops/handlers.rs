@@ -2321,7 +2321,7 @@ fn assemble_snapshot_view(
     };
     let (store, workspace, journal_id) = env::with(|op_env| {
         (
-            std::sync::Arc::clone(&op_env.store),
+            op_env.store.clone(),
             op_env.workspace_id.clone(),
             op_env.journal.id.clone(),
         )
@@ -2371,7 +2371,7 @@ fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
 }
 
 fn validate_snapshot_anchor(
-    store: &batpak::store::Store<batpak::store::Open>,
+    store: &crate::journal_store::JournalStore,
     workspace_id: &str,
     descriptor: &SnapshotDescriptor,
 ) -> Result<(), TexoError> {
@@ -2389,7 +2389,7 @@ fn validate_snapshot_anchor(
 }
 
 fn anchor_at_frontier(
-    store: &batpak::store::Store<batpak::store::Open>,
+    store: &crate::journal_store::JournalStore,
     workspace_id: &str,
     frontier: u64,
 ) -> Result<String, TexoError> {

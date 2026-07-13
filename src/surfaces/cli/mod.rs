@@ -230,6 +230,11 @@ enum Command {
         #[command(subcommand)]
         cmd: BackupCmd,
     },
+    /// Bootstrap or advance a configured scale-out read replica.
+    Replica {
+        #[command(subcommand)]
+        cmd: ReplicaCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -301,6 +306,26 @@ enum BackupCmd {
         /// Out-of-band manifest hash printed when the backup was created.
         #[arg(long)]
         expect_manifest_hash: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReplicaCmd {
+    /// Materialize a fresh exact fork or imported read model.
+    Bootstrap {
+        /// Replica journal id declared in `.texo/config.toml`.
+        replica: String,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Advance an imported read model once from its durable source cursor.
+    Follow {
+        /// Replica journal id declared in `.texo/config.toml`.
+        replica: String,
+        /// Emit the stable machine-readable report.
         #[arg(long)]
         json: bool,
     },
@@ -841,6 +866,18 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        Command::Replica { cmd } => {
+            let report = match cmd {
+                ReplicaCmd::Bootstrap { replica, json: _ } => {
+                    crate::replication::bootstrap(&cli.root, cli.workspace.as_deref(), &replica)?
+                }
+                ReplicaCmd::Follow { replica, json: _ } => {
+                    crate::replication::follow_once(&cli.root, cli.workspace.as_deref(), &replica)?
+                }
+            };
+            render::json(&serde_json::to_value(report)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

@@ -4,13 +4,13 @@ use std::collections::BTreeMap;
 
 use batpak::coordinate::Region;
 use batpak::event::EventPayload;
-use batpak::store::{Open, Store};
 
 use crate::error::TexoError;
 use crate::events::coordinate::scope_for_workspace;
 use crate::events::payloads::{
     ClaimEvidenceLinkedV1, EvidenceOccurrenceRecordedV1, EvidenceReconciliationAcceptedV1,
 };
+use crate::journal_store::JournalRead;
 use crate::knowledge::{ClaimEvidence, ReconciliationProvenance};
 
 const PAGE_LIMIT: usize = 256;
@@ -49,8 +49,8 @@ impl EvidenceProjection {
 ///
 /// # Errors
 /// Returns a store or typed-decode error for unreadable journal source truth.
-pub fn assemble_through(
-    store: &Store<Open>,
+pub fn assemble_through<S: JournalRead + ?Sized>(
+    store: &S,
     workspace_id: &str,
     frontier: u64,
 ) -> Result<EvidenceProjection, TexoError> {

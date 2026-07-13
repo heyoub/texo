@@ -17,7 +17,7 @@
 
 use batpak::event::EventPayload;
 use batpak::id::{EntityIdType, IdempotencyKey};
-use batpak::store::{AppendOptions, AppendPositionHint, Open, Store};
+use batpak::store::{AppendOptions, AppendPositionHint};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use syncbat::{CoreBuilder, HandlerResult, OperationRegisterItem};
@@ -29,6 +29,7 @@ use crate::events::coordinate::{coordinate_for_session, entity_for_session, sess
 use crate::events::payloads::{
     ClaimRecordedV2, ClaimSupersededV2, SessionTurnV1, SourceObservedV2,
 };
+use crate::journal_store::JournalStore;
 use crate::ops::env::{self, ReceiptNote};
 use crate::ops::handlers::{
     append_json, assemble_current_view, infer_supersessions, op_runtime, parse_input, plan_sources,
@@ -88,7 +89,7 @@ pub fn session_doc_path(root: &Path, session_id: &str) -> PathBuf {
 /// Returns [`TexoError::OpInput`] for an invalid session id;
 /// [`TexoError::Store`] when append or receipt verification fails.
 pub fn journal_turn(
-    store: &Store<Open>,
+    store: &JournalStore,
     workspace_id: &str,
     session_id: &str,
     speaker: Speaker,
@@ -113,7 +114,7 @@ pub fn journal_turn(
 /// Returns [`TexoError::Store`] when event reads fail and
 /// [`TexoError::Decode`] when a lane event cannot be decoded as a turn.
 pub fn read_session_turns(
-    store: &Store<Open>,
+    store: &JournalStore,
     session_id: &str,
 ) -> Result<Vec<TurnEntry>, TexoError> {
     let entity = entity_for_session(session_id);
@@ -602,7 +603,7 @@ fn validate_session_input(op: &str, session_id: &str) -> Result<(), TexoError> {
 }
 
 fn next_turn_payload(
-    store: &Store<Open>,
+    store: &JournalStore,
     workspace_id: &str,
     session_id: &str,
     speaker: Speaker,
@@ -636,7 +637,7 @@ fn next_turn_payload(
 }
 
 fn append_turn_direct(
-    store: &Store<Open>,
+    store: &JournalStore,
     payload: &SessionTurnV1,
 ) -> Result<ReceiptNote, TexoError> {
     let coordinate = coordinate_for_session(&payload.workspace_id, &payload.session_id)?;

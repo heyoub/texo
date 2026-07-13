@@ -56,6 +56,7 @@ fn canonical_and_replica_open_together_with_separate_authority() -> TestResult {
         replica.fingerprints().module_digest,
         "role policy is one declared module contract, not a forked interface"
     );
+    let physical_frontier = replica.store().frontier().visible_hlc.global_sequence;
 
     let _init = canonical.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
     let reloaded = TexoRootConfig::load(&root.path().join(".texo/config.toml"))?;
@@ -70,6 +71,18 @@ fn canonical_and_replica_open_together_with_separate_authority() -> TestResult {
 
     let claims = replica.invoke_json("texo.claims.list", &json!({"subject": null}))?;
     assert_eq!(claims["claims"], json!([]));
+    assert_eq!(
+        replica.store().frontier().visible_hlc.global_sequence,
+        physical_frontier,
+        "opening and reading a replica must append no lifecycle, status, receipt, or domain event"
+    );
+    drop(replica);
+    let reopened = TexoHost::open_journal(root.path(), "demo", "codex", 2)?;
+    assert_eq!(
+        reopened.store().frontier().visible_hlc.global_sequence,
+        physical_frontier,
+        "closing and reopening a replica must preserve its complete physical frontier"
+    );
     Ok(())
 }
 

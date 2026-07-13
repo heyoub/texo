@@ -331,6 +331,35 @@ pub struct SourceSnapshotRelationV1 {
     pub observed_at_ms: u64,
 }
 
+/// One source event represented in an imported read-model batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplicaSourceEventV1 {
+    /// Source event id as lowercase hex.
+    pub source_event_id_hex: String,
+    /// Source global sequence.
+    pub source_global_sequence: u64,
+    /// Source event kind raw bits.
+    pub source_kind: u16,
+    /// Source payload content hash as lowercase hex.
+    pub source_content_hash_hex: String,
+}
+
+/// Atomic evidence that a replica batch and its source events materialized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]
+#[batpak(category = 0xE, type_id = 17, version = 1)]
+pub struct ReplicaBatchMaterializedV1 {
+    /// Logical workspace scope.
+    pub workspace_id: String,
+    /// Stable source journal id.
+    pub source_journal: String,
+    /// Stable replica journal id.
+    pub replica_journal: String,
+    /// Stable source namespace for retry identity.
+    pub source_namespace: String,
+    /// Bounded source-event identities committed in the same batch.
+    pub events: Vec<ReplicaSourceEventV1>,
+}
+
 /// Deterministic policy acceptance of one cached model proposal linking code
 /// evidence to a semantic claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, batpak::EventPayload)]

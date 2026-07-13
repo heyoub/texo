@@ -108,7 +108,7 @@ fn receipt_coord() -> Result<Coordinate, batpak::coordinate::CoordinateError> {
 
 fn test_env(dir: &TempDir, store: Arc<Store>) -> Rc<OpEnv> {
     Rc::new(OpEnv {
-        store,
+        store: texo::journal_store::JournalStore::writable(store),
         workspace_id: "demo".to_string(),
         root: dir.path().to_path_buf(),
         config: WorkspaceConfig::demo(),

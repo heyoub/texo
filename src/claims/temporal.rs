@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use batpak::coordinate::Region;
 use batpak::event::EventPayload;
-use batpak::store::{Open, Store};
 
 use crate::error::TexoError;
 use crate::events::coordinate::scope_for_workspace;
 use crate::events::payloads::SourceSnapshotRelationV1;
+use crate::journal_store::JournalRead;
 use crate::knowledge::{SourceSnapshotId, TemporalRelation};
 
 const PAGE_LIMIT: usize = 256;
@@ -63,8 +63,8 @@ impl TemporalProjection {
 ///
 /// # Errors
 /// Returns a store or typed-decode error for unreadable journal source truth.
-pub fn assemble_through(
-    store: &Store<Open>,
+pub fn assemble_through<S: JournalRead + ?Sized>(
+    store: &S,
     workspace_id: &str,
     frontier: u64,
 ) -> Result<TemporalProjection, TexoError> {

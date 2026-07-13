@@ -3,21 +3,20 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
-use batpak::store::{Open, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
 use crate::host::HostInterface;
+use crate::journal_store::JournalStore;
 use crate::topology::ResolvedJournal;
 
 /// Per-invocation environment installed around syncbat handler execution.
 pub struct OpEnv {
     /// Open workspace store.
-    pub store: Arc<Store<Open>>,
+    pub store: JournalStore,
     /// Workspace identifier.
     pub workspace_id: String,
     /// Workspace root.
@@ -103,7 +102,7 @@ mod tests {
         let store =
             Store::open(StoreConfig::new(root.path().join("store"))).expect("test store opens");
         Rc::new(OpEnv {
-            store: Arc::new(store),
+            store: JournalStore::writable(Arc::new(store)),
             workspace_id: workspace_id.to_string(),
             root: root.path().to_path_buf(),
             config: WorkspaceConfig::demo(),

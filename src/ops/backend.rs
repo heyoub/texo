@@ -536,7 +536,7 @@ mod tests {
         let store =
             Arc::new(Store::open(StoreConfig::new(root.path().join("store"))).expect("store"));
         let env = OpEnv {
-            store: Arc::clone(&store),
+            store: crate::journal_store::JournalStore::writable(Arc::clone(&store)),
             workspace_id: "demo".to_string(),
             root: root.path().to_path_buf(),
             config: WorkspaceConfig::demo(),
@@ -575,7 +575,7 @@ mod tests {
         let store =
             Arc::new(Store::open(StoreConfig::new(root.path().join("store"))).expect("store"));
         let env = OpEnv {
-            store: Arc::clone(&store),
+            store: crate::journal_store::JournalStore::writable(Arc::clone(&store)),
             workspace_id: "demo".to_string(),
             root: root.path().to_path_buf(),
             config: WorkspaceConfig::demo(),

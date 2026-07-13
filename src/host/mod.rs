@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use batpak::coordinate::Coordinate;
-use batpak::store::{Open, Store, StoreConfig};
+use batpak::store::{Open, ReadOnly, Store, StoreConfig};
 use serde::{Deserialize, Serialize};
 use syncbat::{RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
@@ -15,6 +15,7 @@ use crate::claims::workspace::WorkspaceCache;
 use crate::config::{ConfigError, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 use crate::error::TexoError;
 use crate::gateway::{resolve_role, ModelRole, RoleOverrides};
+use crate::journal_store::JournalStore;
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
 use crate::topology::{JournalRole, ResolvedJournal};
@@ -100,7 +101,7 @@ impl TexoHost {
         let root = root.into();
         let workspace_id = workspace_id.into();
         let (config, journal) = load_or_default_config(&root, &workspace_id, None)?;
-        let store = open_store_for_config(&root, &config)?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
         Self::from_parts(
             root,
             &workspace_id,
@@ -125,7 +126,7 @@ impl TexoHost {
         let root = root.into();
         let workspace_id = workspace_id.into();
         let (config, journal) = load_or_default_config(&root, &workspace_id, Some(journal_id))?;
-        let store = open_store_for_config(&root, &config)?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
         Self::from_parts(
             root,
             &workspace_id,
@@ -154,7 +155,7 @@ impl TexoHost {
         let root = root.into();
         let workspace_id = workspace_id.into();
         let (config, journal) = load_or_init_config(&root, &workspace_id)?;
-        let store = open_store_for_config(&root, &config)?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
         Self::from_parts(
             root,
             &workspace_id,
@@ -189,7 +190,7 @@ impl TexoHost {
             observed_at_ms,
             config,
             journal,
-            store,
+            JournalStore::writable(store),
             None,
         )
     }
@@ -217,7 +218,7 @@ impl TexoHost {
             observed_at_ms,
             config,
             journal,
-            store,
+            JournalStore::writable(store),
             Some(shared_cache),
         )
     }
@@ -228,7 +229,7 @@ impl TexoHost {
         observed_at_ms: u64,
         config: WorkspaceConfig,
         journal: ResolvedJournal,
-        store: Arc<Store<Open>>,
+        store: JournalStore,
         shared_cache: Option<SharedWorkspaceCache>,
     ) -> Result<Self, TexoError> {
         let module = module::build(journal.role)?;
@@ -238,12 +239,15 @@ impl TexoHost {
             .map_err(build_error)?
             .effect_backend(TexoEffectBackend);
         if journal.role == JournalRole::Canonical {
+            let writer = store.writable_arc().ok_or_else(|| TexoError::Host {
+                detail: "canonical journal was not opened with write authority".to_string(),
+            })?;
             builder = builder
                 .receipt_sink(StoreReceiptSink::new(
-                    Arc::clone(&store),
+                    Arc::clone(&writer),
                     op_receipt_coordinate(workspace_id)?,
                 ))
-                .status_sink(StoreOperationStatusSink::new(Arc::clone(&store)));
+                .status_sink(StoreOperationStatusSink::new(writer));
         }
         let model_role = resolve_role(
             ModelRole::Relate,
@@ -329,8 +333,8 @@ impl TexoHost {
 
     /// Return the underlying store for tests and surfaces that need reads.
     #[must_use]
-    pub fn store(&self) -> Arc<Store<Open>> {
-        Arc::clone(&self.env.store)
+    pub fn store(&self) -> JournalStore {
+        self.env.store.clone()
     }
 
     /// Return the workspace id this host runs against.
@@ -471,6 +475,23 @@ fn open_store_for_config(
     })?;
     let dir = config.store_path_buf(root);
     Ok(Arc::new(Store::open(StoreConfig::new(dir))?))
+}
+
+fn open_journal_store_for_config(
+    root: &Path,
+    config: &WorkspaceConfig,
+    role: JournalRole,
+) -> Result<JournalStore, TexoError> {
+    batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+        detail: error.to_string(),
+    })?;
+    let store_config = StoreConfig::new(config.store_path_buf(root));
+    match role {
+        JournalRole::Canonical => Ok(JournalStore::writable(Arc::new(Store::open(store_config)?))),
+        JournalRole::Replica => Ok(JournalStore::read_only(Arc::new(
+            Store::<ReadOnly>::open_read_only(store_config)?,
+        ))),
+    }
 }
 
 fn op_receipt_coordinate(workspace_id: &str) -> Result<Coordinate, TexoError> {

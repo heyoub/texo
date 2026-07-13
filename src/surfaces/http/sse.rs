@@ -28,7 +28,13 @@ pub fn serve(
     shutdown: &ShutdownHandle,
 ) -> Result<(), TexoError> {
     let host = open_host(state)?;
-    let store = host.store();
+    let store = host
+        .store()
+        .writable_arc()
+        .ok_or_else(|| TexoError::Surface {
+            which: crate::error::SurfaceKind::Http,
+            detail: "SSE subscriptions require the canonical journal writer".to_string(),
+        })?;
     let scope = scope_for_workspace(host.workspace_id());
     let region = Region::scope(&scope);
     let frontier = visible_frontier(&store, &region);
