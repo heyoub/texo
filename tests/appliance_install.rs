@@ -25,7 +25,7 @@ fn cli_install_all_is_repeatable_and_uninstall_keeps_workspace() -> TestResult {
     )?;
     assert!(first.status.success());
     let first_report: Value = serde_json::from_slice(&first.stdout)?;
-    assert_eq!(first_report["schema"], "texo.install.v1");
+    assert_eq!(first_report["schema"], "texo.install.v2");
     assert!(root.path().join(".texo/mcp.json").is_file());
     let hooks: Value =
         serde_json::from_slice(&std::fs::read(root.path().join(".texo/hooks.json"))?)?;

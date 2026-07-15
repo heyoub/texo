@@ -18,6 +18,7 @@ Stale markdown diagnostics powered by the [`texo`](https://github.com/heyoub/tex
 |---|---|---|
 | `texo.binaryPath` | `texo` | Path to CLI binary |
 | `texo.workspaceId` | `demo` | BatPak workspace scope (matches `--workspace`) |
+| `texo.journalId` | empty | Physical journal id (matches `--journal`; empty selects primary) |
 | `texo.checkOnSave` | `true` | Check markdown on save |
 | `texo.checkOnOpen` | `false` | Check markdown on open |
 | `texo.checkTimeoutMs` | `30000` | Kill CLI invocations that exceed this many milliseconds |

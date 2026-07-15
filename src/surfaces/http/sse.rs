@@ -28,7 +28,13 @@ pub fn serve(
     shutdown: &ShutdownHandle,
 ) -> Result<(), TexoError> {
     let host = open_host(state)?;
-    let store = host.store();
+    let store = host
+        .store()
+        .writable_arc()
+        .ok_or_else(|| TexoError::Surface {
+            which: crate::error::SurfaceKind::Http,
+            detail: "SSE subscriptions require the canonical journal writer".to_string(),
+        })?;
     let scope = scope_for_workspace(host.workspace_id());
     let region = Region::scope(&scope);
     let frontier = visible_frontier(&store, &region);
@@ -37,14 +43,16 @@ pub fn serve(
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\n\r\n",
     ).map_err(surface_error)?;
-    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    let interface = host.interface();
     write_signal(
         stream,
         None,
         &json!({
             "kind": "hello",
             "frontier": frontier,
-            "fingerprint": interface.interface_fingerprint
+            "journal_id": host.journal_id(),
+            "journal_role": host.journal_role(),
+            "fingerprint": interface.fingerprints.interface_fingerprint
         }),
     )?;
     if resume_from.is_some() {

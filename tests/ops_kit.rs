@@ -43,8 +43,8 @@ thread_local! {
 )]
 fn row_violation(_input: &[u8], cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerResult {
     let payload = source_payload("src_row_violation");
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|error| HandlerError::failed(error.to_string()))?;
+    let bytes = batpak::canonical::to_bytes(&payload)
+        .map_err(|error| HandlerError::failed(error.to_string()))?;
     cx.event_append_handle()
         .append_event(<SourceObservedV2 as EventPayload>::KIND, &bytes)
         .map_err(|error| HandlerError::failed(error.to_string()))?;
@@ -108,13 +108,27 @@ fn receipt_coord() -> Result<Coordinate, batpak::coordinate::CoordinateError> {
 
 fn test_env(dir: &TempDir, store: Arc<Store>) -> Rc<OpEnv> {
     Rc::new(OpEnv {
-        store,
+        store: texo::journal_store::JournalStore::writable(store),
         workspace_id: "demo".to_string(),
         root: dir.path().to_path_buf(),
         config: WorkspaceConfig::demo(),
         cache: RefCell::new(WorkspaceCache::default()),
         receipts: RefCell::new(Vec::new()),
         observed_at_ms: 1,
+        host_interface: texo::host::HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: "test".to_string(),
+            fingerprints: texo::host::HostFingerprints {
+                module_digest: "00".repeat(32),
+                host_fingerprint: "00".repeat(32),
+                interface_fingerprint: "00".repeat(32),
+            },
+            operations: Vec::new(),
+        },
+        journal: texo::config::TexoRootConfig::demo()
+            .resolve_journal(Some("demo"), None)
+            .expect("test journal")
+            .1,
     })
 }
 

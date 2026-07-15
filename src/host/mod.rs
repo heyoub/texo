@@ -1,23 +1,24 @@
 //! Host composition for texo operations.
 
-pub mod fingerprint;
+pub mod module;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use batpak::coordinate::Coordinate;
-use batpak::store::{Open, Store, StoreConfig};
+use batpak::store::{Open, ReadOnly, Store, StoreConfig};
 use serde::{Deserialize, Serialize};
-use syncbat::{Core, RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
+use syncbat::{RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::{ConfigError, TexoRootConfig, WorkspaceConfig, WorkspaceEntry};
 use crate::error::TexoError;
 use crate::gateway::{resolve_role, ModelRole, RoleOverrides};
+use crate::journal_store::JournalStore;
 use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
-use crate::ops::{catalog, register_all};
+use crate::topology::{JournalRole, ResolvedJournal};
 
 /// Cross-request checkout slot for the warm workspace projection.
 pub type SharedWorkspaceCache = Arc<Mutex<Option<WorkspaceCache>>>;
@@ -33,11 +34,35 @@ pub struct HostFingerprints {
     pub interface_fingerprint: String,
 }
 
-/// Runnable texo host over a syncbat core.
+/// One public operation in the mounted `hostbat` interface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostOperationView {
+    /// Stable operation name.
+    pub name: String,
+    /// Stable effect class spelling.
+    pub effect: String,
+    /// Stable receipt schema reference.
+    pub receipt_kind: String,
+}
+
+/// Client-visible projection of the actual mounted `hostbat` composition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostInterface {
+    /// Interface schema identifier.
+    pub schema: String,
+    /// Texo binary version.
+    pub version: String,
+    /// Content identities produced by `hostbat`.
+    pub fingerprints: HostFingerprints,
+    /// Canonically ordered mounted operations.
+    pub operations: Vec<HostOperationView>,
+}
+
+/// Runnable Texo host over a content-identified `hostbat` composition.
 pub struct TexoHost {
-    core: Core,
+    host: hostbat::Host,
     env: Rc<OpEnv>,
-    fingerprints: HostFingerprints,
+    interface: HostInterface,
     shared_cache: Option<SharedWorkspaceCache>,
 }
 
@@ -55,10 +80,29 @@ pub fn open_workspace_store(
     let root = root.as_ref();
     let config_path = root.join(".texo").join("config.toml");
     let root_config = TexoRootConfig::load(&config_path).map_err(config_error)?;
-    let config = root_config
-        .resolve(Some(workspace_id))
+    let (config, _journal) = root_config
+        .resolve_journal(Some(workspace_id), None)
         .map_err(config_error)?;
     open_store_for_config(root, &config)
+}
+
+/// Open one explicitly selected workspace journal with authority encoded in
+/// the returned handle.
+///
+/// # Errors
+/// Returns configuration, registry, or store-open failures.
+pub fn open_workspace_journal_store(
+    root: impl AsRef<Path>,
+    workspace_id: &str,
+    journal_id: &str,
+) -> Result<JournalStore, TexoError> {
+    let root = root.as_ref();
+    let config_path = root.join(".texo").join("config.toml");
+    let root_config = TexoRootConfig::load(&config_path).map_err(config_error)?;
+    let (config, journal) = root_config
+        .resolve_journal(Some(workspace_id), Some(journal_id))
+        .map_err(config_error)?;
+    open_journal_store_for_config(root, &config, journal.role)
 }
 
 impl TexoHost {
@@ -75,9 +119,42 @@ impl TexoHost {
     ) -> Result<Self, TexoError> {
         let root = root.into();
         let workspace_id = workspace_id.into();
-        let config = load_or_default_config(&root, &workspace_id)?;
-        let store = open_store_for_config(&root, &config)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
+        let (config, journal) = load_or_default_config(&root, &workspace_id, None)?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
+            store,
+            None,
+        )
+    }
+
+    /// Build a runnable host for one explicitly selected physical journal.
+    ///
+    /// # Errors
+    /// Returns configuration, store, registry, or host-composition failures.
+    pub fn open_journal(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        journal_id: &str,
+        observed_at_ms: u64,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        let (config, journal) = load_or_default_config(&root, &workspace_id, Some(journal_id))?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
+            store,
+            None,
+        )
     }
 
     /// Build a runnable host for `texo.workspace.init`.
@@ -96,9 +173,17 @@ impl TexoHost {
     ) -> Result<Self, TexoError> {
         let root = root.into();
         let workspace_id = workspace_id.into();
-        let config = load_or_init_config(&root, &workspace_id)?;
-        let store = open_store_for_config(&root, &config)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
+        let (config, journal) = load_or_init_config(&root, &workspace_id)?;
+        let store = open_journal_store_for_config(&root, &config, journal.role)?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
+            store,
+            None,
+        )
     }
 
     /// Build a runnable host over an already-open workspace store.
@@ -117,8 +202,16 @@ impl TexoHost {
         batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
             detail: error.to_string(),
         })?;
-        let config = load_or_default_config(&root, &workspace_id)?;
-        Self::from_parts(root, &workspace_id, observed_at_ms, config, store, None)
+        let (config, journal) = load_or_default_config(&root, &workspace_id, None)?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
+            JournalStore::writable(store),
+            None,
+        )
     }
 
     /// Build a host that checks out a shared warm projection for one request.
@@ -137,12 +230,42 @@ impl TexoHost {
         batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
             detail: error.to_string(),
         })?;
-        let config = load_or_default_config(&root, &workspace_id)?;
+        let (config, journal) = load_or_default_config(&root, &workspace_id, None)?;
         Self::from_parts(
             root,
             &workspace_id,
             observed_at_ms,
             config,
+            journal,
+            JournalStore::writable(store),
+            Some(shared_cache),
+        )
+    }
+
+    /// Build a host over an already-open explicitly selected journal.
+    ///
+    /// # Errors
+    /// Returns registry, topology, or host-composition failures.
+    pub fn open_journal_with_store_and_cache(
+        root: impl Into<PathBuf>,
+        workspace_id: impl Into<String>,
+        journal_id: &str,
+        observed_at_ms: u64,
+        store: JournalStore,
+        shared_cache: SharedWorkspaceCache,
+    ) -> Result<Self, TexoError> {
+        let root = root.into();
+        let workspace_id = workspace_id.into();
+        batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+            detail: error.to_string(),
+        })?;
+        let (config, journal) = load_or_default_config(&root, &workspace_id, Some(journal_id))?;
+        Self::from_parts(
+            root,
+            &workspace_id,
+            observed_at_ms,
+            config,
+            journal,
             store,
             Some(shared_cache),
         )
@@ -153,31 +276,60 @@ impl TexoHost {
         workspace_id: &str,
         observed_at_ms: u64,
         config: WorkspaceConfig,
-        store: Arc<Store<Open>>,
+        journal: ResolvedJournal,
+        store: JournalStore,
         shared_cache: Option<SharedWorkspaceCache>,
     ) -> Result<Self, TexoError> {
-        let receipt_coordinate = op_receipt_coordinate(workspace_id)?;
-        let receipt_sink = StoreReceiptSink::new(Arc::clone(&store), receipt_coordinate);
-        let status_sink = StoreOperationStatusSink::new(Arc::clone(&store));
-
-        let mut builder = Core::builder();
-        register_all(&mut builder).map_err(build_error)?;
-        builder.receipt_sink(receipt_sink);
-        builder.status_sink(status_sink);
-        builder.effect_backend(TexoEffectBackend);
+        let module = module::build(journal.role)?;
+        let module_digest = module.manifest().digest().to_hex();
+        let mut builder = hostbat::HostBuilder::new()
+            .mount(module)
+            .map_err(build_error)?
+            .effect_backend(TexoEffectBackend);
+        if journal.role == JournalRole::Canonical {
+            let writer = store.writable_arc().ok_or_else(|| TexoError::Host {
+                detail: "canonical journal was not opened with write authority".to_string(),
+            })?;
+            builder = builder
+                .receipt_sink(StoreReceiptSink::new(
+                    Arc::clone(&writer),
+                    op_receipt_coordinate(workspace_id)?,
+                ))
+                .status_sink(StoreOperationStatusSink::new(writer));
+        }
         let model_role = resolve_role(
             ModelRole::Relate,
             &RoleOverrides::default(),
             config.gateway.as_ref(),
         );
         if grants_model_capability(Some(model_role.api_key)) {
-            builder.grant_capability("texo.cap.model");
+            builder = builder.grant_capability("texo.cap.model");
         }
-        let core = builder.build().map_err(build_error)?;
+        let host = builder.build().map_err(build_error)?;
+        let fingerprints = HostFingerprints {
+            module_digest,
+            host_fingerprint: host.fingerprint().to_hex(),
+            interface_fingerprint: host.interface_fingerprint().to_hex(),
+        };
+        let interface = HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            fingerprints,
+            operations: host
+                .operations()
+                .map(|descriptor| HostOperationView {
+                    name: descriptor.name().to_string(),
+                    effect: descriptor.effect.as_str().to_string(),
+                    receipt_kind: descriptor.receipt_kind().to_string(),
+                })
+                .collect(),
+        };
         let cache = shared_cache
             .as_ref()
             .and_then(|slot| slot.lock().ok()?.take())
-            .unwrap_or_else(|| WorkspaceCache::load(&root, workspace_id));
+            .unwrap_or_else(|| {
+                WorkspaceCache::load_journal(&root, workspace_id, journal.id.as_str())
+            });
         let env = Rc::new(OpEnv {
             store,
             workspace_id: workspace_id.to_string(),
@@ -186,12 +338,13 @@ impl TexoHost {
             cache: std::cell::RefCell::new(cache),
             receipts: std::cell::RefCell::new(Vec::new()),
             observed_at_ms,
+            host_interface: interface.clone(),
+            journal,
         });
-        let fingerprints = compute_fingerprints()?;
         Ok(Self {
-            core,
+            host,
             env,
-            fingerprints,
+            interface,
             shared_cache,
         })
     }
@@ -207,29 +360,47 @@ impl TexoHost {
         op: &str,
         input: &serde_json::Value,
     ) -> Result<serde_json::Value, TexoError> {
-        let bytes = serde_json::to_vec(input)?;
+        let bytes = batpak::canonical::to_bytes(input).map_err(build_error)?;
         self.env.receipts.borrow_mut().clear();
         let _guard = env::install(Rc::clone(&self.env));
-        let result = self.core.invoke(op, bytes).map_err(runtime_error)?;
-        serde_json::from_slice(result.output()).map_err(TexoError::Json)
+        let result = self.host.invoke(op, bytes).map_err(runtime_error)?;
+        batpak::canonical::from_bytes(result.output()).map_err(build_error)
     }
 
     /// Return deterministic host fingerprints.
     #[must_use]
     pub fn fingerprints(&self) -> HostFingerprints {
-        self.fingerprints.clone()
+        self.interface.fingerprints.clone()
+    }
+
+    /// Return the client-visible mounted interface.
+    #[must_use]
+    pub fn interface(&self) -> HostInterface {
+        self.interface.clone()
     }
 
     /// Return the underlying store for tests and surfaces that need reads.
     #[must_use]
-    pub fn store(&self) -> Arc<Store<Open>> {
-        Arc::clone(&self.env.store)
+    pub fn store(&self) -> JournalStore {
+        self.env.store.clone()
     }
 
     /// Return the workspace id this host runs against.
     #[must_use]
     pub fn workspace_id(&self) -> &str {
         &self.env.workspace_id
+    }
+
+    /// Return the selected stable physical journal id.
+    #[must_use]
+    pub fn journal_id(&self) -> &crate::topology::JournalId {
+        &self.env.journal.id
+    }
+
+    /// Return the selected journal authority role.
+    #[must_use]
+    pub fn journal_role(&self) -> JournalRole {
+        self.env.journal.role
     }
 
     /// Return the root path this host runs against.
@@ -254,7 +425,11 @@ impl Drop for TexoHost {
         // hundreds of megabytes of peak RSS per teardown.
         let mut cache = self.env.cache.take();
         if cache.is_dirty() {
-            match cache.save(&self.env.root, &self.env.workspace_id) {
+            match cache.save_journal(
+                &self.env.root,
+                &self.env.workspace_id,
+                self.env.journal.id.as_str(),
+            ) {
                 Ok(()) => cache.mark_clean(),
                 Err(error) => {
                     tracing::warn!(error = %error, "workspace projection sidecar persist failed");
@@ -279,46 +454,64 @@ pub fn grants_model_capability(value: Option<String>) -> bool {
     value.as_deref().is_some_and(|key| !key.trim().is_empty())
 }
 
-fn load_or_default_config(root: &Path, workspace_id: &str) -> Result<WorkspaceConfig, TexoError> {
+fn load_or_default_config(
+    root: &Path,
+    workspace_id: &str,
+    journal_id: Option<&str>,
+) -> Result<(WorkspaceConfig, ResolvedJournal), TexoError> {
     let config_path = root.join(".texo").join("config.toml");
     if config_path.exists() {
         return TexoRootConfig::load(&config_path)
             .map_err(config_error)?
-            .resolve(Some(workspace_id))
+            .resolve_journal(Some(workspace_id), journal_id)
             .map_err(config_error);
     }
-    Ok(workspace_config_from_entry(
+    workspace_config_from_entry(
         workspace_id,
         WorkspaceEntry::for_id(workspace_id),
-    ))
+        journal_id,
+    )
 }
 
-fn load_or_init_config(root: &Path, workspace_id: &str) -> Result<WorkspaceConfig, TexoError> {
+fn load_or_init_config(
+    root: &Path,
+    workspace_id: &str,
+) -> Result<(WorkspaceConfig, ResolvedJournal), TexoError> {
     let config_path = root.join(".texo").join("config.toml");
     if config_path.exists() {
         let root_config = TexoRootConfig::load(&config_path).map_err(config_error)?;
-        return match root_config.resolve(Some(workspace_id)) {
+        return match root_config.resolve_journal(Some(workspace_id), None) {
             Ok(config) => Ok(config),
-            Err(ConfigError::UnknownWorkspace(_)) => Ok(workspace_config_from_entry(
+            Err(ConfigError::UnknownWorkspace(_)) => workspace_config_from_entry(
                 workspace_id,
                 WorkspaceEntry::for_id(workspace_id),
-            )),
+                None,
+            ),
             Err(error) => Err(config_error(error)),
         };
     }
     let entry = WorkspaceEntry::for_id(workspace_id);
-    Ok(workspace_config_from_entry(workspace_id, entry))
+    workspace_config_from_entry(workspace_id, entry, None)
 }
 
-fn workspace_config_from_entry(workspace_id: &str, entry: WorkspaceEntry) -> WorkspaceConfig {
-    WorkspaceConfig {
+fn workspace_config_from_entry(
+    workspace_id: &str,
+    entry: WorkspaceEntry,
+    journal_id: Option<&str>,
+) -> Result<(WorkspaceConfig, ResolvedJournal), TexoError> {
+    let journal =
+        crate::topology::resolve_journal(&entry.primary_journal, &entry.journals, journal_id)
+            .map_err(ConfigError::from)
+            .map_err(config_error)?;
+    let config = WorkspaceConfig {
         workspace_id: workspace_id.to_string(),
-        store_path: entry.store_path,
+        store_path: journal.store_path.clone(),
         docs_glob: entry.docs_glob,
         extractor_cmd: entry.extractor_cmd,
         semantics: entry.semantics,
         gateway: None,
-    }
+    };
+    Ok((config, journal))
 }
 
 fn open_store_for_config(
@@ -332,33 +525,29 @@ fn open_store_for_config(
     Ok(Arc::new(Store::open(StoreConfig::new(dir))?))
 }
 
+fn open_journal_store_for_config(
+    root: &Path,
+    config: &WorkspaceConfig,
+    role: JournalRole,
+) -> Result<JournalStore, TexoError> {
+    batpak::event::validate_event_payload_registry().map_err(|error| TexoError::Registry {
+        detail: error.to_string(),
+    })?;
+    let store_config = StoreConfig::new(config.store_path_buf(root));
+    match role {
+        JournalRole::Canonical => Ok(JournalStore::writable(Arc::new(Store::open(store_config)?))),
+        JournalRole::Replica => Ok(JournalStore::read_only(Arc::new(
+            Store::<ReadOnly>::open_read_only(store_config)?,
+        ))),
+    }
+}
+
 fn op_receipt_coordinate(workspace_id: &str) -> Result<Coordinate, TexoError> {
     Coordinate::new(
         format!("op-receipts:{workspace_id}"),
         format!("ops:{workspace_id}"),
     )
     .map_err(TexoError::from)
-}
-
-fn compute_fingerprints() -> Result<HostFingerprints, TexoError> {
-    let interface = fingerprint::canonical_interface(&catalog());
-    let module_digest = digest_hex("texo.module.v2", &interface)?;
-    let host_fingerprint = digest_hex("texo.host.v2", &interface)?;
-    let interface_fingerprint = interface.interface_fingerprint;
-    Ok(HostFingerprints {
-        module_digest,
-        host_fingerprint,
-        interface_fingerprint,
-    })
-}
-
-fn digest_hex<T: Serialize>(domain: &str, value: &T) -> Result<String, TexoError> {
-    let mut bytes = domain.as_bytes().to_vec();
-    let encoded = batpak::canonical::to_bytes(value).map_err(|error| TexoError::Host {
-        detail: format!("fingerprint canonical encoding failed: {error}"),
-    })?;
-    bytes.extend_from_slice(&encoded);
-    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
 fn config_error(error: crate::config::ConfigError) -> TexoError {

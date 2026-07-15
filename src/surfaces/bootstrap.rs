@@ -116,24 +116,7 @@ pub fn ensure_workspace(
     if config_path.exists() {
         return Ok(());
     }
-    let mut workspaces = BTreeMap::new();
-    workspaces.insert(
-        workspace_id.to_string(),
-        WorkspaceEntry {
-            store_path: format!(".texo/stores/{workspace_id}"),
-            docs_glob: format!("{}/**/*.md", crate::ops::agent::SESSIONS_DIR),
-            extractor_cmd: decision.extractor_cmd.clone(),
-            semantics: decision.semantics_enabled.then(|| SemanticsConfig {
-                enabled: true,
-                ..SemanticsConfig::default()
-            }),
-        },
-    );
-    let config = TexoRootConfig {
-        default_workspace: workspace_id.to_string(),
-        workspaces,
-        gateway: None,
-    };
+    let config = prospective_config(workspace_id, decision);
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -144,6 +127,39 @@ pub fn ensure_workspace(
     std::fs::write(&config_path, raw)?;
     std::fs::create_dir_all(root.join(".texo").join("stores").join(workspace_id))?;
     Ok(())
+}
+
+/// Build the exact root configuration that first-run bootstrap would persist.
+///
+/// Install planning uses this pure constructor so adapter conflicts can be
+/// rejected before any workspace file is created.
+#[must_use]
+pub(crate) fn prospective_config(
+    workspace_id: &str,
+    decision: &BootstrapDecision,
+) -> TexoRootConfig {
+    let mut workspaces = BTreeMap::new();
+    workspaces.insert(
+        workspace_id.to_string(),
+        WorkspaceEntry {
+            primary_journal: "canonical".to_string(),
+            journals: BTreeMap::from([(
+                "canonical".to_string(),
+                crate::topology::JournalEntry::canonical(format!(".texo/stores/{workspace_id}")),
+            )]),
+            docs_glob: format!("{}/**/*.md", crate::ops::agent::SESSIONS_DIR),
+            extractor_cmd: decision.extractor_cmd.clone(),
+            semantics: decision.semantics_enabled.then(|| SemanticsConfig {
+                enabled: true,
+                ..SemanticsConfig::default()
+            }),
+        },
+    );
+    TexoRootConfig {
+        default_workspace: workspace_id.to_string(),
+        workspaces,
+        gateway: None,
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,20 @@ fn backup_is_self_verifying_immutable_and_excludes_derived_state() -> TestResult
     );
     let report: Value = serde_json::from_slice(&created.stdout)?;
     assert_eq!(report["schema"], "texo.backup-create.v1");
+    assert_eq!(
+        report["substrate_manifest_hash_hex"]
+            .as_str()
+            .ok_or("substrate manifest hash")?
+            .len(),
+        64
+    );
+    let manifest: Value = serde_json::from_slice(&std::fs::read(dest.join("backup.json"))?)?;
+    assert_eq!(manifest["schema"], "texo.backup.v2");
+    assert_eq!(manifest["substrate_manifest"]["schema_version"], 1);
+    assert_eq!(
+        manifest["substrate_manifest_hash_hex"],
+        report["substrate_manifest_hash_hex"]
+    );
     assert!(dest.join("backup.json").is_file());
     assert!(dest.join("config.toml").is_file());
     assert!(dest.join("store").is_dir());
@@ -139,6 +153,10 @@ fn store_and_snapshot_evidence_tampering_fail_closed() -> TestResult {
     let store_report = verify_backup(root.path(), &store_tamper, &[])?;
     assert!(!store_report.0);
     assert!(has_finding(&store_report.1, "store_file_mismatch"));
+    assert!(has_finding(
+        &store_report.1,
+        "substrate_restore_proof_failed"
+    ));
 
     let evidence_tamper = outside.path().join("evidence-tamper");
     create_backup(root.path(), &evidence_tamper)?;

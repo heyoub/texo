@@ -3,6 +3,8 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::topology::JournalId;
 use thiserror::Error;
 
 use crate::events::ids::{blake3_hash_hex, WorkspaceId};
@@ -143,12 +145,13 @@ impl SnapshotToken {
         };
         let digest = snapshot_token_digest(
             &descriptor.workspace_id,
+            &descriptor.journal_id,
             descriptor.frontier,
             anchor,
             source,
         );
         Self(format!(
-            "texo_snap_v1.{}.{}.{}.{}",
+            "texo_snap_v2.{}.{}.{}.{}",
             descriptor.frontier,
             anchor,
             source,
@@ -164,21 +167,22 @@ impl SnapshotToken {
 
     /// Parse an untrusted token and recover its bound descriptor.
     ///
-    /// The workspace is external to the token so copying a token between
-    /// workspaces fails checksum validation without exposing a secret.
+    /// Workspace and journal identities are external to the token so copying a
+    /// token across either boundary fails checksum validation.
     ///
     /// # Errors
     /// Returns [`KnowledgeContractError::InvalidIdentifier`] for an invalid
     /// shape, field, or checksum.
-    pub fn resolve_for_workspace(
+    pub fn resolve_for_journal(
         value: &str,
         workspace_id: &WorkspaceId,
+        journal_id: &JournalId,
     ) -> Result<SnapshotDescriptor, KnowledgeContractError> {
         let invalid = || KnowledgeContractError::InvalidIdentifier {
             kind: "SnapshotToken",
         };
         let mut fields = value.split('.');
-        if fields.next() != Some("texo_snap_v1") {
+        if fields.next() != Some("texo_snap_v2") {
             return Err(invalid());
         }
         let frontier = fields
@@ -196,7 +200,7 @@ impl SnapshotToken {
             return Err(invalid());
         }
         validate_lower_hex("snapshot token checksum", checksum, 32)?;
-        let expected = snapshot_token_digest(workspace_id, frontier, anchor, source);
+        let expected = snapshot_token_digest(workspace_id, journal_id, frontier, anchor, source);
         if checksum != &expected[..32] {
             return Err(invalid());
         }
@@ -207,6 +211,7 @@ impl SnapshotToken {
         };
         Ok(SnapshotDescriptor {
             workspace_id: workspace_id.clone(),
+            journal_id: journal_id.clone(),
             frontier,
             anchor_event_id_hex: if anchor == "-" {
                 String::new()
@@ -226,12 +231,13 @@ impl fmt::Display for SnapshotToken {
 
 fn snapshot_token_digest(
     workspace_id: &WorkspaceId,
+    journal_id: &JournalId,
     frontier: u64,
     anchor: &str,
     source: &str,
 ) -> String {
     blake3_hash_hex(&format!(
-        "texo.snapshot-token.v1\u{1f}{workspace_id}\u{1f}{frontier}\u{1f}{anchor}\u{1f}{source}"
+        "texo.snapshot-token.v2\u{1f}{workspace_id}\u{1f}{journal_id}\u{1f}{frontier}\u{1f}{anchor}\u{1f}{source}"
     ))
 }
 
@@ -241,6 +247,8 @@ fn snapshot_token_digest(
 pub struct SnapshotDescriptor {
     /// Workspace being read.
     pub workspace_id: WorkspaceId,
+    /// Physical journal whose local sequence/anchor coordinates are bound.
+    pub journal_id: JournalId,
     /// `BatPak` journal frontier included in the read.
     pub frontier: u64,
     /// Event id at `frontier`, or empty only for an empty journal.
@@ -760,6 +768,7 @@ mod tests {
     fn descriptor() -> SnapshotDescriptor {
         SnapshotDescriptor {
             workspace_id: WorkspaceId::new("demo").expect("workspace"),
+            journal_id: JournalId::new("canonical").expect("journal"),
             frontier: 42,
             anchor_event_id_hex: "ab".repeat(16),
             source_snapshot_id: Some(SourceSnapshotId::derive("source-state")),
@@ -781,7 +790,11 @@ mod tests {
         );
         let token = SnapshotToken::for_descriptor(&first);
         assert_eq!(
-            SnapshotToken::resolve_for_workspace(token.as_str(), &first.workspace_id),
+            SnapshotToken::resolve_for_journal(
+                token.as_str(),
+                &first.workspace_id,
+                &first.journal_id,
+            ),
             Ok(first)
         );
     }
@@ -791,10 +804,22 @@ mod tests {
         let descriptor = descriptor();
         let token = SnapshotToken::for_descriptor(&descriptor);
         let changed = token.as_str().replacen(".42.", ".41.", 1);
-        assert!(SnapshotToken::resolve_for_workspace(&changed, &descriptor.workspace_id).is_err());
-        assert!(SnapshotToken::resolve_for_workspace(
+        assert!(SnapshotToken::resolve_for_journal(
+            &changed,
+            &descriptor.workspace_id,
+            &descriptor.journal_id,
+        )
+        .is_err());
+        assert!(SnapshotToken::resolve_for_journal(
             token.as_str(),
-            &WorkspaceId::new("other").expect("workspace")
+            &WorkspaceId::new("other").expect("workspace"),
+            &descriptor.journal_id,
+        )
+        .is_err());
+        assert!(SnapshotToken::resolve_for_journal(
+            token.as_str(),
+            &descriptor.workspace_id,
+            &JournalId::new("replica").expect("journal"),
         )
         .is_err());
     }

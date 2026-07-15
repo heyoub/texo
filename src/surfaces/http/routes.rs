@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use batpak::store::{Open, Store};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::error::TexoError;
 use crate::host::{SharedWorkspaceCache, TexoHost};
+use crate::journal_store::JournalStore;
 use crate::ops::agent::valid_session_id;
 
 use super::request::{HttpRequest, Method};
@@ -24,8 +24,10 @@ pub struct RouteState {
     pub root: PathBuf,
     /// Workspace id.
     pub workspace_id: String,
+    /// Selected physical journal id.
+    pub journal_id: String,
     /// Shared open store for long-lived server processes.
-    pub store: Option<Arc<Store<Open>>>,
+    pub store: Option<JournalStore>,
     /// Cross-request checkout slot for the warm workspace projection.
     pub projection_cache: SharedWorkspaceCache,
     /// Whether model-backed chat should be exposed.
@@ -73,6 +75,8 @@ fn api_health(state: &RouteState) -> Result<HttpResponse, TexoError> {
                 "status": "ok",
                 "version": env!("CARGO_PKG_VERSION"),
                 "workspace_id": state.workspace_id,
+                "journal_id": metrics.get("journal_id"),
+                "journal_role": metrics.get("journal_role"),
                 "frontier": metrics.get("frontier_sequence").and_then(serde_json::Value::as_u64).unwrap_or(0),
                 "chat_enabled": state.chat_enabled,
             }),
@@ -99,15 +103,20 @@ fn method_not_allowed(allow: &'static str) -> HttpResponse {
 }
 
 fn api_host(state: &RouteState) -> Result<HttpResponse, TexoError> {
-    let _host = open_host(state)?;
-    let interface = crate::host::fingerprint::canonical_interface(&crate::ops::catalog());
+    let host = open_host(state)?;
+    let interface = host.interface();
     HttpResponse::json(
         200,
         &json!({
-            "fingerprint": interface.interface_fingerprint,
             "schema": interface.schema,
-            "version": env!("CARGO_PKG_VERSION"),
-            "workspace_id": state.workspace_id,
+            "version": interface.version,
+        "workspace_id": state.workspace_id,
+        "journal_id": host.journal_id(),
+        "journal_role": host.journal_role(),
+            "module_digest": interface.fingerprints.module_digest,
+            "host_fingerprint": interface.fingerprints.host_fingerprint,
+            "interface_fingerprint": interface.fingerprints.interface_fingerprint,
+            "operations": interface.operations,
         }),
     )
     .map_err(TexoError::Json)
@@ -274,15 +283,21 @@ fn static_file(path: &str) -> Result<HttpResponse, TexoError> {
 /// Returns [`TexoError`] when host composition fails.
 pub fn open_host(state: &RouteState) -> Result<TexoHost, TexoError> {
     if let Some(store) = &state.store {
-        TexoHost::open_with_store_and_cache(
+        TexoHost::open_journal_with_store_and_cache(
             state.root.clone(),
             state.workspace_id.clone(),
+            &state.journal_id,
             now_ms(),
-            Arc::clone(store),
+            store.clone(),
             Arc::clone(&state.projection_cache),
         )
     } else {
-        TexoHost::open(state.root.clone(), state.workspace_id.clone(), now_ms())
+        TexoHost::open_journal(
+            state.root.clone(),
+            state.workspace_id.clone(),
+            &state.journal_id,
+            now_ms(),
+        )
     }
 }
 

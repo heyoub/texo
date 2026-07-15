@@ -113,10 +113,12 @@ fn workspace_init(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         root_config
             .default_workspace
             .clone_from(&input.workspace_id);
-        root_config.upsert_workspace(
-            &input.workspace_id,
-            WorkspaceEntry::for_id(&input.workspace_id),
-        );
+        if !root_config.workspaces.contains_key(&input.workspace_id) {
+            root_config.upsert_workspace(
+                &input.workspace_id,
+                WorkspaceEntry::for_id(&input.workspace_id),
+            );
+        }
 
         let raw = toml::to_string_pretty(&root_config).map_err(|error| TexoError::Config {
             detail: error.to_string(),
@@ -1074,13 +1076,7 @@ fn relate_run(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 fn host_fingerprint(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.host.fingerprint", || {
         let _input: HostFingerprintInput = parse_input("texo.host.fingerprint", input)?;
-        // TODO(batpak-0.10): replace with hostbat HostModule manifest + fingerprints
-        //  once texo bumps past the 0.9.0 HostBuilder gap (freebatteryfactory/batpak#166,
-        //  fixed in #169/0.10.0). This hand-rolled digest is content-addressed over the
-        //  same declared surface and upgrades in place.
-        Ok(crate::host::fingerprint::canonical_interface(
-            &crate::ops::catalog(),
-        ))
+        env::with(|op_env| op_env.host_interface.clone())
     })
 }
 
@@ -1453,14 +1449,22 @@ fn stats_read(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
             .query_projection(WORKSPACE_VIEW_PROJECTION)
             .map_err(|error| op_runtime("texo.stats.read", error))?;
         let view = assemble_current_view()?;
-        let (root, config) = env::with(|op_env| (op_env.root.clone(), op_env.config.clone()))?;
+        let (root, config, journal) = env::with(|op_env| {
+            (
+                op_env.root.clone(),
+                op_env.config.clone(),
+                op_env.journal.clone(),
+            )
+        })?;
         let store_path = config.store_path_buf(&root);
         let projection_path = root
             .join(".texo/cache/workspace-view")
-            .join(format!("{}.bin", view.workspace_id));
+            .join(format!("{}--{}.bin", view.workspace_id, journal.id));
         let context = build_agent_context_from_view(&view, None, true, snapshot_for_view(&view)?)?;
         let agent_context_bytes = serde_json::to_vec(&context)?.len();
         Ok(StatsReadOutput {
+            journal_id: journal.id,
+            journal_role: journal.role,
             claims_total: view.claims.len(),
             events_total: workspace_event_count()?,
             journal_bytes: journal_file_bytes(&store_path)?,
@@ -1493,8 +1497,13 @@ fn workspace_status(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
         let settlement = authoritative_settlements(Some(view.frontier))?;
         let unresolved_pairs = settlement.unresolved_pairs;
         let (coverage, code_index_available) = status_coverage(&view, &snapshot)?;
+        let journal = env::with(|op_env| op_env.journal.clone())?;
         Ok(WorkspaceStatusOutput {
             workspace_id: view.workspace_id.clone(),
+            journal_id: journal.id,
+            journal_role: journal.role,
+            source_journal: journal.source_journal,
+            replica_mode: journal.replica_mode,
             frontier: view.frontier,
             freshness: view.freshness,
             claims_total: view.claims.len(),
@@ -1726,6 +1735,8 @@ struct WorkspaceStatusInput {
 
 #[derive(Debug, Serialize)]
 struct StatsReadOutput {
+    journal_id: crate::topology::JournalId,
+    journal_role: crate::topology::JournalRole,
     claims_total: usize,
     events_total: usize,
     journal_bytes: u64,
@@ -1737,6 +1748,10 @@ struct StatsReadOutput {
 #[derive(Debug, Serialize)]
 struct WorkspaceStatusOutput {
     workspace_id: String,
+    journal_id: crate::topology::JournalId,
+    journal_role: crate::topology::JournalRole,
+    source_journal: Option<crate::topology::JournalId>,
+    replica_mode: Option<crate::topology::ReplicaMode>,
     frontier: u64,
     freshness: crate::claims::workspace::ProjectionFreshness,
     claims_total: usize,
@@ -2226,7 +2241,7 @@ pub(crate) fn run_op<T: Serialize>(
     f: impl FnOnce() -> Result<T, TexoError>,
 ) -> HandlerResult {
     let output = f()?;
-    serde_json::to_vec(&output).map_err(|error| {
+    batpak::canonical::to_bytes(&output).map_err(|error| {
         HandlerError::from(TexoError::OpRuntime {
             op: op.to_string(),
             detail: error.to_string(),
@@ -2239,7 +2254,7 @@ pub(crate) fn parse_input<T: serde::de::DeserializeOwned>(
     op: &str,
     input: &[u8],
 ) -> Result<T, TexoError> {
-    serde_json::from_slice(input).map_err(|error| TexoError::OpInput {
+    batpak::canonical::from_bytes(input).map_err(|error| TexoError::OpInput {
         op: op.to_string(),
         detail: error.to_string(),
     })
@@ -2251,7 +2266,11 @@ pub(crate) fn append_json<T: Serialize>(
     kind: EventKind,
     payload: &T,
 ) -> Result<(), TexoError> {
-    let bytes = serde_json::to_vec(payload)?;
+    let bytes = batpak::canonical::to_bytes(payload).map_err(|error| TexoError::OpRuntime {
+        op: op.to_string(),
+        detail: format!("canonical effect payload encoding failed: {error}"),
+        denied: false,
+    })?;
     cx.event_append_handle()
         .append_event(kind, &bytes)
         .map_err(|error| op_runtime(op, error))
@@ -2300,19 +2319,18 @@ fn assemble_snapshot_view(
         let snapshot = snapshot_for_view(&view)?;
         return Ok((view, snapshot));
     };
-    let (store, workspace) = env::with(|op_env| {
+    let (store, workspace, journal_id) = env::with(|op_env| {
         (
-            std::sync::Arc::clone(&op_env.store),
+            op_env.store.clone(),
             op_env.workspace_id.clone(),
+            op_env.journal.id.clone(),
         )
     })?;
     let workspace_id = WorkspaceId::new(workspace.clone())?;
-    let descriptor =
-        SnapshotToken::resolve_for_workspace(requested, &workspace_id).map_err(|error| {
-            TexoError::Snapshot {
-                kind: SnapshotFailureKind::InvalidToken,
-                detail: error.to_string(),
-            }
+    let descriptor = SnapshotToken::resolve_for_journal(requested, &workspace_id, &journal_id)
+        .map_err(|error| TexoError::Snapshot {
+            kind: SnapshotFailureKind::InvalidToken,
+            detail: error.to_string(),
         })?;
     let available_source =
         latest_source_snapshot(Some(descriptor.frontier))?.map(|snapshot| snapshot.snapshot_id);
@@ -2335,13 +2353,17 @@ fn assemble_snapshot_view(
 
 fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
     let workspace_id = WorkspaceId::new(view.workspace_id.clone())?;
-    let anchor_event_id_hex = env::with(|op_env| {
-        anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)
+    let (anchor_event_id_hex, journal_id) = env::with(|op_env| {
+        Ok::<_, TexoError>((
+            anchor_at_frontier(&op_env.store, &op_env.workspace_id, view.frontier)?,
+            op_env.journal.id.clone(),
+        ))
     })??;
     let source_snapshot_id =
         latest_source_snapshot(Some(view.frontier))?.map(|snapshot| snapshot.snapshot_id);
     Ok(SnapshotRead::new(SnapshotDescriptor {
         workspace_id,
+        journal_id,
         frontier: view.frontier,
         anchor_event_id_hex,
         source_snapshot_id,
@@ -2349,7 +2371,7 @@ fn snapshot_for_view(view: &WorkspaceView) -> Result<SnapshotRead, TexoError> {
 }
 
 fn validate_snapshot_anchor(
-    store: &batpak::store::Store<batpak::store::Open>,
+    store: &crate::journal_store::JournalStore,
     workspace_id: &str,
     descriptor: &SnapshotDescriptor,
 ) -> Result<(), TexoError> {
@@ -2367,7 +2389,7 @@ fn validate_snapshot_anchor(
 }
 
 fn anchor_at_frontier(
-    store: &batpak::store::Store<batpak::store::Open>,
+    store: &crate::journal_store::JournalStore,
     workspace_id: &str,
     frontier: u64,
 ) -> Result<String, TexoError> {
@@ -4014,34 +4036,23 @@ fn extract_heuristic_claims(
 /// Execute the workspace-configured extractor command.
 ///
 /// This is an explicit local-code-execution trust boundary: anyone who can
-/// write workspace configuration can execute as the Texo process via `sh -c`.
-/// A future bvisor adapter belongs at this function boundary; this campaign
-/// does not claim confinement for configured extractors.
+/// write workspace configuration selects code executed by the extractor. Texo
+/// stages only the selected input and runs the command through the fail-closed
+/// bvisor adapter; there is no unconfined fallback.
 fn extract_cmd_claims(
     op: &str,
-    root: &Path,
+    _root: &Path,
     cmd: &str,
     path: &Path,
     doc: &MarkdownDocument,
     workspace_id: &str,
     observed_at_ms: u64,
 ) -> Result<Vec<ClaimRecordedV2>, TexoError> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{cmd} \"$1\""))
-        .arg("texo-extract")
-        .arg(path)
-        .current_dir(root)
-        .output()
-        .map_err(|error| TexoError::Extract {
-            detail: format!("{op}: failed to run extractor: {error}"),
+    let output =
+        crate::compat::bvisor::run_extractor(cmd, path).map_err(|error| TexoError::Extract {
+            detail: format!("{op}: confined extractor failed: {error}"),
         })?;
-    if !output.status.success() {
-        return Err(TexoError::Extract {
-            detail: format!("{op}: extractor exited with {}", output.status),
-        });
-    }
-    let stdout = String::from_utf8(output.stdout).map_err(|error| TexoError::Extract {
+    let stdout = String::from_utf8(output).map_err(|error| TexoError::Extract {
         detail: format!("{op}: extractor stdout was not utf-8: {error}"),
     })?;
     let source_id = SourceId::try_from(doc.source_id.as_str())?;

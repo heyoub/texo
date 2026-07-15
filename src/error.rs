@@ -79,6 +79,46 @@ pub enum SnapshotFailureKind {
     SourceUnavailable,
 }
 
+/// Closed replica-circuit failure class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplicationFailureKind {
+    /// Topology does not describe the requested source/replica circuit.
+    InvalidTopology,
+    /// A destructive bootstrap was refused because the destination has bytes.
+    DestinationNotFresh,
+    /// The configured replica mode cannot perform the requested operation.
+    ModeMismatch,
+    /// A persisted source cursor no longer names the same source event.
+    AnchorMismatch,
+    /// The materialized replica failed a source-truth verification check.
+    Verification,
+    /// Durable circuit evidence could not be loaded or persisted.
+    Evidence,
+    /// `BatPak` returned a lifecycle or import failure at an uncertain boundary.
+    Substrate,
+    /// A bounded remote replica call failed before its response was accepted.
+    Transport,
+    /// Another process currently owns one physical journal directory.
+    Busy,
+}
+
+impl ReplicationFailureKind {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidTopology => "replication.topology",
+            Self::DestinationNotFresh => "replication.destination_not_fresh",
+            Self::ModeMismatch => "replication.mode",
+            Self::AnchorMismatch => "replication.anchor",
+            Self::Verification => "replication.verify",
+            Self::Evidence => "replication.evidence",
+            Self::Substrate => "replication.substrate",
+            Self::Transport => "replication.transport",
+            Self::Busy => "replication.busy",
+        }
+    }
+}
+
 impl SnapshotFailureKind {
     const fn code(self) -> &'static str {
         match self {
@@ -284,6 +324,16 @@ pub enum TexoError {
         /// Sanitized failure detail.
         detail: String,
     },
+    /// Replica bootstrap, follow, or evidence failure.
+    #[error("replication {kind:?}: {detail}")]
+    Replication {
+        /// Closed circuit failure class.
+        kind: ReplicationFailureKind,
+        /// What was durably changed before the failure surfaced.
+        committed: Committed,
+        /// Sanitized diagnostic detail.
+        detail: String,
+    },
 }
 
 impl TexoError {
@@ -321,6 +371,7 @@ impl TexoError {
             Self::Session { .. } => "agent.session",
             Self::Backup { .. } => "backup",
             Self::Snapshot { kind, .. } => kind.code(),
+            Self::Replication { kind, .. } => kind.code(),
         }
     }
 
@@ -358,6 +409,9 @@ impl TexoError {
                     }
                 }),
             },
+            Self::Replication {
+                kind, committed, ..
+            } => replication_facts(*kind, *committed),
             Self::OpInput { .. } => FailureFacts {
                 committed: No,
                 retry_safe: true,
@@ -416,6 +470,36 @@ impl TexoError {
                 resume: Some("inspect receipts and run `texo verify` before retrying"),
             },
         }
+    }
+}
+
+const fn replication_facts(kind: ReplicationFailureKind, committed: Committed) -> FailureFacts {
+    let resume = match kind {
+        ReplicationFailureKind::InvalidTopology
+        | ReplicationFailureKind::DestinationNotFresh
+        | ReplicationFailureKind::ModeMismatch => "fix the replica topology and retry",
+        ReplicationFailureKind::AnchorMismatch => {
+            "inspect the source journal identity before resuming"
+        }
+        ReplicationFailureKind::Verification => {
+            "verify the replica and rebuild it from its canonical source"
+        }
+        ReplicationFailureKind::Evidence => "retry to persist the replica evidence cursor",
+        ReplicationFailureKind::Substrate => {
+            "inspect both journal frontiers and receipts before retrying"
+        }
+        ReplicationFailureKind::Transport => "resume the replica from its durable cursor",
+        ReplicationFailureKind::Busy => "retry after the current journal owner releases it",
+    };
+    FailureFacts {
+        committed,
+        retry_safe: matches!(
+            kind,
+            ReplicationFailureKind::Evidence
+                | ReplicationFailureKind::Transport
+                | ReplicationFailureKind::Busy
+        ),
+        resume: Some(resume),
     }
 }
 

@@ -15,6 +15,10 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use batpak::store::backup_envelope::{
+    backup_manifest_body_hash, restore_proof_evidence_report, BackupManifestBody, BackupSegmentRef,
+    BACKUP_MANIFEST_BODY_SCHEMA_VERSION,
+};
 use batpak::store::{
     snapshot_report_body_hash, ReadOnly, SnapshotEvidenceReport, Store, StoreConfig,
     SNAPSHOT_EVIDENCE_REPORT_SCHEMA_VERSION,
@@ -25,7 +29,7 @@ use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
 
 /// Backup manifest schema.
-pub const MANIFEST_SCHEMA: &str = "texo.backup.v1";
+pub const MANIFEST_SCHEMA: &str = "texo.backup.v2";
 const MANIFEST_FILE: &str = "backup.json";
 const CONFIG_FILE: &str = "config.toml";
 const STORE_DIR: &str = "store";
@@ -62,6 +66,10 @@ pub struct BackupManifest {
     pub created_at_ms: u64,
     /// `BatPak` lifecycle evidence binding the snapshot.
     pub snapshot: SnapshotEvidenceReport,
+    /// BatPak-native canonical identity for the authority-bearing segment set.
+    pub substrate_manifest: BackupManifestBody,
+    /// Canonical digest of `substrate_manifest`, pinned inside the product envelope.
+    pub substrate_manifest_hash_hex: String,
     /// Exact journal snapshot file table.
     pub store_files: Vec<FileRecord>,
     /// Exact config size.
@@ -85,6 +93,8 @@ pub struct BackupCreateReport {
     pub store_bytes: u64,
     /// Snapshot structural identity.
     pub snapshot_id_hex: String,
+    /// BatPak-native canonical segment-manifest digest.
+    pub substrate_manifest_hash_hex: String,
     /// Evidence manifest digest.
     pub manifest_hash_hex: String,
 }
@@ -162,6 +172,12 @@ pub fn create(
     let store_dest = destination.path().join(STORE_DIR);
     let snapshot = store.snapshot_with_evidence(&store_dest)?;
     let store_files = hash_store_files(&store_dest)?;
+    let substrate_manifest = build_substrate_manifest(&snapshot, &store_files)?;
+    let substrate_manifest_hash_hex = hex_bytes(
+        &backup_manifest_body_hash(&substrate_manifest).map_err(|error| {
+            backup_error(format!("substrate manifest encoding failed: {error}"))
+        })?,
+    );
     let (config_hash_hex, config_bytes) = copy_config(root, destination.path())?;
     let manifest = BackupManifest {
         schema: MANIFEST_SCHEMA.to_string(),
@@ -169,6 +185,8 @@ pub fn create(
         store_path: workspace.store_path.clone(),
         created_at_ms,
         snapshot: snapshot.clone(),
+        substrate_manifest,
+        substrate_manifest_hash_hex: substrate_manifest_hash_hex.clone(),
         store_files: store_files.clone(),
         config_bytes,
         config_hash_hex,
@@ -198,6 +216,7 @@ pub fn create(
         store_file_count: store_files.len(),
         store_bytes: store_files.iter().map(|record| record.bytes).sum(),
         snapshot_id_hex: hex_bytes(&snapshot.body.snapshot_id),
+        substrate_manifest_hash_hex,
         manifest_hash_hex: blake3::hash(&manifest_bytes).to_hex().to_string(),
     })
 }
@@ -289,6 +308,7 @@ pub fn verify_with_expected_manifest_hash(
     }
     check_top_level(&dest, &mut findings)?;
     check_snapshot_evidence(&dest, &manifest, &mut findings);
+    check_substrate_restore_proof(&dest, &manifest, &mut findings);
     let store_files_valid = check_store_files(&dest, &manifest, &mut findings)?;
     let config_valid = check_config(&dest, &manifest, &mut findings);
     if config_valid {
@@ -354,7 +374,13 @@ pub fn restore(
         .get(&manifest.workspace_id)
         .cloned()
         .ok_or_else(|| backup_error("backup config does not contain its workspace"))?;
-    workspace.store_path = crate::config::WorkspaceEntry::for_id(&manifest.workspace_id).store_path;
+    let restore_store_path = crate::config::WorkspaceEntry::for_id(&manifest.workspace_id)
+        .primary()
+        .map_err(|error| backup_error(error.to_string()))?
+        .store_path;
+    workspace
+        .set_primary_store_path(restore_store_path.clone())
+        .map_err(|error| backup_error(error.to_string()))?;
     let mut workspaces = std::collections::BTreeMap::new();
     workspaces.insert(manifest.workspace_id.clone(), workspace.clone());
     let restored_config = crate::config::TexoRootConfig {
@@ -368,7 +394,7 @@ pub fn restore(
     let config_bytes = toml::to_string_pretty(&restored_config)
         .map_err(|error| backup_error(error.to_string()))?;
     write_new_synced(&texo_dir.join(CONFIG_FILE), config_bytes.as_bytes())?;
-    let store_dest = destination.path().join(&workspace.store_path);
+    let store_dest = destination.path().join(&restore_store_path);
     fs::create_dir_all(&store_dest)?;
     copy_verified_store(&backup.join(STORE_DIR), &store_dest, &manifest.store_files)?;
     let store = Store::<ReadOnly>::open_read_only(StoreConfig::new(&store_dest))?;
@@ -415,6 +441,178 @@ fn copy_verified_store(
         }
     }
     Ok(())
+}
+
+fn build_substrate_manifest(
+    snapshot: &SnapshotEvidenceReport,
+    records: &[FileRecord],
+) -> Result<BackupManifestBody, TexoError> {
+    let segments = segment_refs_from_records(records)?;
+    let expected_ids = snapshot
+        .body
+        .copied_segment_ids_sorted
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let observed_ids = segments
+        .iter()
+        .map(|segment| segment.segment_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if expected_ids != observed_ids {
+        return Err(backup_error(
+            "snapshot segment evidence does not match copied segment files",
+        ));
+    }
+    Ok(BackupManifestBody {
+        schema_version: BACKUP_MANIFEST_BODY_SCHEMA_VERSION,
+        backup_id: snapshot.body.snapshot_id,
+        layout_revision: 1,
+        tooling_revision: 1,
+        segments,
+    })
+}
+
+fn segment_refs_from_records(records: &[FileRecord]) -> Result<Vec<BackupSegmentRef>, TexoError> {
+    let mut segments = Vec::new();
+    for record in records {
+        if Path::new(&record.name).extension() != Some(std::ffi::OsStr::new("fbat")) {
+            continue;
+        }
+        let stem = record
+            .name
+            .strip_suffix(".fbat")
+            .ok_or_else(|| backup_error("segment filename has no numeric stem"))?;
+        let segment_id = stem
+            .parse::<u64>()
+            .map_err(|_| backup_error(format!("invalid segment filename `{}`", record.name)))?;
+        if format!("{segment_id:06}.fbat") != record.name {
+            return Err(backup_error(format!(
+                "non-canonical segment filename `{}`",
+                record.name
+            )));
+        }
+        let bytes_digest = digest_from_hex(&record.hash_hex)
+            .ok_or_else(|| backup_error(format!("invalid segment digest for `{}`", record.name)))?;
+        segments.push(BackupSegmentRef {
+            segment_id,
+            bytes_digest,
+        });
+    }
+    segments.sort();
+    Ok(segments)
+}
+
+fn digest_from_hex(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (index, slot) in digest.iter_mut().enumerate() {
+        let offset = index * 2;
+        *slot = u8::from_str_radix(&value[offset..offset + 2], 16).ok()?;
+    }
+    Some(digest)
+}
+
+fn check_substrate_restore_proof(
+    dest: &Path,
+    manifest: &BackupManifest,
+    findings: &mut Vec<BackupFinding>,
+) {
+    if manifest.substrate_manifest.schema_version != BACKUP_MANIFEST_BODY_SCHEMA_VERSION {
+        findings.push(finding(
+            "substrate_manifest_schema_unsupported",
+            format!(
+                "unsupported substrate manifest schema {}",
+                manifest.substrate_manifest.schema_version
+            ),
+        ));
+    }
+    if manifest.substrate_manifest.backup_id != manifest.snapshot.body.snapshot_id {
+        findings.push(finding(
+            "substrate_manifest_snapshot_mismatch",
+            "substrate backup identity does not match snapshot identity",
+        ));
+    }
+    let claimed_hash = digest_from_hex(&manifest.substrate_manifest_hash_hex);
+    match backup_manifest_body_hash(&manifest.substrate_manifest) {
+        Ok(computed) if claimed_hash == Some(computed) => {}
+        Ok(_) => findings.push(finding(
+            "substrate_manifest_hash_mismatch",
+            "substrate manifest body hash does not recompute",
+        )),
+        Err(error) => findings.push(finding(
+            "substrate_manifest_invalid",
+            format!("substrate manifest cannot be encoded: {error}"),
+        )),
+    }
+
+    let mut observed = Vec::new();
+    let store_dir = dest.join(STORE_DIR);
+    let entries = match fs::read_dir(&store_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            findings.push(finding(
+                "substrate_restore_proof_invalid",
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                findings.push(finding(
+                    "substrate_restore_proof_invalid",
+                    error.to_string(),
+                ));
+                return;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = Path::new(&name);
+        if path.extension() != Some(std::ffi::OsStr::new("fbat")) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let segment_id = match stem.parse::<u64>() {
+            Ok(segment_id) if format!("{segment_id:06}.fbat") == name => segment_id,
+            _ => {
+                findings.push(finding(
+                    "substrate_restore_proof_invalid",
+                    format!("invalid segment filename `{name}`"),
+                ));
+                continue;
+            }
+        };
+        match hash_regular_bounded(&entry.path(), MAX_STORE_FILE_BYTES) {
+            Ok((hash, _bytes)) => match digest_from_hex(&hash) {
+                Some(bytes_digest) => observed.push(BackupSegmentRef {
+                    segment_id,
+                    bytes_digest,
+                }),
+                None => findings.push(finding(
+                    "substrate_restore_proof_invalid",
+                    format!("invalid digest for `{name}`"),
+                )),
+            },
+            Err(detail) => findings.push(finding("substrate_restore_proof_invalid", detail)),
+        }
+    }
+    match restore_proof_evidence_report(&manifest.substrate_manifest, &observed) {
+        Ok(report) if report.body.findings.is_empty() => {}
+        Ok(report) => findings.push(finding(
+            "substrate_restore_proof_failed",
+            format!("BatPak restore proof findings: {:?}", report.body.findings),
+        )),
+        Err(error) => findings.push(finding(
+            "substrate_restore_proof_invalid",
+            format!("BatPak restore proof cannot be encoded: {error}"),
+        )),
+    }
 }
 
 fn check_snapshot_evidence(

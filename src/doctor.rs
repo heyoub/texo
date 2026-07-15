@@ -140,6 +140,7 @@ pub fn diagnose(
     check_integrations(root, &workspace_id, &mut checks);
     check_gateway(config.as_ref(), &mut checks);
     if let Some(workspace) = config {
+        check_extractor(&workspace, &mut checks);
         check_workspace(root, &workspace, deep, &mut checks);
     }
 
@@ -157,6 +158,24 @@ pub fn diagnose(
         deep,
         fix_requested: fix,
         checks,
+    }
+}
+
+fn check_extractor(workspace: &WorkspaceConfig, checks: &mut Vec<DoctorCheck>) {
+    if workspace.extractor_cmd.is_none() {
+        checks.push(pass(
+            "extractor.boundary",
+            "built-in extractor requires no external execution boundary",
+        ));
+        return;
+    }
+    match crate::compat::bvisor::readiness() {
+        Ok(detail) => checks.push(pass("extractor.boundary", detail)),
+        Err(detail) => checks.push(fail(
+            "extractor.boundary",
+            detail,
+            "install texo-bvisor-extractor and bvisor-linux-launcher, then set BVISOR_LAUNCHER_BIN",
+        )),
     }
 }
 

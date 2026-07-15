@@ -28,6 +28,10 @@ struct Cli {
     #[arg(long, global = true)]
     workspace: Option<String>,
 
+    /// Physical journal id (defaults to the workspace primary journal).
+    #[arg(long, global = true)]
+    journal: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -166,6 +170,15 @@ enum Command {
         /// Workspace id.
         #[arg(long)]
         workspace: Option<String>,
+        /// Physical journal id.
+        #[arg(long)]
+        journal: Option<String>,
+        /// Optional private-network canonical replica-source listener address.
+        #[arg(long)]
+        replica_addr: Option<String>,
+        /// Environment variable containing the replica MAC secret.
+        #[arg(long, default_value = "TEXO_REPLICA_TOKEN")]
+        replica_token_env: String,
     },
     /// Extract claims from one path.
     Extract { path: PathBuf },
@@ -229,6 +242,11 @@ enum Command {
     Backup {
         #[command(subcommand)]
         cmd: BackupCmd,
+    },
+    /// Bootstrap or advance a configured scale-out read replica.
+    Replica {
+        #[command(subcommand)]
+        cmd: ReplicaCmd,
     },
 }
 
@@ -306,6 +324,41 @@ enum BackupCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ReplicaCmd {
+    /// Materialize a fresh exact fork or imported read model.
+    Bootstrap {
+        /// Replica journal id declared in `.texo/config.toml`.
+        replica: String,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Advance an imported read model once from its durable source cursor.
+    Follow {
+        /// Replica journal id declared in `.texo/config.toml`.
+        replica: String,
+        /// Emit the stable machine-readable report.
+        #[arg(long)]
+        json: bool,
+        /// Continue following until SIGINT/SIGTERM.
+        #[arg(long)]
+        watch: bool,
+        /// Idle polling interval for `--watch`.
+        #[arg(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(50..=60_000))]
+        interval_ms: u64,
+    },
+}
+
+struct ServeOptions {
+    addr: Option<String>,
+    root: Option<PathBuf>,
+    workspace: Option<String>,
+    journal: Option<String>,
+    replica_addr: Option<String>,
+    replica_token_env: String,
+}
+
 /// Run the CLI and return the requested process exit code.
 ///
 /// # Errors
@@ -336,7 +389,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             strict,
             json,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json(
                 "texo.ingest.run",
                 &json!({
@@ -360,7 +413,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             )
         }
         Command::Claims { subject, json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json("texo.claims.list", &json!({"subject": subject}))?;
             if json {
                 let claims = output
@@ -380,7 +433,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             decided_by,
             json,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json(
                 "texo.claim.supersede",
                 &json!({
@@ -399,7 +452,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::CheckStaleness { path, json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json("texo.staleness.check", &json!({"path": path}))?;
             let has_findings = output
                 .get("diagnostics")
@@ -422,7 +475,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             json,
             strict_settlement,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json(
                 "texo.context.agent",
                 &json!({
@@ -450,7 +503,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             out,
             strict_settlement,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let out_for_input = out.clone();
             let output = host.invoke_json(
                 "texo.compile.run",
@@ -464,7 +517,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Conflicts { json, commit } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             if commit {
                 let output = host.invoke_json(
                     "texo.conflicts.commit",
@@ -486,7 +539,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Verify { json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json("texo.verify.run", &json!({}))?;
             let failed = ["projection_ok", "journal_ok", "transitions_ok"]
                 .iter()
@@ -517,7 +570,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             })
         }
         Command::Stats { json: _ } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json("texo.stats.read", &json!({}))?;
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
@@ -529,7 +582,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             max_total_bytes,
             json: _,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let observed_at_ms = observed_at_ms();
             let source = host.invoke_json(
                 "texo.knowledge.index",
@@ -576,7 +629,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             min_score_ppm,
             json,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json(
                 "texo.knowledge.reconcile",
                 &json!({
@@ -604,13 +657,13 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
         Command::Host {
             cmd: HostCmd::Fingerprint,
         } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json("texo.host.fingerprint", &json!({}))?;
             render::json(&output)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Relate { json, strict } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let output = host.invoke_json(
                 "texo.relate.run",
                 &json!({"observed_at_ms": observed_at_ms(), "strict": strict}),
@@ -629,18 +682,38 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             )
         }
         Command::Mcp => {
-            crate::surfaces::mcp_stdio::run(&cli.root, cli.workspace.as_deref())?;
+            refresh_selected_reader(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
+            crate::surfaces::mcp_stdio::run(
+                &cli.root,
+                cli.workspace.as_deref(),
+                cli.journal.as_deref(),
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Serve {
             addr,
             root,
             workspace,
-        } => serve(addr, root, workspace, &cli.root, cli.workspace.as_deref()),
+            journal,
+            replica_addr,
+            replica_token_env,
+        } => serve(
+            ServeOptions {
+                addr,
+                root,
+                workspace,
+                journal: journal.or_else(|| cli.journal.clone()),
+                replica_addr,
+                replica_token_env,
+            },
+            &cli.root,
+            cli.workspace.as_deref(),
+        ),
         Command::Extract { path } => Ok(extract(&path)),
         Command::Session { cmd } => match cmd {
             SessionCmd::Export { session_id } => {
-                let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+                let mut host =
+                    open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
                 let output =
                     host.invoke_json("texo.session.export", &json!({"session_id": session_id}))?;
                 render::session_markdown(
@@ -690,7 +763,13 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             json,
         } => {
             let workspace = cli.workspace.as_deref().unwrap_or("demo");
-            let report = crate::install::install(&cli.root, workspace, &client, dry_run)?;
+            let report = crate::install::install_for_journal(
+                &cli.root,
+                workspace,
+                cli.journal.as_deref(),
+                &client,
+                dry_run,
+            )?;
             let output = serde_json::to_value(report)?;
             if json {
                 render::json(&output)?;
@@ -714,7 +793,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Hook { cmd } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref())?;
+            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
             let (event, data, json) = match cmd {
                 HookCmd::SessionStart { json } => (
                     "session_start",
@@ -841,20 +920,76 @@ fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        Command::Replica { cmd } => {
+            let report = match cmd {
+                ReplicaCmd::Bootstrap { replica, json: _ } => {
+                    crate::replication::bootstrap(&cli.root, cli.workspace.as_deref(), &replica)?
+                }
+                ReplicaCmd::Follow {
+                    replica,
+                    json: _,
+                    watch: false,
+                    interval_ms: _,
+                } => {
+                    crate::replication::follow_once(&cli.root, cli.workspace.as_deref(), &replica)?
+                }
+                ReplicaCmd::Follow {
+                    replica,
+                    json: _,
+                    watch: true,
+                    interval_ms,
+                } => {
+                    return follow_replica_until_shutdown(
+                        &cli.root,
+                        cli.workspace.as_deref(),
+                        &replica,
+                        interval_ms,
+                    );
+                }
+            };
+            render::json(&serde_json::to_value(report)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
+fn follow_replica_until_shutdown(
+    root: &Path,
+    workspace: Option<&str>,
+    replica: &str,
+    interval_ms: u64,
+) -> Result<ExitCode, TexoError> {
+    let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
+    shutdown.register_termination_signals()?;
+    let mut first = true;
+    while !shutdown.is_shutdown() {
+        let report = crate::replication::follow_once(root, workspace, replica)?;
+        let changed = matches!(
+            &report,
+            crate::replication::ReplicaReport::ImportedReadModel { imported, .. } if *imported > 0
+        );
+        if first || changed {
+            render::json(&serde_json::to_value(&report)?)?;
+            first = false;
+        }
+        if !shutdown.is_shutdown() {
+            std::thread::park_timeout(std::time::Duration::from_millis(interval_ms));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn serve(
-    addr: Option<String>,
-    root: Option<PathBuf>,
-    workspace: Option<String>,
+    options: ServeOptions,
     global_root: &Path,
     global_workspace: Option<&str>,
 ) -> Result<ExitCode, TexoError> {
-    let addr = addr
+    let addr = options
+        .addr
         .or_else(|| std::env::var("TEXO_AGENT_ADDR").ok())
         .unwrap_or_else(|| "127.0.0.1:8787".to_string());
-    let root = root
+    let root = options
+        .root
         .or_else(|| {
             if global_root == Path::new(".") {
                 None
@@ -864,7 +999,8 @@ fn serve(
         })
         .or_else(|| std::env::var("TEXO_AGENT_ROOT").ok().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    let workspace = workspace
+    let workspace = options
+        .workspace
         .or_else(|| global_workspace.map(str::to_string))
         .or_else(|| std::env::var("TEXO_AGENT_WORKSPACE").ok())
         .unwrap_or_else(|| "memory".to_string());
@@ -873,7 +1009,25 @@ fn serve(
         render::serve_warning(warning);
     }
     crate::surfaces::bootstrap::ensure_workspace(&root, &workspace, &decision)?;
-    let listener = TcpListener::bind(&addr).map_err(|error| TexoError::Surface {
+    let root_config = crate::config::TexoRootConfig::load(&root.join(".texo/config.toml"))
+        .map_err(|error| TexoError::Config {
+            detail: error.to_string(),
+            source: Some(Box::new(error)),
+        })?;
+    let (_workspace_config, selected_journal) = root_config
+        .resolve_journal(Some(&workspace), options.journal.as_deref())
+        .map_err(|error| TexoError::Config {
+            detail: error.to_string(),
+            source: Some(Box::new(error)),
+        })?;
+    let _refresh =
+        crate::replication::refresh_reader(&root, Some(&workspace), selected_journal.id.as_str())?;
+    let socket =
+        crate::compat::netbat::private_socket_addr(&addr).map_err(|error| TexoError::Config {
+            detail: format!("replica listener {addr}: {error}"),
+            source: None,
+        })?;
+    let listener = TcpListener::bind(socket).map_err(|error| TexoError::Surface {
         which: crate::error::SurfaceKind::Http,
         detail: error.to_string(),
     })?;
@@ -882,27 +1036,130 @@ fn serve(
         detail: error.to_string(),
     })?;
     render::serve_listening(local);
-    let store = crate::host::open_workspace_store(&root, &workspace)?;
-    let gateway = crate::config::TexoRootConfig::load(&root.join(".texo/config.toml"))
-        .ok()
-        .and_then(|config| config.gateway);
+    let store =
+        crate::host::open_workspace_journal_store(&root, &workspace, selected_journal.id.as_str())?;
+    let gateway = root_config.gateway;
     let chat_role = crate::gateway::resolve_role(
         crate::gateway::ModelRole::Chat,
         &crate::gateway::RoleOverrides::default(),
         gateway.as_ref(),
     );
+    let served_workspace = workspace.clone();
     let state = crate::surfaces::http::routes::RouteState {
         root,
         workspace_id: workspace,
-        store: Some(store),
+        journal_id: selected_journal.id.to_string(),
+        store: Some(store.clone()),
         projection_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
         chat_enabled: crate::host::grants_model_capability(Some(chat_role.api_key)),
     };
     let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);
     let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
     shutdown.register_termination_signals()?;
-    let _stats = crate::surfaces::http::server::serve_listener(listener, config, &shutdown)?;
+    let replica_thread = start_replica_server(
+        options.replica_addr,
+        &options.replica_token_env,
+        &selected_journal,
+        &store,
+        &served_workspace,
+        &shutdown,
+    )?;
+    let http_result = crate::surfaces::http::server::serve_listener(listener, config, &shutdown);
+    shutdown.shutdown();
+    let replica_result = replica_thread
+        .map(|thread| {
+            thread.join().map_err(|_| TexoError::Surface {
+                which: crate::error::SurfaceKind::Http,
+                detail: "replica listener thread terminated without a result".to_string(),
+            })?
+        })
+        .transpose()?;
+    let _http_stats = http_result?;
+    if let Some(stats) = replica_result {
+        tracing::debug!(
+            accepted = stats.accepted_connections,
+            served = stats.served_requests,
+            failed = stats.failed_requests,
+            "replica listener stopped"
+        );
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+fn refresh_selected_reader(
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Result<(), TexoError> {
+    let config_path = root.join(".texo/config.toml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let config =
+        crate::config::TexoRootConfig::load(&config_path).map_err(|error| TexoError::Config {
+            detail: error.to_string(),
+            source: Some(Box::new(error)),
+        })?;
+    let (workspace_config, selected) =
+        config
+            .resolve_journal(workspace, journal)
+            .map_err(|error| TexoError::Config {
+                detail: error.to_string(),
+                source: Some(Box::new(error)),
+            })?;
+    let _refresh = crate::replication::refresh_reader(
+        root,
+        Some(&workspace_config.workspace_id),
+        selected.id.as_str(),
+    )?;
+    Ok(())
+}
+
+fn start_replica_server(
+    addr: Option<String>,
+    token_env: &str,
+    journal: &crate::topology::ResolvedJournal,
+    store: &crate::journal_store::JournalStore,
+    workspace: &str,
+    shutdown: &crate::surfaces::http::server::ShutdownHandle,
+) -> Result<Option<std::thread::JoinHandle<Result<netbat::TcpServeStats, TexoError>>>, TexoError> {
+    let Some(addr) = addr.or_else(|| std::env::var("TEXO_REPLICA_ADDR").ok()) else {
+        return Ok(None);
+    };
+    let writer = store.writable_arc().ok_or_else(|| TexoError::Config {
+        detail: "replica source listener requires a canonical journal".to_string(),
+        source: None,
+    })?;
+    let token = std::env::var(token_env).map_err(|_| TexoError::Config {
+        detail: format!("replica token environment variable `{token_env}` is not set"),
+        source: None,
+    })?;
+    if token.is_empty() {
+        return Err(TexoError::Config {
+            detail: format!("replica token environment variable `{token_env}` is empty"),
+            source: None,
+        });
+    }
+    let listener = TcpListener::bind(&addr).map_err(|error| TexoError::Surface {
+        which: crate::error::SurfaceKind::Http,
+        detail: format!("replica listener {addr}: {error}"),
+    })?;
+    let server = crate::replica_net::Server {
+        listener,
+        store: writer,
+        workspace_id: workspace.to_string(),
+        journal_id: journal.id.to_string(),
+        token,
+    };
+    let replica_shutdown = shutdown.clone();
+    std::thread::Builder::new()
+        .name("texo-replica-netbat".to_string())
+        .spawn(move || crate::replica_net::serve(&server, &replica_shutdown))
+        .map(Some)
+        .map_err(|error| TexoError::Surface {
+            which: crate::error::SurfaceKind::Http,
+            detail: format!("start replica listener: {error}"),
+        })
 }
 
 fn extract(path: &Path) -> ExitCode {
@@ -950,9 +1207,17 @@ fn extract_impl(_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Err("openrouter feature is disabled".into())
 }
 
-fn open_host(root: &Path, workspace: Option<&str>) -> Result<TexoHost, TexoError> {
+fn open_host(
+    root: &Path,
+    workspace: Option<&str>,
+    journal: Option<&str>,
+) -> Result<TexoHost, TexoError> {
     let workspace = resolve_workspace(root, workspace)?;
-    TexoHost::open(root.to_path_buf(), workspace, observed_at_ms())
+    if let Some(journal) = journal {
+        TexoHost::open_journal(root.to_path_buf(), workspace, journal, observed_at_ms())
+    } else {
+        TexoHost::open(root.to_path_buf(), workspace, observed_at_ms())
+    }
 }
 
 fn resolve_workspace(root: &Path, workspace: Option<&str>) -> Result<String, TexoError> {

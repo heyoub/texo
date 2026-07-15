@@ -3,19 +3,20 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
-use batpak::store::{Open, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::claims::workspace::WorkspaceCache;
 use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
+use crate::host::HostInterface;
+use crate::journal_store::JournalStore;
+use crate::topology::ResolvedJournal;
 
 /// Per-invocation environment installed around syncbat handler execution.
 pub struct OpEnv {
     /// Open workspace store.
-    pub store: Arc<Store<Open>>,
+    pub store: JournalStore,
     /// Workspace identifier.
     pub workspace_id: String,
     /// Workspace root.
@@ -28,6 +29,10 @@ pub struct OpEnv {
     pub receipts: RefCell<Vec<ReceiptNote>>,
     /// Deterministic operation timestamp supplied by surfaces.
     pub observed_at_ms: u64,
+    /// Actual mounted `hostbat` interface for the fingerprint operation.
+    pub host_interface: HostInterface,
+    /// Selected physical journal and its authority role.
+    pub journal: ResolvedJournal,
 }
 
 /// Compact receipt note returned by operation JSON outputs.
@@ -91,19 +96,43 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::topology::{JournalId, JournalRole};
 
     fn test_env(root: &TempDir, workspace_id: &str) -> Rc<OpEnv> {
         let store =
             Store::open(StoreConfig::new(root.path().join("store"))).expect("test store opens");
         Rc::new(OpEnv {
-            store: Arc::new(store),
+            store: JournalStore::writable(Arc::new(store)),
             workspace_id: workspace_id.to_string(),
             root: root.path().to_path_buf(),
             config: WorkspaceConfig::demo(),
             cache: RefCell::new(WorkspaceCache::default()),
             receipts: RefCell::new(Vec::new()),
             observed_at_ms: 1,
+            host_interface: test_host_interface(),
+            journal: ResolvedJournal {
+                id: JournalId::new("canonical").expect("valid test journal id"),
+                role: JournalRole::Canonical,
+                store_path: "store".to_string(),
+                source_journal: None,
+                replica_mode: None,
+                source_endpoint: None,
+                source_token_env: None,
+            },
         })
+    }
+
+    fn test_host_interface() -> HostInterface {
+        HostInterface {
+            schema: "hostbat.interface.v1".to_string(),
+            version: "test".to_string(),
+            fingerprints: crate::host::HostFingerprints {
+                module_digest: "00".repeat(32),
+                host_fingerprint: "00".repeat(32),
+                interface_fingerprint: "00".repeat(32),
+            },
+            operations: Vec::new(),
+        }
     }
 
     #[test]
