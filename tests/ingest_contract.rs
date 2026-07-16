@@ -11,7 +11,7 @@ use texo::events::coordinate::scope_for_workspace;
 fn write_fixture(workspace: &TestWorkspace) -> TestResult {
     workspace.write("docs/a.md", "Alice owns release approval.\n")?;
     workspace.write("docs/b.md", "Deploys happen on Friday.\n")?;
-    std::fs::write(workspace.root().join("docs/bad.md"), [0xff, 0xfe])?;
+    std::fs::write(workspace.dir.path().join("docs/bad.md"), [0xff, 0xfe])?;
     Ok(())
 }
 
@@ -69,7 +69,7 @@ fn missing_root_fails_and_existing_empty_root_is_stamped_success() -> TestResult
         .expect_err("missing root must fail");
     assert!(missing.to_string().contains("source"));
 
-    std::fs::create_dir_all(workspace.root().join("empty"))?;
+    std::fs::create_dir_all(workspace.dir.path().join("empty"))?;
     let empty = workspace.invoke(
         "texo.ingest.run",
         &json!({

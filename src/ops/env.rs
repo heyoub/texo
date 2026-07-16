@@ -1,39 +1,15 @@
 //! Thread-local operation environment.
 
-use std::cell::RefCell;
-use std::path::PathBuf;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::claims::workspace::WorkspaceCache;
-use crate::config::WorkspaceConfig;
 use crate::error::TexoError;
-use crate::host::HostInterface;
-use crate::journal_store::JournalStore;
-use crate::topology::ResolvedJournal;
 
-/// Per-invocation environment installed around syncbat handler execution.
-pub struct OpEnv {
-    /// Open workspace store.
-    pub store: JournalStore,
-    /// Workspace identifier.
-    pub workspace_id: String,
-    /// Workspace root.
-    pub root: PathBuf,
-    /// Resolved workspace config.
-    pub config: WorkspaceConfig,
-    /// Per-host projection cache.
-    pub cache: RefCell<WorkspaceCache>,
-    /// Append receipts observed by the effect backend.
-    pub receipts: RefCell<Vec<ReceiptNote>>,
-    /// Deterministic operation timestamp supplied by surfaces.
-    pub observed_at_ms: u64,
-    /// Actual mounted `hostbat` interface for the fingerprint operation.
-    pub host_interface: HostInterface,
-    /// Selected physical journal and its authority role.
-    pub journal: ResolvedJournal,
-}
+mod context;
+
+pub use context::{EnvGuard, OpEnv};
 
 /// Compact receipt note returned by operation JSON outputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,11 +24,36 @@ pub struct ReceiptNote {
 
 thread_local! {
     static ENV: RefCell<Option<Rc<OpEnv>>> = const { RefCell::new(None) };
+    static REPLAY_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Guard that restores the previous operation environment on drop.
-pub struct EnvGuard {
-    previous: Option<Rc<OpEnv>>,
+struct ReplayGuard;
+
+impl Drop for ReplayGuard {
+    fn drop(&mut self) {
+        REPLAY_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Execute the common deterministic projection boundary while model transport
+/// is denied. All workspace assembly and direct `BatPak` projection entrypoints
+/// must pass through this function.
+pub(crate) fn deterministic_projection<T>(f: impl FnOnce() -> T) -> T {
+    REPLAY_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    let guard = ReplayGuard;
+    let output = f();
+    drop(guard);
+    output
+}
+
+/// Compatibility name for deterministic projection replay.
+pub(crate) fn replay_scope<T>(f: impl FnOnce() -> T) -> T {
+    deterministic_projection(f)
+}
+
+/// True only when the current thread is outside deterministic replay.
+pub(crate) fn model_calls_allowed() -> bool {
+    REPLAY_DEPTH.with(|depth| depth.get() == 0)
 }
 
 /// Install an operation environment for the current thread.
@@ -96,7 +97,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::topology::{JournalId, JournalRole};
+    use crate::claims::workspace::WorkspaceCache;
+    use crate::config::WorkspaceConfig;
+    use crate::host::HostInterface;
+    use crate::journal_store::JournalStore;
+    use crate::topology::{JournalId, JournalRole, ResolvedJournal};
 
     fn test_env(root: &TempDir, workspace_id: &str) -> Rc<OpEnv> {
         let store =
@@ -169,5 +174,16 @@ mod tests {
 
         let error = with(|_| ()).expect_err("environment removed");
         assert_eq!(error.code(), "op.runtime");
+    }
+
+    #[test]
+    fn replay_guard_is_nested_and_restored() {
+        assert!(model_calls_allowed());
+        deterministic_projection(|| {
+            assert!(!model_calls_allowed());
+            deterministic_projection(|| assert!(!model_calls_allowed()));
+            assert!(!model_calls_allowed());
+        });
+        assert!(model_calls_allowed());
     }
 }

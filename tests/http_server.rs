@@ -41,7 +41,7 @@ fn start_server(dir: &TempDir, keep_alive: Duration) -> TestResult<StartedServer
     let server_shutdown = shutdown.clone();
     let handle = std::thread::Builder::new()
         .name("texo-http-test".to_string())
-        .spawn(move || serve_listener(listener, config, &server_shutdown))?;
+        .spawn(move || serve_listener(&listener, config, &server_shutdown))?;
     Ok((addr, shutdown, handle, store))
 }
 

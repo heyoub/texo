@@ -47,7 +47,6 @@ impl SpikeState {
     output_schema = "schema.spike.echo.output.v1",
     receipt_kind = "receipt.spike.echo.v1"
 )]
-#[allow(clippy::unnecessary_wraps)]
 fn spike_echo(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerResult {
     let prefix = SPIKE_ENV.with(|slot| {
         slot.borrow()
@@ -56,7 +55,9 @@ fn spike_echo(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerResul
     });
     let mut output = prefix.into_bytes();
     output.extend_from_slice(b":");
-    output.extend_from_slice(input);
+    let text = std::str::from_utf8(input)
+        .map_err(|error| syncbat::HandlerError::invalid_input(error.to_string()))?;
+    output.extend_from_slice(text.as_bytes());
     Ok(output)
 }
 

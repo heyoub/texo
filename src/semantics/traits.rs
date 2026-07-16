@@ -144,6 +144,7 @@ pub trait Proposer {
 /// rather than dividing by zero or indexing out of bounds. A returned `0.0`
 /// therefore means "no usable signal," which is the safe neutral value for
 /// downstream thresholding.
+#[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.is_empty() || a.len() != b.len() {
         return 0.0;

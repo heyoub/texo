@@ -169,6 +169,15 @@ impl OpenAiCompatClient {
     /// Returns a typed [`ApiFailure`] for status, transport, deadline, or JSON
     /// response failures. Provider bodies never enter the error unchanged.
     pub fn post_json(&self, endpoint: &'static str, body: &Value) -> Result<Value, ApiFailure> {
+        if !crate::ops::env::model_calls_allowed() {
+            return Err(self.failure(
+                endpoint,
+                ApiFailureKind::Transport,
+                None,
+                0,
+                Some("model calls are forbidden during deterministic replay".to_string()),
+            ));
+        }
         let deadline_at = Instant::now()
             .checked_add(self.request_timeout)
             .ok_or_else(|| {
@@ -428,5 +437,26 @@ mod tests {
         assert!(!redacted.contains("sk-"));
         assert!(!redacted.contains("exact_secret"));
         assert!(redacted.chars().count() <= MAX_PROVIDER_MESSAGE);
+    }
+
+    #[test]
+    fn deterministic_replay_cannot_reach_model_transport() {
+        let client = OpenAiCompatClient::new(
+            "http://127.0.0.1:9/v1",
+            "test-key".to_string(),
+            0,
+            Duration::from_secs(1),
+        )
+        .expect("loopback client");
+        let error = crate::ops::env::deterministic_projection(|| {
+            client
+                .post_json("/chat/completions", &serde_json::json!({}))
+                .expect_err("replay guard must fail before transport")
+        });
+        assert_eq!(error.kind, ApiFailureKind::Transport);
+        assert_eq!(error.attempts, 0);
+        assert!(error
+            .to_string()
+            .contains("forbidden during deterministic replay"));
     }
 }

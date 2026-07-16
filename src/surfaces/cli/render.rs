@@ -1,29 +1,37 @@
 //! CLI render helpers.
 
+use std::io::{self, Write as _};
+
 use serde_json::Value;
 
 use crate::error::TexoError;
 
 /// Render one typed CLI failure with its causal chain and recovery facts.
-#[expect(clippy::print_stderr, reason = "CLI error contract")]
-pub fn cli_error(error: &TexoError) {
+///
+/// # Errors
+/// Returns an I/O error when standard error cannot be written.
+pub fn cli_error(error: &TexoError) -> io::Result<()> {
     use std::error::Error as _;
 
-    eprintln!("error[{}]: {error}", error.code());
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+    writeln!(out, "error[{}]: {error}", error.code())?;
     let mut source = error.source();
     while let Some(cause) = source {
-        eprintln!("caused by: {cause}");
+        writeln!(out, "caused by: {cause}")?;
         source = cause.source();
     }
     let facts = error.facts();
-    eprintln!("committed: {}", facts.committed);
-    eprintln!(
+    writeln!(out, "committed: {}", facts.committed)?;
+    writeln!(
+        out,
         "retry: {}",
         if facts.retry_safe { "safe" } else { "unsafe" }
-    );
+    )?;
     if let Some(resume) = facts.resume {
-        eprintln!("resume: {resume}");
+        writeln!(out, "resume: {resume}")?;
     }
+    Ok(())
 }
 
 /// Print a JSON value unchanged except for pretty formatting.
@@ -31,15 +39,19 @@ pub fn cli_error(error: &TexoError) {
 /// # Errors
 ///
 /// Returns [`TexoError::Json`] when the value cannot be serialized.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
 pub fn json(value: &Value) -> Result<(), TexoError> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    let stdout = io::stdout();
+    writeln!(stdout.lock(), "{}", serde_json::to_string_pretty(value)?)?;
     Ok(())
 }
 
 /// Print the operation catalog in one stable line per operation.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn operations(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn operations(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let operations = value
         .get("operations")
         .and_then(Value::as_array)
@@ -57,32 +69,40 @@ pub fn operations(value: &Value) {
             .get("agent_tool")
             .and_then(Value::as_str)
             .map_or("human", |tool| tool);
-        println!("{name}\t{effect}\t{agent}");
+        writeln!(out, "{name}\t{effect}\t{agent}")?;
     }
+    Ok(())
 }
 
 /// Print the init message.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn init(root: &std::path::Path, value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn init(root: &std::path::Path, value: &Value) -> Result<(), TexoError> {
     let workspace = value
         .get("workspace_id")
         .and_then(Value::as_str)
         .unwrap_or("demo");
-    println!(
+    writeln!(
+        io::stdout().lock(),
         "Initialized texo workspace '{}' at {}/.texo",
         workspace,
         root.display()
-    );
+    )?;
+    Ok(())
 }
 
 /// Print ingest summary.
-#[expect(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "CLI output and warning contract"
-)]
-pub fn ingest(value: &Value) {
-    println!(
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when an output stream cannot be written.
+pub fn ingest(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut out = stdout.lock();
+    let mut warnings = stderr.lock();
+    writeln!(
+        out,
         "ingested {} sources, {} claims ({})",
         value
             .get("sources_observed")
@@ -96,26 +116,35 @@ pub fn ingest(value: &Value) {
             .get("workspace_id")
             .and_then(Value::as_str)
             .unwrap_or_default()
-    );
+    )?;
     if value.get("empty").and_then(Value::as_bool) == Some(true) {
-        eprintln!("warning: source root exists but contains no markdown sources");
+        writeln!(
+            warnings,
+            "warning: source root exists but contains no markdown sources"
+        )?;
     }
     if let Some(skipped) = value.get("skipped").and_then(Value::as_array) {
         for row in skipped {
-            eprintln!(
+            writeln!(
+                warnings,
                 "warning: skipped {} ({})",
                 row.get("path").and_then(Value::as_str).unwrap_or("unknown"),
                 row.get("code")
                     .and_then(Value::as_str)
                     .unwrap_or("source.io")
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 /// Print claims in the old four-line block format.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn claims(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn claims(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let claims = value
         .get("claims")
         .and_then(Value::as_array)
@@ -133,16 +162,18 @@ pub fn claims(value: &Value) {
             .get("subject_hint")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        println!("{id} {} {subject}", status_label(status));
-        println!(
+        writeln!(out, "{id} {} {subject}", status_label(status))?;
+        writeln!(
+            out,
             "  \"{}\"",
             claim
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
         let source = claim.get("source").unwrap_or(&Value::Null);
-        println!(
+        writeln!(
+            out,
             "  source: {}:{}",
             source
                 .get("path")
@@ -152,20 +183,23 @@ pub fn claims(value: &Value) {
                 .get("line_start")
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
-        );
+        )?;
         let receipt = claim.get("receipt").unwrap_or(&Value::Null);
-        println!(
+        writeln!(
+            out,
             "  seq: {}",
             receipt.get("sequence").and_then(Value::as_u64).unwrap_or(0)
-        );
-        println!(
+        )?;
+        writeln!(
+            out,
             "  receipt: {}",
             receipt
                 .get("event_id")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
     }
+    Ok(())
 }
 
 fn status_label(value: &str) -> &'static str {
@@ -178,17 +212,23 @@ fn status_label(value: &str) -> &'static str {
 }
 
 /// Print supersession summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn supersede(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn supersede(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     if value.get("already_applied").and_then(Value::as_bool) == Some(true) {
-        println!(
+        writeln!(
+            out,
             "claim {} already superseded by {} (no-op)",
             value.get("old").and_then(Value::as_str).unwrap_or_default(),
             value.get("new").and_then(Value::as_str).unwrap_or_default()
-        );
-        return;
+        )?;
+        return Ok(());
     }
-    println!(
+    writeln!(
+        out,
         "superseded {} with {} at local seq {}",
         value.get("old").and_then(Value::as_str).unwrap_or_default(),
         value.get("new").and_then(Value::as_str).unwrap_or_default(),
@@ -197,56 +237,74 @@ pub fn supersede(value: &Value) {
             .and_then(|receipt| receipt.get("global_sequence"))
             .and_then(Value::as_u64)
             .unwrap_or(0)
-    );
+    )?;
+    Ok(())
 }
 
 /// Print staleness diagnostics.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn staleness(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn staleness(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let diagnostics = value
         .get("diagnostics")
         .and_then(Value::as_array)
         .map_or(&[] as &[Value], Vec::as_slice);
     for diag in diagnostics {
-        println!(
+        writeln!(
+            out,
             "{}:{} warning — {}",
             diag.get("file").and_then(Value::as_str).unwrap_or_default(),
             diag.get("line_start").and_then(Value::as_u64).unwrap_or(0),
             diag.get("message")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
     }
     if diagnostics.is_empty() {
-        println!("no stale claims detected");
+        writeln!(out, "no stale claims detected")?;
     }
+    Ok(())
 }
 
 /// Print compile summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn compile(out: &std::path::Path, value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn compile(out: &std::path::Path, value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
     let files = value
         .get("files")
         .and_then(Value::as_array)
         .map_or(&[] as &[Value], Vec::as_slice);
     for file in files {
-        println!(
+        writeln!(
+            stdout,
             "wrote {}/{}",
             out.display(),
             file.as_str().unwrap_or_default()
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Print conflicts.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn conflicts(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn conflicts(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let open = value
         .get("open")
         .and_then(Value::as_array)
         .map_or(&[] as &[Value], Vec::as_slice);
     for entry in open {
-        println!(
+        writeln!(
+            out,
             "{} {} vs {} ({})",
             entry
                 .get("conflict_id")
@@ -264,53 +322,75 @@ pub fn conflicts(value: &Value) {
                 .get("subject_hint")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Print conflict commit summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn conflicts_committed(value: &Value) {
-    println!(
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn conflicts_committed(value: &Value) -> Result<(), TexoError> {
+    writeln!(
+        io::stdout().lock(),
         "committed {} conflicts",
         value.as_array().map_or(0, Vec::len)
-    );
+    )?;
+    Ok(())
 }
 
 /// Print verify summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn verify(value: &Value) {
-    println!(
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn verify(value: &Value) -> Result<(), TexoError> {
+    writeln!(
+        io::stdout().lock(),
         "ok — replayed through local seq {}",
         value
             .get("replayed_through_sequence")
             .or_else(|| value.get("frontier"))
             .and_then(Value::as_u64)
             .unwrap_or(0)
-    );
+    )?;
+    Ok(())
 }
 
 /// Print session export markdown.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn session_markdown(markdown: &str) {
-    println!("{markdown}");
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn session_markdown(markdown: &str) -> Result<(), TexoError> {
+    writeln!(io::stdout().lock(), "{markdown}")?;
+    Ok(())
 }
 
 /// Print serve startup line.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn serve_listening(addr: std::net::SocketAddr) {
-    println!("texo-agent listening on http://{addr}");
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn serve_listening(addr: std::net::SocketAddr) -> Result<(), TexoError> {
+    writeln!(io::stdout().lock(), "texo-agent listening on http://{addr}")?;
+    Ok(())
 }
 
 /// Print serve bootstrap warning.
-#[expect(clippy::print_stderr, reason = "CLI output contract")]
-pub fn serve_warning(message: &str) {
-    eprintln!("{message}");
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard error cannot be written.
+pub fn serve_warning(message: &str) -> Result<(), TexoError> {
+    writeln!(io::stderr().lock(), "{message}")?;
+    Ok(())
 }
 
 /// Print a concise install or uninstall change report.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn installation(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn installation(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let verb = if value.get("workspace_id").is_some() {
         "install"
     } else {
@@ -320,14 +400,19 @@ pub fn installation(value: &Value) {
         .get("dry_run")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    println!("texo {verb}{}", if dry_run { " (dry run)" } else { "" });
+    writeln!(
+        out,
+        "texo {verb}{}",
+        if dry_run { " (dry run)" } else { "" }
+    )?;
     for change in value
         .get("changes")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        println!(
+        writeln!(
+            out,
             "  {:<9} {}",
             change
                 .get("action")
@@ -337,27 +422,34 @@ pub fn installation(value: &Value) {
                 .get("path")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Print a concise doctor report with repair guidance.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn doctor(value: &Value) {
-    println!(
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn doctor(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    writeln!(
+        out,
         "texo doctor: {}",
         value
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("broken")
-    );
+    )?;
     for check in value
         .get("checks")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        println!(
+        writeln!(
+            out,
             "  {:<5} {:<24} {}",
             check
                 .get("status")
@@ -368,32 +460,39 @@ pub fn doctor(value: &Value) {
                 .get("detail")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
         if let Some(fix) = check.get("fix").and_then(Value::as_str) {
-            println!("        fix: {fix}");
+            writeln!(out, "        fix: {fix}")?;
         }
     }
+    Ok(())
 }
 
 /// Print a concise backup create or verification report.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn backup(value: &Value) {
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn backup(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     if let Some(verified) = value.get("verified").and_then(Value::as_bool) {
-        println!(
+        writeln!(
+            out,
             "backup {}: {}",
             value
                 .get("dest")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             if verified { "verified" } else { "INVALID" }
-        );
+        )?;
         for finding in value
             .get("findings")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
-            println!(
+            writeln!(
+                out,
                 "  {}: {}",
                 finding
                     .get("kind")
@@ -403,10 +502,11 @@ pub fn backup(value: &Value) {
                     .get("detail")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
-            );
+            )?;
         }
     } else if value.get("chain_verified").and_then(Value::as_bool) == Some(true) {
-        println!(
+        writeln!(
+            out,
             "backup restored: {} ({} files, {} bytes; chain verified)",
             value
                 .get("dest")
@@ -420,9 +520,10 @@ pub fn backup(value: &Value) {
                 .get("store_bytes")
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
-        );
+        )?;
     } else {
-        println!(
+        writeln!(
+            out,
             "backup created: {} ({} files, {} bytes)",
             value
                 .get("dest")
@@ -436,34 +537,66 @@ pub fn backup(value: &Value) {
                 .get("store_bytes")
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
-        );
-        println!(
+        )?;
+        writeln!(
+            out,
             "manifest hash: {} (store this outside the backup)",
             value
                 .get("manifest_hash_hex")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Print an extractor error with the extractor subcommand prefix.
-#[expect(clippy::print_stderr, reason = "CLI output contract")]
-pub fn extract_error(error: &dyn std::error::Error) {
-    eprint!("texo extract: {error}");
+///
+/// # Errors
+/// Returns an I/O error when standard error cannot be written.
+pub fn extract_error(error: &dyn std::error::Error) -> io::Result<()> {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+    write!(out, "texo extract: {error}")?;
     let mut source = error.source();
     while let Some(cause) = source {
-        eprint!(": {cause}");
+        write!(out, ": {cause}")?;
         source = cause.source();
     }
-    eprintln!();
+    writeln!(out)
 }
 
 /// Print relate summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn relate(value: &Value) {
-    println!(
-        "related {} claims: {} supersessions, {} conflicts",
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when an output stream cannot be written.
+pub fn relate(value: &Value) -> Result<(), TexoError> {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    write_relate(&mut stdout.lock(), &mut stderr.lock(), value)?;
+    Ok(())
+}
+
+fn write_relate(
+    out: &mut dyn io::Write,
+    warnings: &mut dyn io::Write,
+    value: &Value,
+) -> io::Result<()> {
+    let outcome = value
+        .get("outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("partial");
+    let candidate_pairs = value
+        .get("candidate_pairs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let candidate_pair_budget = value
+        .get("candidate_pair_budget")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    writeln!(
+        out,
+        "relate {outcome}: {} claims; supersessions: {}; conflicts: {}",
         value
             .get("claims_related")
             .and_then(Value::as_u64)
@@ -476,13 +609,49 @@ pub fn relate(value: &Value) {
             .get("conflicts")
             .and_then(Value::as_array)
             .map_or(0, Vec::len)
-    );
+    )?;
+    writeln!(
+        out,
+        "candidate pairs: {candidate_pairs} (page budget: {candidate_pair_budget})"
+    )?;
+    if outcome == "partial" {
+        if let Some(cursor) = value.get("next_candidate_cursor").and_then(Value::as_u64) {
+            writeln!(out, "resume candidate cursor: {cursor}")?;
+        }
+    }
+    if let Some(pair) = value.get("rejudged_pair").filter(|pair| !pair.is_null()) {
+        writeln!(
+            out,
+            "rejudged pair {} -> {}: {} -> {} (first judgment remains authoritative)",
+            pair.get("older_claim")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            pair.get("newer_claim")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            pair.get("prior_relation")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            pair.get("fresh_relation")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        )?;
+    }
+    if let Some(rows) = value.get("warnings").and_then(Value::as_array) {
+        for warning in rows.iter().filter_map(Value::as_str) {
+            writeln!(warnings, "warning: {warning}")?;
+        }
+    }
+    Ok(())
 }
 
 /// Print semantic claim↔code reconciliation summary.
-#[expect(clippy::print_stdout, reason = "CLI output contract")]
-pub fn reconcile(value: &Value) {
-    println!(
+///
+/// # Errors
+/// Returns [`TexoError::Io`] when standard output cannot be written.
+pub fn reconcile(value: &Value) -> Result<(), TexoError> {
+    writeln!(
+        io::stdout().lock(),
         "reconciliation {}: {} accepted, {} rejected, {} unresolved, {} already linked",
         value
             .get("outcome")
@@ -501,5 +670,9 @@ pub fn reconcile(value: &Value) {
             .get("already_linked")
             .and_then(Value::as_u64)
             .unwrap_or(0),
-    );
+    )?;
+    Ok(())
 }
+
+#[cfg(test)]
+mod tests;

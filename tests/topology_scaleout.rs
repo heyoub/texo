@@ -94,7 +94,7 @@ fn snapshot_tokens_refuse_a_different_physical_journal() -> TestResult {
     let _init = canonical.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
     let context = canonical.invoke_json(
         "texo.context.agent",
-        &json!({"subject": null, "include_stale": false}),
+        &json!({"subject": null, "include_stale": false, "allow_unsettled": true}),
     )?;
     let token = context["snapshot"]["token"]
         .as_str()

@@ -1,5 +1,11 @@
 //! Synchronous HTTP helpers for OpenAI-compatible surfaces.
 
+#[cfg(feature = "openrouter")]
+mod codec;
+#[cfg(feature = "openrouter")]
+mod schedule;
+mod types;
+
 /// HTTP/1.1 client.
 #[cfg(feature = "openrouter")]
 pub mod client;

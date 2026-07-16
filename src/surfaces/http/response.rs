@@ -2,18 +2,7 @@
 
 use std::io::{self, Write};
 
-/// Inbound-server HTTP response.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpResponse {
-    /// Numeric status code.
-    pub status: u16,
-    /// Extra headers.
-    pub headers: Vec<(String, String)>,
-    /// Response body bytes.
-    pub body: Vec<u8>,
-    /// Whether to add `Connection: close`.
-    pub close: bool,
-}
+pub use super::types::HttpResponse;
 
 impl HttpResponse {
     /// Build a response with a byte body.

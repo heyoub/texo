@@ -14,21 +14,10 @@ use super::request::{parse, ParseFailure};
 use super::response::HttpResponse;
 use super::routes::{route, RouteState};
 
+pub use super::types::ServerConfig;
+
 const REQUEST_PERMITS: usize = 64;
 const SSE_PERMITS: usize = 8;
-
-/// Server configuration.
-#[derive(Clone)]
-pub struct ServerConfig {
-    /// Listen address.
-    pub addr: String,
-    /// Route state.
-    pub state: RouteState,
-    /// Accept-loop idle sleep.
-    pub idle_sleep: Duration,
-    /// SSE keep-alive interval.
-    pub sse_keep_alive: Duration,
-}
 
 impl ServerConfig {
     /// Build a config with default sleeps.
@@ -137,7 +126,7 @@ impl AtomicStats {
 /// Returns [`TexoError::Surface`] when the listener cannot bind or configure.
 pub fn serve(config: ServerConfig, shutdown: &ShutdownHandle) -> Result<ServeStats, TexoError> {
     let listener = TcpListener::bind(&config.addr).map_err(surface_error)?;
-    serve_listener(listener, config, shutdown)
+    serve_listener(&listener, config, shutdown)
 }
 
 /// Serve an already-bound listener until shutdown.
@@ -146,12 +135,8 @@ pub fn serve(config: ServerConfig, shutdown: &ShutdownHandle) -> Result<ServeSta
 ///
 /// Returns [`TexoError::Surface`] when listener configuration or worker spawn
 /// fails.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the server owns the listener lifecycle until shutdown"
-)]
 pub fn serve_listener(
-    listener: TcpListener,
+    listener: &TcpListener,
     config: ServerConfig,
     shutdown: &ShutdownHandle,
 ) -> Result<ServeStats, TexoError> {
@@ -166,30 +151,26 @@ pub fn serve_listener(
         match listener.accept() {
             Ok((stream, _addr)) => {
                 counters.accepted.fetch_add(1, Ordering::AcqRel);
-                let route_state = Arc::clone(&route_state);
-                let request_pool = Arc::clone(&request_pool);
-                let sse_pool = Arc::clone(&sse_pool);
-                let counters = Arc::clone(&counters);
-                let shutdown = shutdown.clone();
-                let keep_alive = config.sse_keep_alive;
-                let idle_sleep = config.idle_sleep;
+                let context = ConnectionContext {
+                    route_state: Arc::clone(&route_state),
+                    request_pool: Arc::clone(&request_pool),
+                    sse_pool: Arc::clone(&sse_pool),
+                    shutdown: shutdown.clone(),
+                    idle_sleep: config.idle_sleep,
+                    keep_alive: config.sse_keep_alive,
+                    counters: Arc::clone(&counters),
+                };
                 let worker = std::thread::Builder::new()
                     .name("texo-http-conn".to_string())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                            serve_connection(
-                                stream,
-                                &route_state,
-                                &request_pool,
-                                &sse_pool,
-                                &shutdown,
-                                idle_sleep,
-                                keep_alive,
-                                &counters,
-                            );
+                            serve_connection(stream, &context);
                         }));
                         if result.is_err() {
-                            counters.worker_panics.fetch_add(1, Ordering::AcqRel);
+                            context
+                                .counters
+                                .worker_panics
+                                .fetch_add(1, Ordering::AcqRel);
                         }
                     })
                     .map_err(surface_error)?;
@@ -212,24 +193,24 @@ pub fn serve_listener(
     Ok(counters.snapshot())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "connection workers receive independent admission pools, shutdown, timing, and counters"
-)]
-fn serve_connection(
-    mut stream: TcpStream,
-    route_state: &RouteState,
-    request_pool: &PermitPool,
-    sse_pool: &PermitPool,
-    shutdown: &ShutdownHandle,
+struct ConnectionContext {
+    route_state: Arc<RouteState>,
+    request_pool: Arc<PermitPool>,
+    sse_pool: Arc<PermitPool>,
+    shutdown: ShutdownHandle,
     idle_sleep: Duration,
     keep_alive: Duration,
-    counters: &AtomicStats,
-) {
+    counters: Arc<AtomicStats>,
+}
+
+fn serve_connection(mut stream: TcpStream, context: &ConnectionContext) {
     let request = match parse(&mut stream) {
         Ok(request) => request,
         Err(ParseFailure::Request(error)) => {
-            counters.parse_rejections.fetch_add(1, Ordering::AcqRel);
+            context
+                .counters
+                .parse_rejections
+                .fetch_add(1, Ordering::AcqRel);
             let mut response = HttpResponse::json_error(error.status, &error.message);
             if let Some(allow) = error.allow {
                 response
@@ -240,35 +221,59 @@ fn serve_connection(
             return;
         }
         Err(ParseFailure::Io(_)) => {
-            counters.failed_requests.fetch_add(1, Ordering::AcqRel);
+            context
+                .counters
+                .failed_requests
+                .fetch_add(1, Ordering::AcqRel);
             return;
         }
     };
     if request.method == super::request::Method::Get && request.path == "/api/stream" {
-        let Some(_permit) = sse_pool.acquire(shutdown, idle_sleep) else {
+        let Some(_permit) = context
+            .sse_pool
+            .acquire(&context.shutdown, context.idle_sleep)
+        else {
             return;
         };
         let resume_from = super::sse::resume_cursor(&request);
-        match super::sse::serve(&mut stream, route_state, keep_alive, resume_from, shutdown) {
-            Ok(()) => counters.served.fetch_add(1, Ordering::AcqRel),
-            Err(_) => counters.failed_requests.fetch_add(1, Ordering::AcqRel),
+        match super::sse::serve(
+            &mut stream,
+            &context.route_state,
+            context.keep_alive,
+            resume_from,
+            &context.shutdown,
+        ) {
+            Ok(()) => context.counters.served.fetch_add(1, Ordering::AcqRel),
+            Err(_) => context
+                .counters
+                .failed_requests
+                .fetch_add(1, Ordering::AcqRel),
         };
         return;
     }
-    let Some(_permit) = request_pool.acquire(shutdown, idle_sleep) else {
+    let Some(_permit) = context
+        .request_pool
+        .acquire(&context.shutdown, context.idle_sleep)
+    else {
         return;
     };
-    match route(&request, route_state) {
+    match route(&request, &context.route_state) {
         Ok(response) => {
             if response.status >= 400 {
-                counters.failed_requests.fetch_add(1, Ordering::AcqRel);
+                context
+                    .counters
+                    .failed_requests
+                    .fetch_add(1, Ordering::AcqRel);
             } else {
-                counters.served.fetch_add(1, Ordering::AcqRel);
+                context.counters.served.fetch_add(1, Ordering::AcqRel);
             }
             let _ = response.write_to(&mut stream);
         }
         Err(error) => {
-            counters.failed_requests.fetch_add(1, Ordering::AcqRel);
+            context
+                .counters
+                .failed_requests
+                .fetch_add(1, Ordering::AcqRel);
             let _ = HttpResponse::json_error(500, &error.to_string()).write_to(&mut stream);
         }
     }

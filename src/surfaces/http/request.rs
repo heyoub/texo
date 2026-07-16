@@ -2,53 +2,10 @@
 
 use std::io::Read;
 
+pub use super::types::{HttpRequest, Method, RequestError};
+
 const HEAD_CAP: usize = 8 * 1024;
 const BODY_CAP: usize = 1024 * 1024;
-
-/// Supported HTTP method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Method {
-    /// GET.
-    Get,
-    /// POST.
-    Post,
-}
-
-/// Parsed inbound request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HttpRequest {
-    /// Request method.
-    pub method: Method,
-    /// Path without query.
-    pub path: String,
-    /// Query string without `?`.
-    pub query: Option<String>,
-    /// Headers in arrival order.
-    pub headers: Vec<(String, String)>,
-    /// Exact request body.
-    pub body: Vec<u8>,
-}
-
-/// Parser rejection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequestError {
-    /// HTTP status code.
-    pub status: u16,
-    /// JSON error message.
-    pub message: String,
-    /// Optional Allow header.
-    pub allow: Option<&'static str>,
-}
-
-impl RequestError {
-    fn new(status: u16, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            message: message.into(),
-            allow: None,
-        }
-    }
-}
 
 /// Parse one HTTP/1.x request from a blocking stream.
 ///

@@ -17,6 +17,7 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
 ///
 /// `needle` is matched case-insensitively against complete word tokens, so it
 /// will not match when it is only a substring of a larger word.
+#[must_use]
 pub fn contains_word(text: &str, needle: &str) -> bool {
     let needle = needle.trim();
     if needle.is_empty() {
@@ -27,6 +28,7 @@ pub fn contains_word(text: &str, needle: &str) -> bool {
 
 /// Returns true when `phrase` (one or more whitespace-separated words) occurs as
 /// a consecutive run of whole words in `text`.
+#[must_use]
 pub fn contains_phrase(text: &str, phrase: &str) -> bool {
     let needle: Vec<&str> = phrase.split_whitespace().collect();
     if needle.is_empty() {
@@ -48,6 +50,7 @@ pub fn contains_phrase(text: &str, phrase: &str) -> bool {
 }
 
 /// Returns true when any of `needles` occurs as a whole word or phrase in `text`.
+#[must_use]
 pub fn contains_any(text: &str, needles: &[&str]) -> bool {
     let haystack = words(text).collect::<Vec<_>>();
     needles.iter().any(|needle| {

@@ -4,6 +4,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod model;
+
+pub use model::{GatewayConfig, GatewayEnvironment};
+
 /// Built-in provider identifier and profile.
 pub const DEFAULT_PROVIDER_ID: &str = "openrouter";
 /// Neutral environment variable for the OpenAI-compatible base URL.
@@ -141,25 +145,6 @@ pub struct RoleConfig {
     pub response_format: ResponseFormatPolicy,
 }
 
-/// Optional `[gateway]` configuration. Absence means built-in defaults.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GatewayConfig {
-    /// Named provider profiles.
-    pub providers: BTreeMap<String, ProviderProfile>,
-    /// Optional embedding-role override.
-    pub embed: Option<RoleConfig>,
-    /// Optional proposal-role override.
-    pub propose: Option<RoleConfig>,
-    /// Optional relation-role override.
-    pub relate: Option<RoleConfig>,
-    /// Optional chat-role override.
-    pub chat: Option<RoleConfig>,
-    /// Global semantic relate wall-clock budget.
-    #[serde(default = "default_relate_budget_secs")]
-    pub relate_budget_secs: u64,
-}
-
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
@@ -192,17 +177,6 @@ pub struct RoleOverrides {
     /// Secret API-key override.
     pub api_key: Option<String>,
     /// Model override.
-    pub model: Option<String>,
-}
-
-/// Already-read neutral environment values used by the pure resolver.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GatewayEnvironment {
-    /// `TEXO_LLM_BASE_URL` value.
-    pub base_url: Option<String>,
-    /// Value read from the selected provider profile's key environment name.
-    pub api_key: Option<String>,
-    /// Role-specific `TEXO_LLM_*_MODEL` value.
     pub model: Option<String>,
 }
 

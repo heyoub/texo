@@ -3,61 +3,79 @@
 use batpak::coordinate::{Coordinate, CoordinateError};
 
 /// Coordinate scope for a workspace.
+#[must_use]
 pub fn scope_for_workspace(workspace_id: &str) -> String {
     format!("workspace:{workspace_id}")
 }
 
 /// Entity string for a claim stream.
+#[must_use]
 pub fn entity_for_claim(claim_id: &str) -> String {
     format!("claim:{claim_id}")
 }
 
 /// Entity string for a conflict stream.
+#[must_use]
 pub fn entity_for_conflict(conflict_id: &str) -> String {
     format!("conflict:{conflict_id}")
 }
 
 /// Entity string for a source stream.
+#[must_use]
 pub fn entity_for_source(source_id: &str) -> String {
     format!("source:{source_id}")
 }
 
 /// Entity string for the onboarding projection stream.
+#[must_use]
 pub fn entity_for_onboarding_projection() -> String {
     "projection:onboarding".to_string()
 }
 
 /// Entity string for workspace metadata.
+#[must_use]
 pub fn entity_for_workspace_meta(workspace_id: &str) -> String {
     format!("workspace-meta:{workspace_id}")
 }
 
 /// Entity string for a session stream.
+#[must_use]
 pub fn entity_for_session(session_id: &str) -> String {
     format!("session:{session_id}")
 }
 
 /// Entity string for one provider-neutral logical relation pair.
+#[must_use]
 pub fn entity_for_relation_pair(pair_id: &str) -> String {
     format!("relation:{pair_id}")
 }
 
+/// Entity string for one workspace relation campaign.
+#[must_use]
+pub fn entity_for_relation_campaign(workspace_id: &str) -> String {
+    format!("relation-campaign:{workspace_id}")
+}
+
 /// Entity string for one frozen source snapshot.
+#[must_use]
 pub fn entity_for_source_snapshot(snapshot_id: &str) -> String {
     format!("source-snapshot:{snapshot_id}")
 }
 
 /// Entity string for one evidence occurrence.
+#[must_use]
 pub fn entity_for_evidence(occurrence_id: &str) -> String {
     format!("evidence:{occurrence_id}")
 }
 
 /// Entity string for one disposable code-index registration.
+#[must_use]
 pub fn entity_for_code_index(index_id: &str) -> String {
     format!("code-index:{index_id}")
 }
 
 /// Entity string for one directional frozen-snapshot comparison.
+#[must_use]
 pub fn entity_for_source_relation(left_snapshot_id: &str, right_snapshot_id: &str) -> String {
     format!("source-relation:{left_snapshot_id}:{right_snapshot_id}")
 }
@@ -162,6 +180,17 @@ pub fn coordinate_for_relation_pair(
     )
 }
 
+/// Build a workspace relation-campaign coordinate.
+///
+/// # Errors
+/// Returns [`CoordinateError`] if the generated coordinate is invalid.
+pub fn coordinate_for_relation_campaign(workspace_id: &str) -> Result<Coordinate, CoordinateError> {
+    Coordinate::new(
+        entity_for_relation_campaign(workspace_id),
+        scope_for_workspace(workspace_id),
+    )
+}
+
 /// Build a frozen source-snapshot coordinate.
 ///
 /// # Errors
@@ -220,6 +249,7 @@ pub fn coordinate_for_source_relation(
 }
 
 /// Deterministically map a session id to a non-zero `BatPak` lane.
+#[must_use]
 pub fn session_lane(session_id: &str) -> u32 {
     let hash = blake3::hash(session_id.as_bytes());
     let bytes = hash.as_bytes();
@@ -239,6 +269,10 @@ mod tests {
         assert_eq!(entity_for_onboarding_projection(), "projection:onboarding");
         assert_eq!(entity_for_workspace_meta("demo"), "workspace-meta:demo");
         assert_eq!(entity_for_session("s1"), "session:s1");
+        assert_eq!(
+            entity_for_relation_campaign("demo"),
+            "relation-campaign:demo"
+        );
         assert_eq!(
             entity_for_source_snapshot("snapshot_abc"),
             "source-snapshot:snapshot_abc"
@@ -263,6 +297,7 @@ mod tests {
             coordinate_for_onboarding_projection("demo").expect("projection coordinate"),
             coordinate_for_workspace_meta("demo").expect("workspace metadata coordinate"),
             coordinate_for_session("demo", "session_abc").expect("session coordinate"),
+            coordinate_for_relation_campaign("demo").expect("campaign coordinate"),
             coordinate_for_source_snapshot("demo", "snapshot_abc")
                 .expect("source snapshot coordinate"),
             coordinate_for_evidence("demo", "evidence_abc").expect("evidence coordinate"),

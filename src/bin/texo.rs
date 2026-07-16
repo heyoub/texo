@@ -1,8 +1,8 @@
 //! texo CLI entrypoint.
 
+use std::io::Write as _;
 use std::process::ExitCode;
 
-#[expect(clippy::print_stderr, reason = "CLI output contract")]
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -13,14 +13,14 @@ fn main() -> ExitCode {
         .init();
 
     if let Err(error) = batpak::event::validate_event_payload_registry() {
-        eprintln!("{error}");
+        let _rendered = writeln!(std::io::stderr().lock(), "{error}");
         return ExitCode::FAILURE;
     }
 
     match texo::surfaces::cli::run() {
         Ok(code) => code,
         Err(error) => {
-            texo::surfaces::cli::render::cli_error(&error);
+            let _rendered = texo::surfaces::cli::render::cli_error(&error);
             ExitCode::FAILURE
         }
     }

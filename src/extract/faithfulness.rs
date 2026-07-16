@@ -58,6 +58,7 @@ fn content_tokens(text: &str) -> HashSet<String> {
 /// Returns the recall and the pass/fail verdict. A claim with no content tokens is
 /// never grounded (recall `0`), so an empty or punctuation-only proposal cannot
 /// slip through.
+#[must_use]
 pub fn assess_faithfulness(
     claim_text: &str,
     source_text: &str,

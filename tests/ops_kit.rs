@@ -1,8 +1,4 @@
 //! WO-2a operation kit invariants.
-#![expect(
-    missing_docs,
-    reason = "integration test uses syncbat::operation-generated registration shims"
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,7 +30,6 @@ thread_local! {
 
 #[syncbat::operation(
     descriptor = ROW_VIOLATION,
-    register = register_row_violation,
     name = "scripted.row_violation",
     effect = Inspect,
     input_schema = "scripted.row_violation.input.v1",
@@ -53,7 +48,6 @@ fn row_violation(_input: &[u8], cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerRe
 
 #[syncbat::operation(
     descriptor = UNKNOWN_KIND,
-    register = register_unknown_kind,
     name = "scripted.unknown_kind",
     effect = Persist,
     input_schema = "scripted.unknown_kind.input.v1",
@@ -70,7 +64,6 @@ fn unknown_kind(_input: &[u8], cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerRes
 
 #[syncbat::operation(
     descriptor = CAPABILITY_PROBE,
-    register = register_capability_probe,
     name = "scripted.capability_probe",
     effect = Inspect,
     input_schema = "scripted.capability_probe.input.v1",
@@ -78,17 +71,33 @@ fn unknown_kind(_input: &[u8], cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerRes
     receipt_kind = "receipt.scripted.capability_probe.v1",
     requires_capabilities = ["texo.cap.model"]
 )]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "syncbat handlers must return HandlerResult"
-)]
-fn capability_probe(_input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerResult {
+fn capability_probe(input: &[u8], _cx: &mut syncbat::Ctx<'_>) -> syncbat::HandlerResult {
+    let _request: serde_json::Value = serde_json::from_slice(input)
+        .map_err(|error| HandlerError::invalid_input(error.to_string()))?;
     SCRIPTED_PROBE_RAN.with(|slot| {
         if let Some(flag) = slot.borrow().as_ref() {
             flag.store(true, Ordering::SeqCst);
         }
     });
     Ok(b"{}".to_vec())
+}
+
+fn register_row_violation(
+    builder: &mut syncbat::CoreBuilder,
+) -> Result<&mut syncbat::CoreBuilder, syncbat::BuildError> {
+    builder.register(ROW_VIOLATION, row_violation)
+}
+
+fn register_unknown_kind(
+    builder: &mut syncbat::CoreBuilder,
+) -> Result<&mut syncbat::CoreBuilder, syncbat::BuildError> {
+    builder.register((*UNKNOWN_KIND).clone(), unknown_kind)
+}
+
+fn register_capability_probe(
+    builder: &mut syncbat::CoreBuilder,
+) -> Result<&mut syncbat::CoreBuilder, syncbat::BuildError> {
+    builder.register((*CAPABILITY_PROBE).clone(), capability_probe)
 }
 
 fn source_payload(source_id: &str) -> SourceObservedV2 {
@@ -211,9 +220,27 @@ fn capability_gate_denies_before_handler_runs() -> TestResult {
 
 #[test]
 fn catalog_descriptors_validate_and_fingerprints_exist() -> TestResult {
-    for item in texo::ops::catalog() {
+    let catalog = texo::ops::catalog();
+    for item in &catalog {
         item.descriptor().validate()?;
     }
+    let relate = catalog
+        .iter()
+        .find(|item| item.descriptor().name() == "texo.relate.run")
+        .ok_or("relate operation")?;
+    let effect_row = relate.descriptor().effect_row();
+    assert_eq!(
+        effect_row
+            .appends_events()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["evt.e003", "evt.e004", "evt.e009", "evt.e00a", "evt.e012"]
+    );
+    assert!(effect_row
+        .requires_capabilities()
+        .iter()
+        .any(|capability| capability == "texo.cap.model"));
     let dir = TempDir::new()?;
     let host = TexoHost::open(dir.path(), "demo", 1)?;
     let fingerprints = host.fingerprints();

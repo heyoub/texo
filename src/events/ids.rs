@@ -122,11 +122,13 @@ impl WorkspaceId {
     }
 
     /// Borrow the inner string slice.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     /// `BatPak` scope string: `workspace:{id}`.
+    #[must_use]
     pub fn scope(&self) -> String {
         format!("workspace:{}", self.0)
     }
@@ -176,6 +178,7 @@ pub fn source_id_from_hash(body_hash_hex: &str) -> Result<SourceId, IdParseError
 }
 
 /// Compute deterministic claim id.
+#[must_use]
 pub fn claim_id_from_parts(
     source_id: &SourceId,
     line_start: u32,
@@ -187,6 +190,7 @@ pub fn claim_id_from_parts(
 }
 
 /// Compute deterministic conflict id (ordered pair).
+#[must_use]
 pub fn conflict_id_from_pair(a: &ClaimId, b: &ClaimId) -> ConflictId {
     let (left, right) = if a.as_str() <= b.as_str() {
         (a.as_str(), b.as_str())
@@ -215,11 +219,13 @@ pub fn relation_pair_id(
 }
 
 /// BLAKE3 hex digest for app-level content hashing (distinct from `BatPak` event hashes).
+#[must_use]
 pub fn blake3_hash_hex(input: &str) -> String {
     blake3::hash(input.as_bytes()).to_hex().to_string()
 }
 
 /// BLAKE3 hex digest of raw bytes.
+#[must_use]
 pub fn blake3_bytes_hex(input: &[u8]) -> String {
     blake3::hash(input).to_hex().to_string()
 }

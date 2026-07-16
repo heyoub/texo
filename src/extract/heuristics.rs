@@ -3,6 +3,7 @@
 use super::word_match::contains_any;
 
 /// Returns true when a markdown line should become a claim in v1.
+#[must_use]
 pub fn is_claim_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {

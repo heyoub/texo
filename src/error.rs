@@ -1,22 +1,27 @@
 //! Crate-wide texo error types.
 
-use std::error::Error;
 use std::fmt;
 
 use serde::Serialize;
 
-/// Render an error and every source in its causal chain.
-#[must_use]
-pub fn error_chain(error: &(dyn Error + 'static)) -> String {
-    let mut rendered = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        rendered.push_str(": ");
-        rendered.push_str(&cause.to_string());
-        source = cause.source();
+mod detail {
+    use std::error::Error;
+
+    /// Render an error and every source in its causal chain.
+    #[must_use]
+    pub fn error_chain(error: &(dyn Error + 'static)) -> String {
+        let mut rendered = error.to_string();
+        let mut source = error.source();
+        while let Some(cause) = source {
+            rendered.push_str(": ");
+            rendered.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        rendered
     }
-    rendered
 }
+
+pub use detail::error_chain;
 
 /// Surface families that can report transport-bound errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,317 +166,328 @@ impl fmt::Display for SurfaceKind {
     }
 }
 
-/// Unified texo error with stable machine-readable codes.
-#[non_exhaustive]
-#[derive(Debug, thiserror::Error)]
-pub enum TexoError {
-    /// Configuration failure.
-    #[error("config: {detail}")]
-    Config {
-        /// Human-readable detail.
-        detail: String,
-        /// Optional underlying configuration source error.
-        #[source]
-        source: Option<Box<dyn Error + Send + Sync>>,
-    },
-    /// Filesystem I/O error.
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    /// JSON serialization or parsing error.
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
-    /// `BatPak` store error.
-    #[error("store: {0}")]
-    Store(#[from] batpak::store::StoreError),
-    /// `BatPak` coordinate construction failure.
-    #[error("store coordinate: {detail}")]
-    Coordinate {
-        /// Human-readable detail.
-        detail: String,
-    },
-    /// `BatPak` payload registry failure.
-    #[error("store registry: {detail}")]
-    Registry {
-        /// Human-readable detail.
-        detail: String,
-    },
-    /// Journal decode error for an entity stream.
-    #[error("journal decode for {entity}: {detail}")]
-    Decode {
-        /// Entity stream that could not be decoded.
-        entity: String,
-        /// Decode failure detail.
-        detail: String,
-    },
-    /// Append receipt verification failure.
-    #[error("journal receipt for {event_id}: {reason}")]
-    ReceiptInvalid {
-        /// Event id whose append receipt failed verification.
-        event_id: String,
-        /// Rejection reason.
-        reason: String,
-    },
-    /// Domain identifier parse error.
-    #[error("domain id: {0}")]
-    IdParse(#[from] crate::events::ids::IdParseError),
-    /// Domain status parse error.
-    #[error("domain status: {value}")]
-    StatusParse {
-        /// Unrecognized status string.
-        value: String,
-    },
-    /// Illegal domain transition request.
-    #[error("domain transition {machine}: {from} -> {to}{context_suffix}", context_suffix = context.as_deref().map(|value| format!(" ({value})")).unwrap_or_default())]
-    Transition {
-        /// State machine identifier.
-        machine: String,
-        /// Source state.
-        from: u64,
-        /// Destination state.
-        to: u64,
-        /// Typed entity/state context.
-        context: Option<String>,
-    },
-    /// Required domain entity is absent.
-    #[error("domain missing: {entity}")]
-    MissingEntity {
-        /// Missing entity stream.
-        entity: String,
-    },
-    /// Source parsing or discovery error.
-    #[error("source {path}: {detail}")]
-    Source {
-        /// Source path.
-        path: String,
-        /// Failure detail.
-        detail: String,
-    },
-    /// Claim extraction error.
-    #[error("extract: {detail}")]
-    Extract {
-        /// Failure detail.
-        detail: String,
-    },
-    /// Semantic backend error.
-    #[error("semantics {backend}: {detail}")]
-    Semantics {
-        /// Backend identifier.
-        backend: String,
-        /// Failure detail.
-        detail: String,
-    },
-    /// Verification failures.
-    #[error("verify: {failures:?}")]
-    Verify {
-        /// Verification failure rows.
-        failures: Vec<String>,
-    },
-    /// Operation input decode or validation failure.
-    #[error("op input {op}: {detail}")]
-    OpInput {
-        /// Operation name.
-        op: String,
-        /// Failure detail.
-        detail: String,
-    },
-    /// Operation runtime failure or denial.
-    #[error("op runtime {op}: {detail}")]
-    OpRuntime {
-        /// Operation name.
-        op: String,
-        /// Failure detail.
-        detail: String,
-        /// Whether the runtime denied execution.
-        denied: bool,
-    },
-    /// Host composition or invocation failure.
-    #[error("host: {detail}")]
-    Host {
-        /// Failure detail.
-        detail: String,
-    },
-    /// Surface-layer error.
-    #[error("surface {which}: {detail}")]
-    Surface {
-        /// Surface family.
-        which: SurfaceKind,
-        /// Failure detail.
-        detail: String,
-    },
-    /// Model invocation error.
-    #[error("model: {detail}")]
-    Model {
-        /// Failure detail.
-        detail: String,
-    },
-    /// Session handling error.
-    #[error("session: {detail}")]
-    Session {
-        /// Failure detail.
-        detail: String,
-    },
-    /// Backup creation or verification environment failure.
-    #[error("backup: {detail}")]
-    Backup {
-        /// Sanitized failure detail.
-        detail: String,
-    },
-    /// Snapshot-consistent read failure.
-    #[error("snapshot {kind}: {detail}")]
-    Snapshot {
-        /// Closed failure class.
-        kind: SnapshotFailureKind,
-        /// Sanitized failure detail.
-        detail: String,
-    },
-    /// Replica bootstrap, follow, or evidence failure.
-    #[error("replication {kind:?}: {detail}")]
-    Replication {
-        /// Closed circuit failure class.
-        kind: ReplicationFailureKind,
-        /// What was durably changed before the failure surfaced.
-        committed: Committed,
-        /// Sanitized diagnostic detail.
-        detail: String,
-    },
-}
+mod kind {
+    use std::error::Error;
 
-impl TexoError {
-    /// Stable machine-readable error code.
-    #[must_use]
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::Config { .. } => "config",
-            Self::Io(_) => "io",
-            Self::Json(_) => "json",
-            Self::Store(_) => "store",
-            Self::Coordinate { .. } => "store.coordinate",
-            Self::Registry { .. } => "store.registry",
-            Self::Decode { .. } => "journal.decode",
-            Self::ReceiptInvalid { .. } => "journal.receipt",
-            Self::IdParse(_) => "domain.id",
-            Self::StatusParse { .. } => "domain.status",
-            Self::Transition { .. } => "domain.transition",
-            Self::MissingEntity { .. } => "domain.missing",
-            Self::Source { .. } => "source",
-            Self::Extract { .. } => "extract",
-            Self::Semantics { .. } => "semantics",
-            Self::Verify { .. } => "verify",
-            Self::OpInput { .. } => "op.input",
-            Self::OpRuntime { denied, .. } => {
-                if *denied {
-                    "op.denied"
-                } else {
-                    "op.runtime"
-                }
-            }
-            Self::Host { .. } => "host",
-            Self::Surface { which, .. } => which.code(),
-            Self::Model { .. } => "agent.model",
-            Self::Session { .. } => "agent.session",
-            Self::Backup { .. } => "backup",
-            Self::Snapshot { kind, .. } => kind.code(),
-            Self::Replication { kind, .. } => kind.code(),
-        }
+    use super::{
+        replication_facts, Committed, FailureFacts, ReplicationFailureKind, SnapshotFailureKind,
+        SurfaceKind,
+    };
+
+    /// Unified texo error with stable machine-readable codes.
+    #[non_exhaustive]
+    #[derive(Debug, thiserror::Error)]
+    pub enum TexoError {
+        /// Configuration failure.
+        #[error("config: {detail}")]
+        Config {
+            /// Human-readable detail.
+            detail: String,
+            /// Optional underlying configuration source error.
+            #[source]
+            source: Option<Box<dyn Error + Send + Sync>>,
+        },
+        /// Filesystem I/O error.
+        #[error("io: {0}")]
+        Io(#[from] std::io::Error),
+        /// JSON serialization or parsing error.
+        #[error("json: {0}")]
+        Json(#[from] serde_json::Error),
+        /// `BatPak` store error.
+        #[error("store: {0}")]
+        Store(#[from] batpak::store::StoreError),
+        /// `BatPak` coordinate construction failure.
+        #[error("store coordinate: {detail}")]
+        Coordinate {
+            /// Human-readable detail.
+            detail: String,
+        },
+        /// `BatPak` payload registry failure.
+        #[error("store registry: {detail}")]
+        Registry {
+            /// Human-readable detail.
+            detail: String,
+        },
+        /// Journal decode error for an entity stream.
+        #[error("journal decode for {entity}: {detail}")]
+        Decode {
+            /// Entity stream that could not be decoded.
+            entity: String,
+            /// Decode failure detail.
+            detail: String,
+        },
+        /// Append receipt verification failure.
+        #[error("journal receipt for {event_id}: {reason}")]
+        ReceiptInvalid {
+            /// Event id whose append receipt failed verification.
+            event_id: String,
+            /// Rejection reason.
+            reason: String,
+        },
+        /// Domain identifier parse error.
+        #[error("domain id: {0}")]
+        IdParse(#[from] crate::events::ids::IdParseError),
+        /// Domain status parse error.
+        #[error("domain status: {value}")]
+        StatusParse {
+            /// Unrecognized status string.
+            value: String,
+        },
+        /// Illegal domain transition request.
+        #[error("domain transition {machine}: {from} -> {to}{context_suffix}", context_suffix = context.as_deref().map(|value| format!(" ({value})")).unwrap_or_default())]
+        Transition {
+            /// State machine identifier.
+            machine: String,
+            /// Source state.
+            from: u64,
+            /// Destination state.
+            to: u64,
+            /// Typed entity/state context.
+            context: Option<String>,
+        },
+        /// Required domain entity is absent.
+        #[error("domain missing: {entity}")]
+        MissingEntity {
+            /// Missing entity stream.
+            entity: String,
+        },
+        /// Source parsing or discovery error.
+        #[error("source {path}: {detail}")]
+        Source {
+            /// Source path.
+            path: String,
+            /// Failure detail.
+            detail: String,
+        },
+        /// Claim extraction error.
+        #[error("extract: {detail}")]
+        Extract {
+            /// Failure detail.
+            detail: String,
+        },
+        /// Semantic backend error.
+        #[error("semantics {backend}: {detail}")]
+        Semantics {
+            /// Backend identifier.
+            backend: String,
+            /// Failure detail.
+            detail: String,
+        },
+        /// Verification failures.
+        #[error("verify: {failures:?}")]
+        Verify {
+            /// Verification failure rows.
+            failures: Vec<String>,
+        },
+        /// Operation input decode or validation failure.
+        #[error("op input {op}: {detail}")]
+        OpInput {
+            /// Operation name.
+            op: String,
+            /// Failure detail.
+            detail: String,
+        },
+        /// Operation runtime failure or denial.
+        #[error("op runtime {op}: {detail}")]
+        OpRuntime {
+            /// Operation name.
+            op: String,
+            /// Failure detail.
+            detail: String,
+            /// Whether the runtime denied execution.
+            denied: bool,
+        },
+        /// Host composition or invocation failure.
+        #[error("host: {detail}")]
+        Host {
+            /// Failure detail.
+            detail: String,
+        },
+        /// Surface-layer error.
+        #[error("surface {which}: {detail}")]
+        Surface {
+            /// Surface family.
+            which: SurfaceKind,
+            /// Failure detail.
+            detail: String,
+        },
+        /// Model invocation error.
+        #[error("model: {detail}")]
+        Model {
+            /// Failure detail.
+            detail: String,
+        },
+        /// Session handling error.
+        #[error("session: {detail}")]
+        Session {
+            /// Failure detail.
+            detail: String,
+        },
+        /// Backup creation or verification environment failure.
+        #[error("backup: {detail}")]
+        Backup {
+            /// Sanitized failure detail.
+            detail: String,
+        },
+        /// Snapshot-consistent read failure.
+        #[error("snapshot {kind}: {detail}")]
+        Snapshot {
+            /// Closed failure class.
+            kind: SnapshotFailureKind,
+            /// Sanitized failure detail.
+            detail: String,
+        },
+        /// Replica bootstrap, follow, or evidence failure.
+        #[error("replication {kind:?}: {detail}")]
+        Replication {
+            /// Closed circuit failure class.
+            kind: ReplicationFailureKind,
+            /// What was durably changed before the failure surfaced.
+            committed: Committed,
+            /// Sanitized diagnostic detail.
+            detail: String,
+        },
     }
 
-    /// Recovery facts for this failure.
-    #[must_use]
-    pub fn facts(&self) -> FailureFacts {
-        use Committed::{No, Unknown, Yes};
-        match self {
-            Self::Config { .. }
-            | Self::Json(_)
-            | Self::Coordinate { .. }
-            | Self::Registry { .. }
-            | Self::IdParse(_)
-            | Self::StatusParse { .. }
-            | Self::Transition { .. }
-            | Self::MissingEntity { .. }
-            | Self::Source { .. }
-            | Self::Extract { .. }
-            | Self::Verify { .. }
-            | Self::Backup { .. }
-            | Self::OpRuntime { denied: true, .. } => FailureFacts {
-                committed: No,
-                retry_safe: false,
-                resume: None,
-            },
-            Self::Snapshot { kind, .. } => FailureFacts {
-                committed: No,
-                retry_safe: true,
-                resume: Some(match kind {
-                    SnapshotFailureKind::InvalidToken => "fix the snapshot token and retry",
-                    SnapshotFailureKind::Unavailable
-                    | SnapshotFailureKind::AnchorMismatch
-                    | SnapshotFailureKind::SourceUnavailable => {
-                        "request the latest workspace snapshot and retry"
+    impl TexoError {
+        /// Stable machine-readable error code.
+        #[must_use]
+        pub fn code(&self) -> &'static str {
+            match self {
+                Self::Config { .. } => "config",
+                Self::Io(_) => "io",
+                Self::Json(_) => "json",
+                Self::Store(_) => "store",
+                Self::Coordinate { .. } => "store.coordinate",
+                Self::Registry { .. } => "store.registry",
+                Self::Decode { .. } => "journal.decode",
+                Self::ReceiptInvalid { .. } => "journal.receipt",
+                Self::IdParse(_) => "domain.id",
+                Self::StatusParse { .. } => "domain.status",
+                Self::Transition { .. } => "domain.transition",
+                Self::MissingEntity { .. } => "domain.missing",
+                Self::Source { .. } => "source",
+                Self::Extract { .. } => "extract",
+                Self::Semantics { .. } => "semantics",
+                Self::Verify { .. } => "verify",
+                Self::OpInput { .. } => "op.input",
+                Self::OpRuntime { denied, .. } => {
+                    if *denied {
+                        "op.denied"
+                    } else {
+                        "op.runtime"
                     }
-                }),
-            },
-            Self::Replication {
-                kind, committed, ..
-            } => replication_facts(*kind, *committed),
-            Self::OpInput { .. } => FailureFacts {
-                committed: No,
-                retry_safe: true,
-                resume: Some("fix the input and retry"),
-            },
-            Self::Semantics { .. } => FailureFacts {
-                committed: No,
-                retry_safe: true,
-                resume: Some("run `texo relate` to resume unresolved pairs"),
-            },
-            Self::Model { .. } => FailureFacts {
-                committed: Yes,
-                retry_safe: false,
-                resume: Some("user turn already recorded; re-sending duplicates it"),
-            },
-            Self::OpRuntime { op, detail, .. }
-                if op == "texo.agent.chat" && detail.contains("agent.model") =>
-            {
-                FailureFacts {
+                }
+                Self::Host { .. } => "host",
+                Self::Surface { which, .. } => which.code(),
+                Self::Model { .. } => "agent.model",
+                Self::Session { .. } => "agent.session",
+                Self::Backup { .. } => "backup",
+                Self::Snapshot { kind, .. } => kind.code(),
+                Self::Replication { kind, .. } => kind.code(),
+            }
+        }
+
+        /// Recovery facts for this failure.
+        #[must_use]
+        pub fn facts(&self) -> FailureFacts {
+            use Committed::{No, Unknown, Yes};
+            match self {
+                Self::Config { .. }
+                | Self::Json(_)
+                | Self::Coordinate { .. }
+                | Self::Registry { .. }
+                | Self::IdParse(_)
+                | Self::StatusParse { .. }
+                | Self::Transition { .. }
+                | Self::MissingEntity { .. }
+                | Self::Source { .. }
+                | Self::Extract { .. }
+                | Self::Verify { .. }
+                | Self::Backup { .. }
+                | Self::OpRuntime { denied: true, .. } => FailureFacts {
+                    committed: No,
+                    retry_safe: false,
+                    resume: None,
+                },
+                Self::Snapshot { kind, .. } => FailureFacts {
+                    committed: No,
+                    retry_safe: true,
+                    resume: Some(match kind {
+                        SnapshotFailureKind::InvalidToken => "fix the snapshot token and retry",
+                        SnapshotFailureKind::Unavailable
+                        | SnapshotFailureKind::AnchorMismatch
+                        | SnapshotFailureKind::SourceUnavailable => {
+                            "request the latest workspace snapshot and retry"
+                        }
+                    }),
+                },
+                Self::Replication {
+                    kind, committed, ..
+                } => replication_facts(*kind, *committed),
+                Self::OpInput { .. } => FailureFacts {
+                    committed: No,
+                    retry_safe: true,
+                    resume: Some("fix the input and retry"),
+                },
+                Self::Semantics { .. } => FailureFacts {
+                    committed: No,
+                    retry_safe: true,
+                    resume: Some("run `texo relate` to resume unresolved pairs"),
+                },
+                Self::Model { .. } => FailureFacts {
                     committed: Yes,
                     retry_safe: false,
                     resume: Some("user turn already recorded; re-sending duplicates it"),
+                },
+                Self::OpRuntime { op, detail, .. }
+                    if op == "texo.agent.chat" && detail.contains("agent.model") =>
+                {
+                    FailureFacts {
+                        committed: Yes,
+                        retry_safe: false,
+                        resume: Some("user turn already recorded; re-sending duplicates it"),
+                    }
                 }
-            }
-            Self::OpRuntime { op, detail, .. }
-                if op == "texo.ingest.run" && detail.contains("source") =>
-            {
-                FailureFacts {
-                    committed: No,
+                Self::OpRuntime { op, detail, .. }
+                    if op == "texo.ingest.run" && detail.contains("source") =>
+                {
+                    FailureFacts {
+                        committed: No,
+                        retry_safe: false,
+                        resume: None,
+                    }
+                }
+                Self::OpRuntime { op, detail, .. }
+                    if matches!(
+                        op.as_str(),
+                        "texo.claim.supersede" | "texo.conflict.resolve"
+                    ) && detail.contains("domain.transition") =>
+                {
+                    FailureFacts {
+                        committed: No,
+                        retry_safe: false,
+                        resume: None,
+                    }
+                }
+                Self::Io(_)
+                | Self::Store(_)
+                | Self::Decode { .. }
+                | Self::ReceiptInvalid { .. }
+                | Self::OpRuntime { .. }
+                | Self::Host { .. }
+                | Self::Surface { .. }
+                | Self::Session { .. } => FailureFacts {
+                    committed: Unknown,
                     retry_safe: false,
-                    resume: None,
-                }
+                    resume: Some("inspect receipts and run `texo verify` before retrying"),
+                },
             }
-            Self::OpRuntime { op, detail, .. }
-                if matches!(
-                    op.as_str(),
-                    "texo.claim.supersede" | "texo.conflict.resolve"
-                ) && detail.contains("domain.transition") =>
-            {
-                FailureFacts {
-                    committed: No,
-                    retry_safe: false,
-                    resume: None,
-                }
-            }
-            Self::Io(_)
-            | Self::Store(_)
-            | Self::Decode { .. }
-            | Self::ReceiptInvalid { .. }
-            | Self::OpRuntime { .. }
-            | Self::Host { .. }
-            | Self::Surface { .. }
-            | Self::Session { .. } => FailureFacts {
-                committed: Unknown,
-                retry_safe: false,
-                resume: Some("inspect receipts and run `texo verify` before retrying"),
-            },
         }
     }
 }
+
+pub use kind::TexoError;
 
 const fn replication_facts(kind: ReplicationFailureKind, committed: Committed) -> FailureFacts {
     let resume = match kind {
@@ -530,13 +546,15 @@ mod tests {
         }
     }
 
+    fn assert_codes<const N: usize>(cases: [(TexoError, &str); N]) {
+        for (error, expected) in cases {
+            assert_eq!(error.code(), expected);
+        }
+    }
+
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "single exhaustive table pins every public error code"
-    )]
-    fn codes_match_the_public_error_table() {
-        let cases = [
+    fn storage_and_journal_codes_match_the_public_table() {
+        assert_codes([
             (config_error(), "config"),
             (TexoError::Io(std::io::Error::other("io")), "io"),
             (
@@ -576,6 +594,12 @@ mod tests {
                 },
                 "journal.receipt",
             ),
+        ]);
+    }
+
+    #[test]
+    fn domain_and_source_codes_match_the_public_table() {
+        assert_codes([
             (
                 TexoError::IdParse(crate::events::ids::IdParseError::Empty),
                 "domain.id",
@@ -627,6 +651,12 @@ mod tests {
                 },
                 "verify",
             ),
+        ]);
+    }
+
+    #[test]
+    fn operation_and_surface_codes_match_the_public_table() {
+        assert_codes([
             (
                 TexoError::OpInput {
                     op: "op".to_string(),
@@ -677,6 +707,12 @@ mod tests {
                 },
                 "surface.cli",
             ),
+        ]);
+    }
+
+    #[test]
+    fn agent_and_durability_codes_match_the_public_table() {
+        assert_codes([
             (
                 TexoError::Model {
                     detail: "bad".to_string(),
@@ -702,11 +738,7 @@ mod tests {
                 },
                 "snapshot.invalid",
             ),
-        ];
-
-        for (error, expected) in cases {
-            assert_eq!(error.code(), expected);
-        }
+        ]);
     }
 
     #[test]

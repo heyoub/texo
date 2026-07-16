@@ -8,11 +8,6 @@ use crate::events::payloads::{
 };
 
 mod claim_markers {
-    #![expect(
-        missing_docs,
-        reason = "batpak::define_state_machine! does not accept docs for generated markers"
-    )]
-
     batpak::define_state_machine!(
         claim_seal,
         ClaimPhase {
@@ -24,11 +19,6 @@ mod claim_markers {
 }
 
 mod conflict_markers {
-    #![expect(
-        missing_docs,
-        reason = "batpak::define_state_machine! does not accept docs for generated markers"
-    )]
-
     batpak::define_state_machine!(
         conflict_seal,
         ConflictPhase {
@@ -41,23 +31,29 @@ mod conflict_markers {
 }
 
 /// Claim phase marker trait.
-pub use claim_markers::ClaimPhase;
+pub trait ClaimPhase: claim_markers::ClaimPhase {}
+
+impl<T: claim_markers::ClaimPhase> ClaimPhase for T {}
+
 /// Current claim phase marker.
-pub use claim_markers::Current;
+pub type Current = claim_markers::Current;
 /// Superseded claim phase marker.
-pub use claim_markers::Superseded;
+pub type Superseded = claim_markers::Superseded;
 /// Unrecorded claim phase marker.
-pub use claim_markers::Unrecorded;
+pub type Unrecorded = claim_markers::Unrecorded;
 /// Conflict phase marker trait.
-pub use conflict_markers::ConflictPhase;
+pub trait ConflictPhase: conflict_markers::ConflictPhase {}
+
+impl<T: conflict_markers::ConflictPhase> ConflictPhase for T {}
+
 /// Ignored conflict phase marker.
-pub use conflict_markers::Ignored;
+pub type Ignored = conflict_markers::Ignored;
 /// Open conflict phase marker.
-pub use conflict_markers::Open;
+pub type Open = conflict_markers::Open;
 /// Resolved conflict phase marker.
-pub use conflict_markers::Resolved;
+pub type Resolved = conflict_markers::Resolved;
 /// Unopened conflict phase marker.
-pub use conflict_markers::Unopened;
+pub type Unopened = conflict_markers::Unopened;
 
 /// Claim state machine identifier.
 pub const CLAIM_MACHINE: &str = "texo.claim.v2";
@@ -95,6 +91,7 @@ pub struct TransitionCauseV1 {
 }
 
 /// Build a transition record for a legal domain edge.
+#[must_use]
 pub fn transition_record(
     machine: &str,
     entity: &str,
@@ -121,6 +118,7 @@ pub fn transition_record(
 }
 
 /// Deterministically derive a transition id.
+#[must_use]
 pub fn transition_id(
     machine: &str,
     entity: &str,
@@ -148,11 +146,13 @@ pub fn transition_id(
 }
 
 /// Construct the only exported claim-record transition.
+#[must_use]
 pub fn record_claim(payload: ClaimRecordedV2) -> Transition<Unrecorded, Current, ClaimRecordedV2> {
     Transition::from_payload(payload)
 }
 
 /// Construct the only exported claim-supersede transition.
+#[must_use]
 pub fn supersede_claim(
     payload: ClaimSupersededV2,
 ) -> Transition<Current, Superseded, ClaimSupersededV2> {
@@ -160,11 +160,13 @@ pub fn supersede_claim(
 }
 
 /// Construct the only exported conflict-open transition.
+#[must_use]
 pub fn open_conflict(payload: ConflictOpenedV2) -> Transition<Unopened, Open, ConflictOpenedV2> {
     Transition::from_payload(payload)
 }
 
 /// Construct the only exported conflict-resolve transition.
+#[must_use]
 pub fn resolve_conflict(
     payload: ConflictResolvedV2,
 ) -> Transition<Open, Resolved, ConflictResolvedV2> {
@@ -172,6 +174,7 @@ pub fn resolve_conflict(
 }
 
 /// Construct the only exported conflict-ignore transition.
+#[must_use]
 pub fn ignore_conflict(
     payload: ConflictResolvedV2,
 ) -> Transition<Open, Ignored, ConflictResolvedV2> {

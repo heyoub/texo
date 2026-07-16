@@ -36,6 +36,29 @@ test-hygiene:
       echo "test-hygiene: unwrap() banned in src/"
       exit 1
     fi
+    if rg -n '\b(panic|todo|unimplemented|dbg|println|eprintln|print|eprint)!\s*\(' src/ tests/ 2>/dev/null; then
+      echo "test-hygiene: panic/debug/print macros are banned in src/ and tests/"
+      exit 1
+    fi
+    if rg -n -U '#[[:space:]]*!?[[:space:]]*\[[[:space:]]*(allow|expect)[[:space:]]*\(|#[[:space:]]*!?[[:space:]]*\[[[:space:]]*cfg_attr[[:space:]]*\([^]]*(allow|expect)[[:space:]]*\(' src/ tests/ 2>/dev/null; then
+      echo "test-hygiene: lint suppression attributes are banned in src/ and tests/"
+      exit 1
+    fi
+    if rg -n '^\s*[A-Za-z0-9_-]+\s*=\s*(\{[^}]*level\s*=\s*)?"allow"' Cargo.toml 2>/dev/null; then
+      echo "test-hygiene: Cargo lint levels may not be set to allow"
+      exit 1
+    fi
+    oversized=0
+    while IFS= read -r file; do
+      lines=$(wc -l < "$file")
+      if (( lines > 800 )); then
+        echo "test-hygiene: production Rust file exceeds 800 lines: $file ($lines)"
+        oversized=1
+      fi
+    done < <(rg --files src -g '*.rs')
+    if (( oversized != 0 )); then
+      exit 1
+    fi
 
 deny:
     cargo deny check
@@ -51,15 +74,21 @@ test-prop:
 demo:
     cargo run --bin texo -- init --workspace demo
     cargo run --bin texo -- ingest sample_sources
-    cargo run --bin texo -- agent-context --out public/agent-context.json
+    cargo run --bin texo -- agent-context --allow-unsettled --out public/agent-context.json
     cargo run --bin texo -- check-staleness sample_sources/stale_onboarding.md --json || true
-    cargo run --bin texo -- compile --out public
+    cargo run --bin texo -- compile --allow-unsettled --out public
 
 demo-fresh:
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf .texo
-    rm -f public/*
+    rm -f \
+      public/agent-context.json \
+      public/claims.json \
+      public/conflicts.json \
+      public/index.html \
+      public/onboarding.generated.md \
+      public/stale-context.json
     touch public/.gitkeep
     just demo
 
@@ -90,18 +119,39 @@ demo-helios:
     [workspaces.helios.semantics]
     enabled = true
     # Recall-favoring candidate thresholds: the judge is the correctness gate,
-    # so a lower floor only costs judge calls (bounded by cluster sizes).
+    # so a lower floor only costs judge calls (bounded per page by the pair budget).
     cosine_threshold = 0.5
     relate_prefilter = 0.5
     TOML
     echo "==> ingest (LLM extraction via texo-extract; first run hits OpenRouter, then cached)"
     "$TEXO" ingest examples/helios/docs
     echo "==> relate (semantic supersession + conflict pass; cached + resumable)"
-    set +e
-    "$TEXO" relate
-    RELATE_STATUS=$?
-    set -e
-    if [[ "$RELATE_STATUS" -ne 0 && "$RELATE_STATUS" -ne 2 ]]; then exit "$RELATE_STATUS"; fi
+    RELATE_CURSOR=0
+    RELATE_COMPLETE=false
+    for _ in $(seq 1 100); do
+      set +e
+      RELATE_OUTPUT=$("$TEXO" relate --json --pair-budget 100000 --pair-cursor "$RELATE_CURSOR")
+      RELATE_STATUS=$?
+      set -e
+      if [[ "$RELATE_STATUS" -ne 0 && "$RELATE_STATUS" -ne 2 ]]; then
+        exit "$RELATE_STATUS"
+      fi
+      RELATE_OUTCOME=$(jq -er '.outcome' <<<"$RELATE_OUTPUT")
+      if [[ "$RELATE_OUTCOME" == "complete" ]]; then
+        RELATE_COMPLETE=true
+        break
+      fi
+      NEXT_CURSOR=$(jq -er '.next_candidate_cursor' <<<"$RELATE_OUTPUT")
+      if [[ "$NEXT_CURSOR" == "$RELATE_CURSOR" ]]; then
+        echo "relate cursor made no progress: $RELATE_CURSOR" >&2
+        exit 1
+      fi
+      RELATE_CURSOR=$NEXT_CURSOR
+    done
+    if [[ "$RELATE_COMPLETE" != true ]]; then
+      echo "relate did not complete within 100 bounded pages" >&2
+      exit 1
+    fi
     echo "==> compile onboarding -> public/helios/onboarding.generated.md"
     "$TEXO" compile --out public/helios
     echo

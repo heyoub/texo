@@ -1,9 +1,12 @@
 //! Compile journaling integration test.
 
+#[path = "support/courtroom.rs"]
+mod courtroom_support;
 mod support;
 
+use courtroom_support::ingest_courtroom;
 use serde_json::json;
-use support::{ingest_courtroom, TestResult, TestWorkspace, OBSERVED_AT_MS};
+use support::{TestResult, TestWorkspace, OBSERVED_AT_MS};
 
 #[test]
 fn compile_writes_outputs_and_receipt() -> TestResult {
@@ -11,7 +14,11 @@ fn compile_writes_outputs_and_receipt() -> TestResult {
     ingest_courtroom(&mut workspace)?;
     let output = workspace.invoke(
         "texo.compile.run",
-        &json!({"out_dir": "public", "observed_at_ms": OBSERVED_AT_MS + 3}),
+        &json!({
+            "out_dir": "public",
+            "observed_at_ms": OBSERVED_AT_MS + 3,
+            "allow_unsettled": true
+        }),
     )?;
     assert!(output.get("receipt").is_some());
     for name in [
@@ -22,7 +29,7 @@ fn compile_writes_outputs_and_receipt() -> TestResult {
         "agent-context.json",
         "index.html",
     ] {
-        assert!(workspace.root().join("public").join(name).exists());
+        assert!(workspace.dir.path().join("public").join(name).exists());
     }
     Ok(())
 }

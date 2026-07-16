@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use batpak::coordinate::Coordinate;
 use batpak::store::{Open, ReadOnly, Store, StoreConfig};
-use serde::{Deserialize, Serialize};
 use syncbat::{RuntimeError, StoreOperationStatusSink, StoreReceiptSink};
 
 use crate::claims::workspace::WorkspaceCache;
@@ -20,51 +19,12 @@ use crate::ops::backend::TexoEffectBackend;
 use crate::ops::env::{self, OpEnv};
 use crate::topology::{JournalRole, ResolvedJournal};
 
+mod model;
+
+pub use model::{HostFingerprints, HostInterface, HostOperationView, TexoHost};
+
 /// Cross-request checkout slot for the warm workspace projection.
 pub type SharedWorkspaceCache = Arc<Mutex<Option<WorkspaceCache>>>;
-
-/// Deterministic fingerprints exposed by the composed texo host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostFingerprints {
-    /// Digest of the texo operation module catalog.
-    pub module_digest: String,
-    /// Digest of the runnable host composition.
-    pub host_fingerprint: String,
-    /// Digest of the client-visible operation interface.
-    pub interface_fingerprint: String,
-}
-
-/// One public operation in the mounted `hostbat` interface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostOperationView {
-    /// Stable operation name.
-    pub name: String,
-    /// Stable effect class spelling.
-    pub effect: String,
-    /// Stable receipt schema reference.
-    pub receipt_kind: String,
-}
-
-/// Client-visible projection of the actual mounted `hostbat` composition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostInterface {
-    /// Interface schema identifier.
-    pub schema: String,
-    /// Texo binary version.
-    pub version: String,
-    /// Content identities produced by `hostbat`.
-    pub fingerprints: HostFingerprints,
-    /// Canonically ordered mounted operations.
-    pub operations: Vec<HostOperationView>,
-}
-
-/// Runnable Texo host over a content-identified `hostbat` composition.
-pub struct TexoHost {
-    host: hostbat::Host,
-    env: Rc<OpEnv>,
-    interface: HostInterface,
-    shared_cache: Option<SharedWorkspaceCache>,
-}
 
 /// Open the configured workspace store.
 ///
@@ -302,7 +262,7 @@ impl TexoHost {
             &RoleOverrides::default(),
             config.gateway.as_ref(),
         );
-        if grants_model_capability(Some(model_role.api_key)) {
+        if grants_model_capability(Some(model_role.api_key.as_str())) {
             builder = builder.grant_capability("texo.cap.model");
         }
         let host = builder.build().map_err(build_error)?;
@@ -446,12 +406,8 @@ impl Drop for TexoHost {
 
 /// Pure capability gate for the optional model capability.
 #[must_use]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "WO-2a requires the pure capability helper to take Option<String>"
-)]
-pub fn grants_model_capability(value: Option<String>) -> bool {
-    value.as_deref().is_some_and(|key| !key.trim().is_empty())
+pub fn grants_model_capability(value: Option<&str>) -> bool {
+    value.is_some_and(|key| !key.trim().is_empty())
 }
 
 fn load_or_default_config(
@@ -654,9 +610,9 @@ mod tests {
     #[test]
     fn model_capability_gate_is_non_empty_key_only() {
         assert!(!grants_model_capability(None));
-        assert!(!grants_model_capability(Some(String::new())));
-        assert!(!grants_model_capability(Some("  ".to_string())));
-        assert!(grants_model_capability(Some("sk-test".to_string())));
+        assert!(!grants_model_capability(Some("")));
+        assert!(!grants_model_capability(Some("  ")));
+        assert!(grants_model_capability(Some("sk-test")));
     }
 
     #[test]
