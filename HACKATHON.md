@@ -3,7 +3,8 @@
 Rebuild note: supersedes, see [ADR-003](ADR-003-single-crate-rebuild.md).
 
 Working doc for the [Global AI Hackathon Series with Qwen Cloud](https://qwencloud-hackathon.devpost.com/)
-submission. **Deadline: Jul 9, 2026, 2:00pm PT.**
+submission. **Deadline: Jul 20, 2026, 2:00pm PT.** (Extended from Jul 9 — see
+the [deadline extension](https://qwencloud-hackathon.devpost.com/updates/45184-more-time-to-build-submission-deadline-extended-to-july-20).)
 
 ## The pitch
 
@@ -25,7 +26,7 @@ Track-1 requirement → texo mechanism:
 
 ## Submission requirements → status
 
-- [x] Public repo (`github.com/heyoub/texo`)
+- [x] Public repo (`github.com/freebatteryfactory/texo`)
 - [x] Open-source license, detectable in About (LICENSE-MIT + LICENSE-APACHE, matches Cargo.toml)
 - [ ] Uses Qwen models on Qwen Cloud (DashScope OpenAI-compatible mode — see gaps below)
 - [x] The agent itself (Track 1 wants an *agent*, not a library — `texo serve`)
@@ -223,12 +224,12 @@ unless time allows.
 
 ## Deployment update (Jul 6 rebuild closeout)
 
-The deployed service is now one binary: `/opt/texo/bin/texo serve`. The systemd
+The deploy ships a single binary: `/opt/texo/bin/texo serve`. The systemd
 unit still uses the `texo-agent` service name for operational continuity, but
 the workspace and env file move to `/opt/texo/`. The deploy script stops the
 old service, preserves the durable journal workspace, migrates a live env file
 when present, and ships only the `texo` binary.
 
-texo remains on batpak family 0.9.0 by choice for the submission closeout; see
-ROADMAP.md for the 0.10 hostbat manifest remount, MemFs/SimFs test stores, and
-SSE replay work.
+texo now builds on batpak family 0.10.0; see ROADMAP.md for the remaining
+substrate work (hostbat manifest remount, MemFs/SimFs test stores, and SSE
+replay).
