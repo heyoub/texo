@@ -10,11 +10,8 @@
 //!
 //! A failed session-end leaves the lane archive intact and may be retried; no
 //! transcript restore path is needed.
-#![expect(
-    missing_docs,
-    reason = "syncbat::operation generates public registration shims without doc injection hooks"
-)]
 
+mod chat;
 use batpak::event::EventPayload;
 use batpak::id::{EntityIdType, IdempotencyKey};
 use batpak::store::{AppendOptions, AppendPositionHint};
@@ -23,7 +20,6 @@ use std::path::{Path, PathBuf};
 use syncbat::{CoreBuilder, HandlerResult, OperationRegisterItem};
 
 use crate::claims::session_log::TurnEntry;
-use crate::claims::workspace::WorkspaceView;
 use crate::error::TexoError;
 use crate::events::coordinate::{coordinate_for_session, entity_for_session, session_lane};
 use crate::events::payloads::{
@@ -33,8 +29,11 @@ use crate::journal_store::JournalStore;
 use crate::ops::env::{self, ReceiptNote};
 use crate::ops::handlers::{
     append_json, assemble_current_view, infer_supersessions, op_runtime, parse_input, plan_sources,
-    run_op, run_relate_pass, take_receipts, workspace_temporal_policy,
+    run_op, run_relate_pass, take_receipts, workspace_temporal_policy, ExplicitSupersessionOutcome,
+    SourcePlan,
 };
+
+use chat::{complete_chat, memory_snapshot, model_role_enabled};
 
 /// Directory under the workspace root where session transcripts land.
 pub const SESSIONS_DIR: &str = "sessions";
@@ -174,8 +173,6 @@ pub fn render_transcript(session_id: &str, turns: &[TurnEntry], include_assistan
 
 #[syncbat::operation(
     descriptor = AGENT_CHAT,
-    register = register_agent_chat,
-    register_item = agent_chat_item,
     name = "texo.agent.chat",
     effect = Persist,
     input_schema = "texo.agent.chat.input.v2",
@@ -223,11 +220,9 @@ fn agent_chat(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 
         let (memory, history) = env::with(|op_env| {
             let mut cache = op_env.cache.borrow_mut();
-            let view = crate::claims::workspace::assemble(
-                &op_env.store,
-                &op_env.workspace_id,
-                &mut cache,
-            )?;
+            let view = crate::ops::env::replay_scope(|| {
+                crate::claims::workspace::assemble(&op_env.store, &op_env.workspace_id, &mut cache)
+            })?;
             let memory = memory_snapshot(&view);
             let history = read_session_turns(&op_env.store, &input.session_id)?;
             Ok::<_, TexoError>((memory, history))
@@ -259,8 +254,6 @@ fn agent_chat(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 
 #[syncbat::operation(
     descriptor = AGENT_MEMORY,
-    register = register_agent_memory,
-    register_item = agent_memory_item,
     name = "texo.agent.memory",
     effect = Inspect,
     input_schema = "texo.agent.memory.input.v2",
@@ -282,8 +275,6 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 
 #[syncbat::operation(
     descriptor = AGENT_SESSION_END,
-    register = register_agent_session_end,
-    register_item = agent_session_end_item,
     name = "texo.agent.session.end",
     effect = Persist,
     input_schema = "texo.agent.session.end.input.v2",
@@ -294,122 +285,167 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     queries_projections = ["texo.workspace.view.v2"]
 )]
 #[tracing::instrument(skip_all)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "session settlement keeps transcript, ingest, and relate ordering in one operation"
-)]
 fn agent_session_end(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     run_op("texo.agent.session.end", || {
         let input: AgentSessionEndInput = parse_input("texo.agent.session.end", input)?;
         validate_session_input("texo.agent.session.end", &input.session_id)?;
-        cx.event_read_handle()
-            .read_event("evt.e008")
-            .map_err(|error| op_runtime("texo.agent.session.end", error))?;
-        cx.projection_read_handle()
-            .query_projection("texo.workspace.view.v2")
-            .map_err(|error| op_runtime("texo.agent.session.end", error))?;
-        let turns = env::with(|op_env| read_session_turns(&op_env.store, &input.session_id))??;
-        if turns.is_empty() {
-            return Err(TexoError::MissingEntity {
-                entity: entity_for_session(&input.session_id),
-            });
-        }
-        let (root, workspace_id, extractor_cmd) = env::with(|op_env| {
-            (
-                op_env.root.clone(),
-                op_env.workspace_id.clone(),
-                op_env.config.extractor_cmd.clone(),
-            )
-        })?;
-        let doc_path = session_doc_path(&root, &input.session_id);
-        if let Some(parent) = doc_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(
-            &doc_path,
-            render_transcript(&input.session_id, &turns, false),
-        )?;
-        let view = assemble_current_view()?;
-        let planned = plan_sources(
-            "texo.agent.session.end",
-            &root,
-            &doc_path,
-            &workspace_id,
-            input.observed_at_ms,
-            extractor_cmd.as_deref(),
-            &view,
-        )?;
-        if !planned.skipped.is_empty() {
-            return Err(TexoError::Source {
-                path: doc_path.to_string_lossy().to_string(),
-                detail: "generated session transcript could not be planned".to_string(),
-            });
-        }
-        let new_claims = planned
-            .sources
-            .iter()
-            .flat_map(|source| source.claims.iter().cloned())
-            .collect::<Vec<_>>();
-        let temporal = workspace_temporal_policy(&view)?;
-        let supersessions =
-            infer_supersessions(&view, &new_claims, input.observed_at_ms, &temporal)?;
-        for source in &planned.sources {
-            append_json(
-                "texo.agent.session.end",
-                cx,
-                <SourceObservedV2 as EventPayload>::KIND,
-                &source.observed,
-            )?;
-            for claim in &source.claims {
-                append_json(
-                    "texo.agent.session.end",
-                    cx,
-                    <ClaimRecordedV2 as EventPayload>::KIND,
-                    claim,
-                )?;
-            }
-        }
-        for supersession in &supersessions.applied {
-            append_json(
-                "texo.agent.session.end",
-                cx,
-                <ClaimSupersededV2 as EventPayload>::KIND,
-                supersession,
-            )?;
-        }
+        authorize_session_end_reads(cx)?;
+        let context = prepare_session_end(&input)?;
+        append_session_ingest(cx, &context.plan, &context.supersessions)?;
         drop(take_receipts()?);
-        let relate = if model_role_enabled(crate::gateway::ModelRole::Relate)? {
-            let out = run_relate_pass("texo.agent.session.end", cx, input.observed_at_ms, false)?;
-            RelateOutcome::Ran {
-                supersessions: out.supersessions.len(),
-                conflicts: out.conflicts.len(),
-            }
-        } else {
-            RelateOutcome::Skipped {
-                reason: "TEXO_LLM_API_KEY is not set".to_string(),
-            }
-        };
+        let relate = run_session_relate(cx, input.observed_at_ms)?;
         Ok(SessionEndReport {
             session_id: input.session_id,
-            doc_path: doc_path
-                .strip_prefix(&root)
-                .unwrap_or(&doc_path)
+            doc_path: context
+                .doc_path
+                .strip_prefix(&context.root)
+                .unwrap_or(&context.doc_path)
                 .to_string_lossy()
                 .to_string(),
-            sources_observed: u32::try_from(planned.sources.len()).unwrap_or(u32::MAX),
-            claims_recorded: u32::try_from(new_claims.len()).unwrap_or(u32::MAX),
-            ingest_supersessions: u32::try_from(supersessions.applied.len()).unwrap_or(u32::MAX),
-            supersessions_held: supersessions.held.len(),
-            held_supersessions: supersessions.held,
+            sources_observed: u32::try_from(context.plan.sources.len()).unwrap_or(u32::MAX),
+            claims_recorded: u32::try_from(context.claim_count).unwrap_or(u32::MAX),
+            ingest_supersessions: u32::try_from(context.supersessions.applied.len())
+                .unwrap_or(u32::MAX),
+            supersessions_held: context.supersessions.held.len(),
+            held_supersessions: context.supersessions.held,
             relate,
         })
     })
 }
 
+struct SessionEndContext {
+    root: PathBuf,
+    doc_path: PathBuf,
+    plan: SourcePlan,
+    claim_count: usize,
+    supersessions: ExplicitSupersessionOutcome,
+}
+
+fn authorize_session_end_reads(cx: &mut syncbat::Ctx<'_>) -> Result<(), TexoError> {
+    cx.event_read_handle()
+        .read_event("evt.e008")
+        .map_err(|error| op_runtime("texo.agent.session.end", error))?;
+    cx.projection_read_handle()
+        .query_projection("texo.workspace.view.v2")
+        .map_err(|error| op_runtime("texo.agent.session.end", error))?;
+    Ok(())
+}
+
+fn prepare_session_end(input: &AgentSessionEndInput) -> Result<SessionEndContext, TexoError> {
+    let turns = env::with(|op_env| read_session_turns(&op_env.store, &input.session_id))??;
+    if turns.is_empty() {
+        return Err(TexoError::MissingEntity {
+            entity: entity_for_session(&input.session_id),
+        });
+    }
+    let (root, workspace_id, extractor_cmd) = env::with(|op_env| {
+        (
+            op_env.root.clone(),
+            op_env.workspace_id.clone(),
+            op_env.config.extractor_cmd.clone(),
+        )
+    })?;
+    let doc_path = write_session_transcript(&root, &input.session_id, &turns)?;
+    let view = assemble_current_view()?;
+    let plan = plan_sources(
+        "texo.agent.session.end",
+        &root,
+        &doc_path,
+        &workspace_id,
+        input.observed_at_ms,
+        extractor_cmd.as_deref(),
+        &view,
+    )?;
+    if !plan.skipped.is_empty() {
+        return Err(TexoError::Source {
+            path: doc_path.to_string_lossy().to_string(),
+            detail: "generated session transcript could not be planned".to_string(),
+        });
+    }
+    let new_claims = plan
+        .sources
+        .iter()
+        .flat_map(|source| source.claims.iter().cloned())
+        .collect::<Vec<_>>();
+    let temporal = workspace_temporal_policy(&view)?;
+    let supersessions = infer_supersessions(&view, &new_claims, input.observed_at_ms, &temporal)?;
+    Ok(SessionEndContext {
+        root,
+        doc_path,
+        plan,
+        claim_count: new_claims.len(),
+        supersessions,
+    })
+}
+
+fn write_session_transcript(
+    root: &Path,
+    session_id: &str,
+    turns: &[TurnEntry],
+) -> Result<PathBuf, TexoError> {
+    let doc_path = session_doc_path(root, session_id);
+    if let Some(parent) = doc_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&doc_path, render_transcript(session_id, turns, false))?;
+    Ok(doc_path)
+}
+
+fn append_session_ingest(
+    cx: &mut syncbat::Ctx<'_>,
+    plan: &SourcePlan,
+    supersessions: &ExplicitSupersessionOutcome,
+) -> Result<(), TexoError> {
+    for source in &plan.sources {
+        append_json(
+            "texo.agent.session.end",
+            cx,
+            <SourceObservedV2 as EventPayload>::KIND,
+            &source.observed,
+        )?;
+        for claim in &source.claims {
+            append_json(
+                "texo.agent.session.end",
+                cx,
+                <ClaimRecordedV2 as EventPayload>::KIND,
+                claim,
+            )?;
+        }
+    }
+    for supersession in &supersessions.applied {
+        append_json(
+            "texo.agent.session.end",
+            cx,
+            <ClaimSupersededV2 as EventPayload>::KIND,
+            supersession,
+        )?;
+    }
+    Ok(())
+}
+
+fn run_session_relate(
+    cx: &mut syncbat::Ctx<'_>,
+    observed_at_ms: u64,
+) -> Result<RelateOutcome, TexoError> {
+    if !model_role_enabled(crate::gateway::ModelRole::Relate)? {
+        return Ok(RelateOutcome::Skipped {
+            reason: "TEXO_LLM_API_KEY is not set".to_string(),
+        });
+    }
+    let out = run_relate_pass(
+        "texo.agent.session.end",
+        cx,
+        observed_at_ms,
+        crate::ops::handlers::RelatePassOptions::best_effort(),
+    )?;
+    Ok(RelateOutcome::Ran {
+        supersessions: out.supersessions.len(),
+        conflicts: out.conflicts.len(),
+    })
+}
+
 #[syncbat::operation(
     descriptor = SESSION_EXPORT,
-    register = register_session_export,
-    register_item = session_export_item,
     name = "texo.session.export",
     effect = Inspect,
     input_schema = "texo.session.export.input.v2",
@@ -442,10 +478,10 @@ fn session_export(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
 #[must_use]
 pub fn catalog() -> Vec<OperationRegisterItem> {
     vec![
-        agent_chat_item(),
-        agent_memory_item(),
-        agent_session_end_item(),
-        session_export_item(),
+        OperationRegisterItem::new((*AGENT_CHAT).clone(), agent_chat),
+        OperationRegisterItem::new((*AGENT_MEMORY).clone(), agent_memory),
+        OperationRegisterItem::new((*AGENT_SESSION_END).clone(), agent_session_end),
+        OperationRegisterItem::new((*SESSION_EXPORT).clone(), session_export),
     ]
 }
 
@@ -456,10 +492,9 @@ pub fn catalog() -> Vec<OperationRegisterItem> {
 /// Returns [`syncbat::BuildError`] if a descriptor or handler cannot be
 /// registered with the builder.
 pub fn register_all(builder: &mut CoreBuilder) -> Result<(), syncbat::BuildError> {
-    register_agent_chat(builder)?;
-    register_agent_memory(builder)?;
-    register_agent_session_end(builder)?;
-    register_session_export(builder)?;
+    for item in catalog() {
+        let _builder = builder.register_item(item)?;
+    }
     Ok(())
 }
 
@@ -684,170 +719,6 @@ fn append_turn_direct(
         kind_bits: <SessionTurnV1 as EventPayload>::KIND.as_raw_u16(),
         global_sequence: receipt.global_sequence,
     })
-}
-
-fn memory_snapshot(view: &WorkspaceView) -> MemorySnapshot {
-    let current = view
-        .claims
-        .iter()
-        .filter(|claim| claim.card.phase != 2)
-        .map(|claim| MemoryClaim {
-            claim_id: claim.card.claim_id.clone(),
-            text: claim.card.text.clone(),
-            source_path: claim.card.source_path.clone(),
-            line: claim.card.line_start,
-            char_start: claim.card.char_start,
-            char_end: claim.card.char_end,
-        })
-        .collect::<Vec<_>>();
-    let stale = view
-        .claims
-        .iter()
-        .filter(|claim| claim.card.phase == 2)
-        .filter_map(|claim| {
-            claim.card.superseded_by.as_ref().map(|superseded_by| {
-                let superseded_by_text = view
-                    .claims
-                    .iter()
-                    .find(|candidate| candidate.card.claim_id == *superseded_by)
-                    .map_or_else(String::new, |candidate| candidate.card.text.clone());
-                StaleMemory {
-                    claim_id: claim.card.claim_id.clone(),
-                    text: claim.card.text.clone(),
-                    superseded_by: superseded_by.clone(),
-                    superseded_by_text,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let conflicts = view
-        .conflicts
-        .iter()
-        .filter(|conflict| conflict.phase == 1)
-        .map(|conflict| MemoryConflict {
-            claim_a_text: claim_text(view, &conflict.claim_a),
-            claim_b_text: claim_text(view, &conflict.claim_b),
-            reason: conflict.reason.clone(),
-        })
-        .collect::<Vec<_>>();
-    MemorySnapshot {
-        workspace_id: view.workspace_id.clone(),
-        replayed_through_sequence: view.frontier,
-        current,
-        stale,
-        conflicts,
-    }
-}
-
-fn claim_text(view: &WorkspaceView, claim_id: &str) -> String {
-    view.claims
-        .iter()
-        .find(|claim| claim.card.claim_id == claim_id)
-        .map_or_else(String::new, |claim| claim.card.text.clone())
-}
-
-fn model_role_enabled(role: crate::gateway::ModelRole) -> Result<bool, TexoError> {
-    let resolved = env::with(|op_env| {
-        crate::gateway::resolve_role(
-            role,
-            &crate::gateway::RoleOverrides::default(),
-            op_env.config.gateway.as_ref(),
-        )
-    })?;
-    Ok(crate::host::grants_model_capability(Some(resolved.api_key)))
-}
-
-#[cfg(feature = "openrouter")]
-fn complete_chat(
-    memory: &MemorySnapshot,
-    history: &[TurnEntry],
-    user_message: &str,
-) -> Result<String, TexoError> {
-    let role = env::with(|op_env| {
-        crate::gateway::resolve_role(
-            crate::gateway::ModelRole::Chat,
-            &crate::gateway::RoleOverrides::default(),
-            op_env.config.gateway.as_ref(),
-        )
-    })?;
-    if !role.is_enabled() {
-        return Err(TexoError::Model {
-            detail: "chat is disabled: TEXO_LLM_API_KEY is not set".to_string(),
-        });
-    }
-    let chat_memory = to_chat_memory(memory);
-    let chat_history = history
-        .iter()
-        .filter_map(|turn| {
-            let speaker = match turn.speaker.as_str() {
-                "user" => crate::semantics::chat::Speaker::User,
-                "assistant" => crate::semantics::chat::Speaker::Assistant,
-                _ => return None,
-            };
-            Some(crate::semantics::chat::Utterance {
-                speaker,
-                text: turn.text.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
-    let system_prompt = crate::semantics::chat::build_system_prompt(&chat_memory);
-    let body = crate::semantics::chat::build_chat_request(
-        &role,
-        &system_prompt,
-        &chat_history,
-        user_message,
-    );
-    crate::semantics::chat::complete(&role, &body)
-}
-
-#[cfg(not(feature = "openrouter"))]
-fn complete_chat(
-    _memory: &MemorySnapshot,
-    _history: &[TurnEntry],
-    _user_message: &str,
-) -> Result<String, TexoError> {
-    Err(TexoError::Model {
-        detail: "chat is disabled: openrouter feature is disabled".to_string(),
-    })
-}
-
-#[cfg(feature = "openrouter")]
-fn to_chat_memory(memory: &MemorySnapshot) -> crate::semantics::chat::MemorySnapshot {
-    crate::semantics::chat::MemorySnapshot {
-        workspace_id: memory.workspace_id.clone(),
-        replayed_through_sequence: memory.replayed_through_sequence,
-        current: memory
-            .current
-            .iter()
-            .map(|claim| crate::semantics::chat::MemoryClaim {
-                claim_id: claim.claim_id.clone(),
-                text: claim.text.clone(),
-                source_path: claim.source_path.clone(),
-                line: claim.line,
-                char_start: claim.char_start,
-                char_end: claim.char_end,
-            })
-            .collect(),
-        stale: memory
-            .stale
-            .iter()
-            .map(|stale| crate::semantics::chat::StaleMemory {
-                claim_id: stale.claim_id.clone(),
-                text: stale.text.clone(),
-                superseded_by: stale.superseded_by.clone(),
-                superseded_by_text: stale.superseded_by_text.clone(),
-            })
-            .collect(),
-        conflicts: memory
-            .conflicts
-            .iter()
-            .map(|conflict| crate::semantics::chat::MemoryConflict {
-                claim_a_text: conflict.claim_a_text.clone(),
-                claim_b_text: conflict.claim_b_text.clone(),
-                reason: conflict.reason.clone(),
-            })
-            .collect(),
-    }
 }
 
 #[cfg(test)]

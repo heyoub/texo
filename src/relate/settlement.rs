@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::ids::ClaimId;
 
+/// Durable completion state for one bounded relation campaign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CampaignPhase {
+    /// More candidate slots or a failed pair must be resumed.
+    Partial {
+        /// Exact global candidate cursor required by the next page.
+        next_candidate_cursor: u64,
+    },
+    /// Every required candidate slot and verdict is settled.
+    Complete,
+}
+
 /// Closed relation verdict recorded for a logical pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

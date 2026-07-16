@@ -1,9 +1,12 @@
 //! End-to-end pipeline smoke test.
 
+#[path = "support/courtroom.rs"]
+mod courtroom_support;
 mod support;
 
+use courtroom_support::ingest_courtroom;
 use serde_json::json;
-use support::{ingest_courtroom, TestResult, TestWorkspace};
+use support::{TestResult, TestWorkspace};
 
 #[test]
 fn e2e_pipeline_lists_explains_and_checks_staleness() -> TestResult {

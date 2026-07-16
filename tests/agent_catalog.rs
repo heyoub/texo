@@ -1,9 +1,12 @@
 //! Agent catalog discovery, pagination, and workspace-status contracts.
 
+#[path = "support/courtroom.rs"]
+mod courtroom_support;
 mod support;
 
+use courtroom_support::ingest_courtroom;
 use serde_json::json;
-use support::{ingest_courtroom, TestResult, TestWorkspace};
+use support::{TestResult, TestWorkspace};
 
 #[test]
 fn cli_operation_discovery_uses_the_shared_catalog() -> TestResult {

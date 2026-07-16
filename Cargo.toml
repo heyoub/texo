@@ -71,20 +71,24 @@ predicates = "3"
 assert_matches = "1"
 trybuild = "1"
 
-# Lint bar: batpak's workspace lints verbatim (the composition bar), plus
-# pedantic-as-warn which texo already carried. Exceptions are per-site
-# #[expect(..)] with a reason, never table-level allows.
+# Lint bar: correctness restrictions plus the substantive API, ownership, and
+# documentation checks used by this crate. Texo carries no lint suppression
+# attributes or table-level allowances; diagnostics must be resolved at their
+# structural source. The module-name style lint is intentionally outside this
+# policy because public paths such as `backup::BackupManifest` are the stable,
+# domain-readable API rather than implementation debt.
 [lints.rust]
 missing_docs = "warn"
 deprecated = "deny"
 
 [lints.clippy]
-pedantic = { level = "warn", priority = -1 }
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 panic = "deny"
+too_many_lines = "deny"
+too_many_arguments = "deny"
 needless_return = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
@@ -96,9 +100,16 @@ disallowed_methods = "deny"
 large_enum_variant = "warn"
 clone_on_ref_ptr = "warn"
 needless_pass_by_value = "warn"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
+must_use_candidate = "warn"
 missing_errors_doc = "warn"
+doc_markdown = "warn"
+ref_option = "warn"
+wildcard_imports = "warn"
+empty_line_after_doc_comments = "warn"
+ptr_arg = "warn"
+needless_borrow = "warn"
+float_cmp = "warn"
+similar_names = "warn"
 
 [profile.dev]
 debug = 1

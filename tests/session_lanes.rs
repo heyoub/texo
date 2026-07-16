@@ -75,7 +75,7 @@ fn turns_survive_crash_before_session_end() -> TestResult {
     assert_eq!(ended["supersessions_held"], 0);
     assert_eq!(ended["held_supersessions"], json!([]));
     let expected_status =
-        if texo::host::grants_model_capability(std::env::var("TEXO_LLM_API_KEY").ok()) {
+        if texo::host::grants_model_capability(std::env::var("TEXO_LLM_API_KEY").ok().as_deref()) {
             "ran"
         } else {
             "skipped"

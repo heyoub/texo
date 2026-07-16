@@ -1,9 +1,12 @@
 //! Golden ingest snapshot.
 
+#[path = "support/sample.rs"]
+mod sample_support;
 mod support;
 
+use sample_support::ingest_sample_sources;
 use serde_json::json;
-use support::{ingest_sample_sources, TestResult, TestWorkspace};
+use support::{TestResult, TestWorkspace};
 
 #[test]
 fn ingest_demo() -> TestResult {

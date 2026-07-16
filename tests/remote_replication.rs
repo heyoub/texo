@@ -16,6 +16,7 @@ use texo::topology::JournalEntry;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type ServerThread = JoinHandle<Result<netbat::TcpServeStats, texo::error::TexoError>>;
+const REPLICA_TOKEN: &str = "correct horse battery staple";
 
 fn write_topology(root: &std::path::Path, endpoint: SocketAddr) -> TestResult {
     let journals = BTreeMap::from([
@@ -144,6 +145,77 @@ fn replica_event_count(root: &std::path::Path) -> TestResult<usize> {
     Ok(store.stats().event_count)
 }
 
+fn assert_remote_rejections(root: &std::path::Path) -> TestResult {
+    let denied = replica_command(root, "wrong", "bootstrap", "remote")?;
+    assert!(!denied.status.success());
+    assert!(!root.join(".texo/replicas/remote").exists());
+    let wrong_source = replica_command(root, REPLICA_TOKEN, "bootstrap", "wrong-source")?;
+    assert!(!wrong_source.status.success());
+    assert!(!root.join(".texo/replicas/wrong-source").exists());
+    Ok(())
+}
+
+fn bootstrap_remote_replica(
+    root: &std::path::Path,
+    shutdown: &ShutdownHandle,
+    handle: ServerThread,
+) -> TestResult<Vec<u8>> {
+    let initial = replica_command(root, REPLICA_TOKEN, "bootstrap", "remote")?;
+    assert!(
+        initial.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initial.stderr)
+    );
+    stop_server(shutdown, handle)?;
+    assert_eq!(claims(root, "canonical")?, claims(root, "remote")?);
+    Ok(std::fs::read(
+        root.join(".texo/replication/demo/remote/cursor.msgpack"),
+    )?)
+}
+
+fn assert_follow_resumes_and_deduplicates(
+    root: &std::path::Path,
+    endpoint: SocketAddr,
+    stale_cursor: &[u8],
+) -> TestResult {
+    ingest(
+        root,
+        "docs/two.md",
+        "Decision: deploys moved to Tuesday.\n",
+        2,
+    )?;
+    let listener = TcpListener::bind(endpoint)?;
+    let (shutdown, handle) = start_server(root, listener)?;
+    let advanced = replica_command(root, REPLICA_TOKEN, "follow", "remote")?;
+    assert!(
+        advanced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&advanced.stderr)
+    );
+    std::fs::write(
+        root.join(".texo/replication/demo/remote/cursor.msgpack"),
+        stale_cursor,
+    )?;
+    let replay = replica_command(root, REPLICA_TOKEN, "follow", "remote")?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
+    assert_eq!(replay["imported"], 0);
+    assert!(replay["deduplicated"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    let before_noop = replica_event_count(root)?;
+    let no_op = replica_command(root, REPLICA_TOKEN, "follow", "remote")?;
+    assert!(no_op.status.success());
+    assert_eq!(replica_event_count(root)?, before_noop);
+    stop_server(&shutdown, handle)?;
+    assert_eq!(claims(root, "canonical")?, claims(root, "remote")?);
+    Ok(())
+}
+
 #[test]
 fn remote_replica_authenticates_binds_resumes_and_deduplicates() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -157,93 +229,7 @@ fn remote_replica_authenticates_binds_resumes_and_deduplicates() -> TestResult {
         1,
     )?;
     let (shutdown, handle) = start_server(root.path(), listener)?;
-
-    let denied = replica_command(root.path(), "wrong", "bootstrap", "remote")?;
-    assert!(!denied.status.success());
-    assert!(!root.path().join(".texo/replicas/remote").exists());
-    let wrong_source = replica_command(
-        root.path(),
-        "correct horse battery staple",
-        "bootstrap",
-        "wrong-source",
-    )?;
-    assert!(!wrong_source.status.success());
-    assert!(!root.path().join(".texo/replicas/wrong-source").exists());
-
-    let initial = replica_command(
-        root.path(),
-        "correct horse battery staple",
-        "bootstrap",
-        "remote",
-    )?;
-    assert!(
-        initial.status.success(),
-        "{}",
-        String::from_utf8_lossy(&initial.stderr)
-    );
-    stop_server(&shutdown, handle)?;
-    assert_eq!(
-        claims(root.path(), "canonical")?,
-        claims(root.path(), "remote")?
-    );
-
-    let stale_cursor = std::fs::read(
-        root.path()
-            .join(".texo/replication/demo/remote/cursor.msgpack"),
-    )?;
-    ingest(
-        root.path(),
-        "docs/two.md",
-        "Decision: deploys moved to Tuesday.\n",
-        2,
-    )?;
-    let listener = TcpListener::bind(endpoint)?;
-    let (shutdown, handle) = start_server(root.path(), listener)?;
-    let advanced = replica_command(
-        root.path(),
-        "correct horse battery staple",
-        "follow",
-        "remote",
-    )?;
-    assert!(
-        advanced.status.success(),
-        "{}",
-        String::from_utf8_lossy(&advanced.stderr)
-    );
-    std::fs::write(
-        root.path()
-            .join(".texo/replication/demo/remote/cursor.msgpack"),
-        stale_cursor,
-    )?;
-    let replay = replica_command(
-        root.path(),
-        "correct horse battery staple",
-        "follow",
-        "remote",
-    )?;
-    assert!(
-        replay.status.success(),
-        "{}",
-        String::from_utf8_lossy(&replay.stderr)
-    );
-    let replay: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
-    assert_eq!(replay["imported"], 0);
-    assert!(replay["deduplicated"]
-        .as_u64()
-        .is_some_and(|count| count > 0));
-    let before_noop = replica_event_count(root.path())?;
-    let no_op = replica_command(
-        root.path(),
-        "correct horse battery staple",
-        "follow",
-        "remote",
-    )?;
-    assert!(no_op.status.success());
-    assert_eq!(replica_event_count(root.path())?, before_noop);
-    stop_server(&shutdown, handle)?;
-    assert_eq!(
-        claims(root.path(), "canonical")?,
-        claims(root.path(), "remote")?
-    );
-    Ok(())
+    assert_remote_rejections(root.path())?;
+    let stale_cursor = bootstrap_remote_replica(root.path(), &shutdown, handle)?;
+    assert_follow_resumes_and_deduplicates(root.path(), endpoint, &stale_cursor)
 }

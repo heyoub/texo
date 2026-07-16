@@ -163,10 +163,6 @@ struct HeadingFrame {
 /// tables, and blockquotes (and all their contents) are excluded. Empty or
 /// degenerate input yields an empty vector.
 #[must_use]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "pulldown-cmark Event is a foreign enum that grows variants; only the matched events matter here"
-)]
 pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -191,59 +187,68 @@ pub fn segment_candidates(source: &str) -> Vec<CandidateSpan> {
     let mut open_block: Option<(usize, usize)> = None;
 
     for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
-        match event {
-            Event::Start(Tag::Heading { level, .. }) => {
-                suppress_depth += 1;
-                capturing_heading = Some((level, String::new()));
-            }
-            Event::End(TagEnd::Heading(_)) => {
-                if let Some((level, text)) = capturing_heading.take() {
-                    while headings.last().is_some_and(|frame| frame.level >= level) {
-                        headings.pop();
-                    }
-                    headings.push(HeadingFrame {
-                        level,
-                        text: text.trim().to_string(),
-                    });
+        if let Event::Start(Tag::Heading { level, .. }) = &event {
+            suppress_depth += 1;
+            capturing_heading = Some((*level, String::new()));
+            continue;
+        }
+        if matches!(&event, Event::End(TagEnd::Heading(_))) {
+            if let Some((level, text)) = capturing_heading.take() {
+                while headings.last().is_some_and(|frame| frame.level >= level) {
+                    headings.pop();
                 }
-                suppress_depth = suppress_depth.saturating_sub(1);
+                headings.push(HeadingFrame {
+                    level,
+                    text: text.trim().to_string(),
+                });
             }
+            suppress_depth = suppress_depth.saturating_sub(1);
+            continue;
+        }
+        if matches!(
+            &event,
             Event::Start(
                 Tag::CodeBlock(_)
-                | Tag::Table(_)
-                | Tag::BlockQuote(_)
-                | Tag::HtmlBlock
-                | Tag::MetadataBlock(_),
-            ) => {
-                suppress_depth += 1;
-            }
+                    | Tag::Table(_)
+                    | Tag::BlockQuote(_)
+                    | Tag::HtmlBlock
+                    | Tag::MetadataBlock(_)
+            )
+        ) {
+            suppress_depth += 1;
+            continue;
+        }
+        if matches!(
+            &event,
             Event::End(
                 TagEnd::CodeBlock
-                | TagEnd::Table
-                | TagEnd::BlockQuote(_)
-                | TagEnd::HtmlBlock
-                | TagEnd::MetadataBlock(_),
-            ) => {
-                suppress_depth = suppress_depth.saturating_sub(1);
+                    | TagEnd::Table
+                    | TagEnd::BlockQuote(_)
+                    | TagEnd::HtmlBlock
+                    | TagEnd::MetadataBlock(_)
+            )
+        ) {
+            suppress_depth = suppress_depth.saturating_sub(1);
+            continue;
+        }
+        if matches!(&event, Event::Start(Tag::Paragraph | Tag::Item)) {
+            if suppress_depth == 0 && open_block.is_none() {
+                open_block = Some((range.start, range.end));
             }
-            Event::Start(Tag::Paragraph | Tag::Item) => {
-                if suppress_depth == 0 && open_block.is_none() {
-                    open_block = Some((range.start, range.end));
+            continue;
+        }
+        if matches!(&event, Event::End(TagEnd::Paragraph | TagEnd::Item)) {
+            if suppress_depth == 0 {
+                if let Some((start, end)) = open_block.take() {
+                    push_span(&mut spans, source, start, end, &headings);
                 }
             }
-            Event::End(TagEnd::Paragraph | TagEnd::Item) => {
-                if suppress_depth == 0 {
-                    if let Some((start, end)) = open_block.take() {
-                        push_span(&mut spans, source, start, end, &headings);
-                    }
-                }
+            continue;
+        }
+        if let Event::Text(text) | Event::Code(text) = &event {
+            if let Some((_, buf)) = capturing_heading.as_mut() {
+                buf.push_str(text);
             }
-            Event::Text(text) | Event::Code(text) => {
-                if let Some((_, buf)) = capturing_heading.as_mut() {
-                    buf.push_str(&text);
-                }
-            }
-            _ => {}
         }
     }
 

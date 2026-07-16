@@ -144,6 +144,21 @@ impl<R: ClaimRelater> CachingRelater<R> {
     fn path_for(&self, key: &str) -> PathBuf {
         self.dir.join(format!("{key}.json"))
     }
+
+    /// Remove the cached verdict for one ordered pair so the next call must
+    /// consult the wrapped relater. Missing entries are already fresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when an existing cache entry cannot be removed.
+    pub fn evict(&self, older: &str, newer: &str) -> std::io::Result<bool> {
+        let path = self.path_for(&self.cache_key(older, newer));
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl<R: ClaimRelater> ClaimRelater for CachingRelater<R> {
@@ -302,6 +317,28 @@ mod tests {
 
         assert_eq!(first.relation, ClaimRelation::Supersedes);
         assert_eq!(first, second);
+        assert_eq!(relater.inner.calls.get(), 2);
+        let _removed = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_eviction_forces_one_fresh_relation_call() {
+        let dir = tmp_dir().join("relate-evict");
+        let _removed = std::fs::remove_dir_all(&dir);
+        let relater = CachingRelater::new(
+            CountingRelater {
+                calls: Cell::new(0),
+                relation: ClaimRelation::Conflict,
+                fingerprint: "fp-evict".to_string(),
+            },
+            dir.clone(),
+        );
+        relater.relate("old", "new").expect("cold relation");
+        relater.relate("old", "new").expect("cached relation");
+        assert_eq!(relater.inner.calls.get(), 1);
+        assert!(relater.evict("old", "new").expect("evict existing"));
+        assert!(!relater.evict("old", "new").expect("missing is inert"));
+        relater.relate("old", "new").expect("fresh relation");
         assert_eq!(relater.inner.calls.get(), 2);
         let _removed = std::fs::remove_dir_all(&dir);
     }

@@ -1,5 +1,7 @@
 //! MCP stdio wire tests.
 
+#[path = "support/courtroom.rs"]
+mod courtroom_support;
 mod support;
 
 use std::io::{BufRead, BufReader, Write};
@@ -8,8 +10,9 @@ use std::process::Command;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use assert_cmd::prelude::*;
+use courtroom_support::ingest_courtroom;
 use serde_json::{json, Value};
-use support::{ingest_courtroom, TestResult, TestWorkspace};
+use support::{TestResult, TestWorkspace};
 
 fn spawn_mcp(root: &Path) -> TestResult<(Child, ChildStdin, BufReader<ChildStdout>)> {
     let mut command = Command::cargo_bin("texo")?;
@@ -99,17 +102,12 @@ fn assert_triangulation_call(
     Ok(())
 }
 
-#[test]
-fn mcp_stdio_full_session() -> TestResult {
-    let mut workspace = TestWorkspace::new()?;
-    ingest_courtroom(&mut workspace)?;
-    let root = workspace.root().to_path_buf();
-    let support::TestWorkspace { dir: _dir, host } = workspace;
-    drop(host);
-    let (mut child, mut stdin, mut stdout) = spawn_mcp(&root)?;
-
+fn initialize_mcp_session(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> TestResult {
     send_json(
-        &mut stdin,
+        stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -117,24 +115,30 @@ fn mcp_stdio_full_session() -> TestResult {
             "params": { "protocolVersion": "2025-06-18" }
         }),
     )?;
-    let initialize = read_json(&mut stdout)?;
+    let initialize = read_json(stdout)?;
     assert_eq!(initialize["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(initialize["result"]["serverInfo"]["name"], "texo");
-
     send_json(
-        &mut stdin,
+        stdin,
         &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )?;
+    Ok(())
+}
 
+fn list_mcp_tools(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) -> TestResult {
     send_json(
-        &mut stdin,
+        stdin,
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     )?;
-    let tools = read_json(&mut stdout)?;
-    assert_tool_catalog(&tools)?;
+    assert_tool_catalog(&read_json(stdout)?)
+}
 
+fn search_knowledge(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> TestResult<String> {
     send_json(
-        &mut stdin,
+        stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 3,
@@ -145,7 +149,7 @@ fn mcp_stdio_full_session() -> TestResult {
             }
         }),
     )?;
-    let claims = read_json(&mut stdout)?;
+    let claims = read_json(stdout)?;
     assert!(claims["result"]["content"][0]["text"]
         .as_str()
         .expect("tool response has text content")
@@ -169,9 +173,16 @@ fn mcp_stdio_full_session() -> TestResult {
         claims_json["next_actions"][0]["arguments"]["snapshot_token"],
         snapshot_token
     );
+    Ok(snapshot_token.to_string())
+}
 
+fn assert_explain_error(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    snapshot_token: &str,
+) -> TestResult {
     send_json(
-        &mut stdin,
+        stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 4,
@@ -185,7 +196,7 @@ fn mcp_stdio_full_session() -> TestResult {
             }
         }),
     )?;
-    let explain_error = read_json(&mut stdout)?;
+    let explain_error = read_json(stdout)?;
     assert_eq!(explain_error["error"]["code"], -32603);
     assert!(explain_error["error"]["data"]["code"]
         .as_str()
@@ -194,14 +205,31 @@ fn mcp_stdio_full_session() -> TestResult {
     assert!(explain_error["error"]["data"]["committed"].is_string());
     assert!(explain_error["error"]["data"]["retry_safe"].is_boolean());
     assert!(explain_error["error"]["data"].get("resume").is_some());
+    Ok(())
+}
 
-    assert_triangulation_call(&mut stdin, &mut stdout, snapshot_token)?;
-
+fn assert_parse_error(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) -> TestResult {
     stdin.write_all(b"{not json\n")?;
     stdin.flush()?;
-    let parse_error = read_json(&mut stdout)?;
+    let parse_error = read_json(stdout)?;
     assert_eq!(parse_error["error"]["code"], -32700);
+    Ok(())
+}
 
+#[test]
+fn mcp_stdio_full_session() -> TestResult {
+    let mut workspace = TestWorkspace::new()?;
+    ingest_courtroom(&mut workspace)?;
+    let root = workspace.dir.path().to_path_buf();
+    let support::TestWorkspace { dir: _dir, host } = workspace;
+    drop(host);
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&root)?;
+    initialize_mcp_session(&mut stdin, &mut stdout)?;
+    list_mcp_tools(&mut stdin, &mut stdout)?;
+    let snapshot_token = search_knowledge(&mut stdin, &mut stdout)?;
+    assert_explain_error(&mut stdin, &mut stdout, &snapshot_token)?;
+    assert_triangulation_call(&mut stdin, &mut stdout, &snapshot_token)?;
+    assert_parse_error(&mut stdin, &mut stdout)?;
     drop(stdin);
     let status = child.wait()?;
     assert!(status.success());
@@ -211,7 +239,7 @@ fn mcp_stdio_full_session() -> TestResult {
 #[test]
 fn mcp_input_error_carries_safe_retry_facts() -> TestResult {
     let workspace = TestWorkspace::new()?;
-    let root = workspace.root().to_path_buf();
+    let root = workspace.dir.path().to_path_buf();
     let support::TestWorkspace { dir: _dir, host } = workspace;
     drop(host);
     let (mut child, mut stdin, mut stdout) = spawn_mcp(&root)?;

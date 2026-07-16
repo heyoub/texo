@@ -1,10 +1,16 @@
 //! First-run workspace bootstrap for the memory-agent surface.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::{SemanticsConfig, TexoRootConfig, WorkspaceEntry};
 use crate::error::TexoError;
+
+mod model;
+mod resolver;
+
+pub use model::{BootstrapDecision, BootstrapInputs};
+pub use resolver::resolve_bootstrap;
 
 /// Environment variable pointing at an extractor binary.
 pub const ENV_EXTRACT_BIN: &str = "TEXO_EXTRACT_BIN";
@@ -16,66 +22,6 @@ pub const ENV_MODEL_API_KEY: &str = "TEXO_LLM_API_KEY";
 pub const DEFAULT_EXTRACT_CACHE: &str = ".texo/extract-cache";
 /// Whether first-run bootstrap may point `extractor_cmd` at `texo extract`.
 pub const EXTRACT_SUBCOMMAND_READY: bool = true;
-
-/// Inputs to extractor resolution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapInputs {
-    /// `TEXO_EXTRACT_BIN` value, when present.
-    pub extract_bin: Option<String>,
-    /// Resolved neutral model API-key value, when present.
-    pub model_api_key: Option<String>,
-    /// Current executable path.
-    pub current_exe: PathBuf,
-}
-
-/// Extractor resolution result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootstrapDecision {
-    /// Shell command written to config, or `None` for heuristic extraction.
-    pub extractor_cmd: Option<String>,
-    /// Whether `[semantics] enabled = true` should be written.
-    pub semantics_enabled: bool,
-    /// Optional startup warning.
-    pub warning: Option<String>,
-}
-
-/// Resolve bootstrap extraction settings without reading process environment.
-#[must_use]
-pub fn resolve_bootstrap(root: &Path, inputs: &BootstrapInputs) -> BootstrapDecision {
-    if let Some(raw) = &inputs.extract_bin {
-        if raw.trim().is_empty() {
-            return BootstrapDecision {
-                extractor_cmd: None,
-                semantics_enabled: false,
-                warning: None,
-            };
-        }
-        let cmd = extractor_cmd_for(root, raw);
-        return BootstrapDecision {
-            extractor_cmd: Some(cmd),
-            semantics_enabled: true,
-            warning: None,
-        };
-    }
-    let has_key = inputs
-        .model_api_key
-        .as_deref()
-        .is_some_and(|key| !key.trim().is_empty());
-    if has_key && EXTRACT_SUBCOMMAND_READY {
-        let exe = inputs.current_exe.to_string_lossy();
-        return BootstrapDecision {
-            extractor_cmd: Some(extractor_cmd_for(root, &exe)),
-            semantics_enabled: true,
-            warning: None,
-        };
-    }
-    BootstrapDecision {
-        extractor_cmd: None,
-        semantics_enabled: false,
-        warning: (!has_key)
-            .then(|| "TEXO_LLM_API_KEY is not set; using heuristic session extraction".to_string()),
-    }
-}
 
 /// Resolve bootstrap extraction settings from process environment.
 ///
@@ -164,6 +110,8 @@ pub(crate) fn prospective_config(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn inputs(bin: Option<&str>, key: Option<&str>) -> BootstrapInputs {

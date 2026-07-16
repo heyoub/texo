@@ -8,7 +8,7 @@ use texo::semantics::pipeline::{
     receipt_view, relate_claims, ClaimStatus, ClaimView, RelateThresholds,
 };
 
-/// Cluster-first thresholds for gemini-embedding-2, mirroring `texo relate`.
+/// Semantic candidate thresholds for gemini-embedding-2, mirroring `texo relate`.
 const THRESHOLDS: RelateThresholds = RelateThresholds {
     cluster: 0.65,
     prefilter: 0.60,
@@ -48,9 +48,9 @@ fn claim(seq: u64, text: &str, src: &str) -> (ClaimId, ClaimView) {
 #[test]
 #[ignore = "live model call; requires TEXO_LLM_API_KEY"]
 fn helios_relations_hold_with_real_models() {
-    if std::env::var("TEXO_LLM_API_KEY").is_err() {
-        return;
-    }
+    let key =
+        std::env::var("TEXO_LLM_API_KEY").expect("explicit live oracle requires TEXO_LLM_API_KEY");
+    assert!(!key.trim().is_empty(), "TEXO_LLM_API_KEY cannot be empty");
 
     let claims = vec![
         claim(10, "Deploys happen on Friday.", "02_adr_001.md"),
@@ -88,8 +88,12 @@ fn helios_relations_hold_with_real_models() {
     let relater = OpenRouterRelater::new(None, None).expect("relater");
 
     let out = relate_claims(&claims, &embedder, &relater, THRESHOLDS).expect("relate");
-    let edges = &out.supersessions;
-    let conflicts = &out.conflicts;
+    let authority = &out
+        .complete()
+        .expect("ten claims complete in one page")
+        .related;
+    let edges = &authority.supersessions;
+    let conflicts = &authority.conflicts;
 
     let edge = |old_sub: &str, new_sub: &str| {
         edges

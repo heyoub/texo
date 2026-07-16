@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::events::ids::WorkspaceId;
-use crate::gateway::GatewayConfig;
 use crate::topology::{self, JournalEntry, ResolvedJournal};
+
+mod model;
+
+pub use model::{ConfigError, SemanticsConfig, TexoRootConfig, WorkspaceConfig};
 
 const DEFAULT_WORKSPACE_ID: &str = "demo";
 const DEFAULT_STORE_PATH: &str = ".texo/store";
@@ -28,63 +31,6 @@ fn default_cosine_threshold() -> f32 {
     DEFAULT_COSINE_THRESHOLD
 }
 
-/// Optional, disabled-by-default configuration for the semantic ML pipeline.
-///
-/// The semantic pipeline is entirely opt-in: a workspace config without a
-/// `[semantics]` table deserializes to `None`, and even when present the
-/// pipeline only activates when [`SemanticsConfig::enabled`] is `true`. No ML
-/// or model-runtime behavior lives here — this is configuration only.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SemanticsConfig {
-    /// Master switch; when `false` (the default) the pipeline is inert.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Cosine-similarity acceptance threshold; `texo relate` uses it as the
-    /// cluster link threshold for candidate generation. Must sit at or below the
-    /// corpus's lowest same-subject similarity (default 0.65; see the module
-    /// source for the measured rationale).
-    #[serde(default = "default_cosine_threshold")]
-    pub cosine_threshold: f32,
-    /// Within-cluster pair prefilter: pairs below this cosine are never sent
-    /// to the judge. Defaults to the compiled 0.60; lower it (with
-    /// `cosine_threshold`) on recall-critical corpora — the judge remains the
-    /// correctness gate, so the only cost of a lower floor is judge calls.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relate_prefilter: Option<f32>,
-}
-
-impl Default for SemanticsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cosine_threshold: DEFAULT_COSINE_THRESHOLD,
-            relate_prefilter: None,
-        }
-    }
-}
-
-/// Resolved configuration for one `BatPak` workspace scope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceConfig {
-    /// Workspace identifier for `BatPak` scope partitioning.
-    pub workspace_id: String,
-    /// Relative or absolute path to the `BatPak` store directory.
-    pub store_path: String,
-    /// Glob for default markdown sources.
-    pub docs_glob: String,
-    /// Optional external extractor command (newline-delimited JSON claims).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extractor_cmd: Option<String>,
-    /// Optional, disabled-by-default semantic ML pipeline configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantics: Option<SemanticsConfig>,
-    /// Optional process-wide model gateway configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<GatewayConfig>,
-}
-
 /// Per-workspace entry in the root config file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -103,22 +49,9 @@ pub struct WorkspaceEntry {
     pub semantics: Option<SemanticsConfig>,
 }
 
-/// Root `.texo/config.toml` with multiple workspace scopes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TexoRootConfig {
-    /// Default workspace id when none is specified on the CLI.
-    pub default_workspace: String,
-    /// Named workspace configurations.
-    #[serde(default)]
-    pub workspaces: BTreeMap<String, WorkspaceEntry>,
-    /// Optional model gateway configuration. Bootstrap never writes this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<GatewayConfig>,
-}
-
 impl WorkspaceEntry {
     /// Defaults for the demo workspace.
+    #[must_use]
     pub fn demo() -> Self {
         let mut journals = BTreeMap::new();
         journals.insert(
@@ -135,6 +68,7 @@ impl WorkspaceEntry {
     }
 
     /// Defaults for a secondary workspace with an isolated store.
+    #[must_use]
     pub fn for_id(workspace_id: &str) -> Self {
         if workspace_id == DEFAULT_WORKSPACE_ID {
             return Self::demo();
@@ -184,6 +118,7 @@ impl WorkspaceEntry {
 
 impl TexoRootConfig {
     /// Default root config with only the demo workspace.
+    #[must_use]
     pub fn demo() -> Self {
         let mut workspaces = BTreeMap::new();
         workspaces.insert(DEFAULT_WORKSPACE_ID.to_string(), WorkspaceEntry::demo());
@@ -271,6 +206,7 @@ impl TexoRootConfig {
 
 impl WorkspaceConfig {
     /// Default configuration for the demo workspace.
+    #[must_use]
     pub fn demo() -> Self {
         Self {
             workspace_id: DEFAULT_WORKSPACE_ID.to_string(),
@@ -331,6 +267,7 @@ impl WorkspaceConfig {
     }
 
     /// Resolve store path relative to a workspace root.
+    #[must_use]
     pub fn store_path_buf(&self, root: &Path) -> PathBuf {
         let path = PathBuf::from(&self.store_path);
         if path.is_absolute() {
@@ -347,6 +284,7 @@ impl WorkspaceConfig {
     /// such as `docs/**/*.md` resolves to `<root>/docs`, while `sample_sources/**/*.md`
     /// resolves to `<root>/sample_sources`. Patterns whose first component is
     /// already a wildcard resolve to `root` itself.
+    #[must_use]
     pub fn docs_scan_root(&self, root: &Path) -> PathBuf {
         let glob_path = PathBuf::from(&self.docs_glob);
         let mut prefix = PathBuf::new();
@@ -366,29 +304,6 @@ impl WorkspaceConfig {
             root.join(prefix)
         }
     }
-}
-
-/// Configuration-specific failures.
-#[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
-    /// Filesystem error.
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    /// TOML parse error.
-    #[error("parse: {0}")]
-    Parse(#[from] toml::de::Error),
-    /// TOML serialize error.
-    #[error("serialize: {0}")]
-    Serialize(#[from] toml::ser::Error),
-    /// Invalid workspace identifier.
-    #[error("invalid workspace id")]
-    InvalidWorkspace,
-    /// Unknown workspace id in root config.
-    #[error("unknown workspace: {0}")]
-    UnknownWorkspace(String),
-    /// Invalid journal topology or selection.
-    #[error("topology: {0}")]
-    Topology(#[from] crate::topology::TopologyError),
 }
 
 #[cfg(test)]

@@ -1,9 +1,12 @@
 //! Agent context integration test.
 
+#[path = "support/courtroom.rs"]
+mod courtroom_support;
 mod support;
 
+use courtroom_support::ingest_courtroom;
 use serde_json::json;
-use support::{ingest_courtroom, TestResult, TestWorkspace};
+use support::{TestResult, TestWorkspace};
 
 #[test]
 fn agent_context_contains_current_and_stale_claims() -> TestResult {
@@ -11,7 +14,7 @@ fn agent_context_contains_current_and_stale_claims() -> TestResult {
     ingest_courtroom(&mut workspace)?;
     let context = workspace.invoke(
         "texo.context.agent",
-        &json!({"subject": null, "include_stale": true}),
+        &json!({"subject": null, "include_stale": true, "allow_unsettled": true}),
     )?;
     assert_eq!(context["workspace_id"], "demo");
     assert!(context["claims"]
@@ -37,7 +40,7 @@ fn snapshot_token_keeps_multi_call_reads_on_one_historical_frontier() -> TestRes
     )?;
     let first = workspace.invoke(
         "texo.context.agent",
-        &json!({"subject": null, "include_stale": true}),
+        &json!({"subject": null, "include_stale": true, "allow_unsettled": true}),
     )?;
     let token = first["snapshot"]["token"]
         .as_str()
@@ -65,12 +68,13 @@ fn snapshot_token_keeps_multi_call_reads_on_one_historical_frontier() -> TestRes
         &json!({
             "subject": null,
             "include_stale": true,
-            "snapshot": token
+            "snapshot": token,
+            "allow_unsettled": true
         }),
     )?;
     let latest = workspace.invoke(
         "texo.context.agent",
-        &json!({"subject": null, "include_stale": true}),
+        &json!({"subject": null, "include_stale": true, "allow_unsettled": true}),
     )?;
 
     assert_eq!(historical["replayed_through_sequence"], first_frontier);

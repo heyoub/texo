@@ -1,21 +1,20 @@
 //! Clap-driven CLI surface.
 
-use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, Subcommand};
-use serde_json::{json, Value};
-
 use crate::config::TexoRootConfig;
 use crate::error::TexoError;
 use crate::host::TexoHost;
 use crate::install::ClientTarget;
+use clap::{Args, Parser, Subcommand};
 
 /// CLI render helpers.
 pub mod render;
+
+mod dispatch;
 
 #[derive(Parser)]
 #[command(name = "texo", about = "Agent-ready claim memory in one local binary")]
@@ -86,17 +85,17 @@ enum Command {
         out: Option<PathBuf>,
         #[arg(long)]
         json: bool,
-        /// Refuse context while semantic settlement remains incomplete.
+        /// Permit context before semantic settlement completes.
         #[arg(long)]
-        strict_settlement: bool,
+        allow_unsettled: bool,
     },
     /// Compile human-readable artifacts.
     Compile {
         #[arg(long, default_value = "public")]
         out: PathBuf,
-        /// Refuse compilation while semantic settlement remains incomplete.
+        /// Permit artifact compilation before semantic settlement completes.
         #[arg(long)]
-        strict_settlement: bool,
+        allow_unsettled: bool,
     },
     /// Semantic supersession + conflict pass (needs `TEXO_LLM_API_KEY`).
     Relate {
@@ -105,6 +104,15 @@ enum Command {
         /// Refuse derived authority while any required pair is unresolved.
         #[arg(long)]
         strict: bool,
+        /// Hard ceiling for previously-unsettled candidate pairs in this pass.
+        #[arg(long)]
+        pair_budget: Option<usize>,
+        /// Resume candidate enumeration after this durable cursor.
+        #[arg(long = "pair-cursor")]
+        candidate_cursor: Option<u64>,
+        /// Evict and freshly judge one settled pair; first judgment remains authoritative.
+        #[arg(long, num_args = 2, value_names = ["OLDER_CLAIM", "NEWER_CLAIM"])]
+        rejudge_pair: Option<Vec<String>>,
     },
     /// Report possible conflicts.
     Conflicts {
@@ -160,26 +168,7 @@ enum Command {
     /// Run MCP stdio server.
     Mcp,
     /// Run the memory-agent HTTP server.
-    Serve {
-        /// Listen address.
-        #[arg(long)]
-        addr: Option<String>,
-        /// Workspace root.
-        #[arg(long)]
-        root: Option<PathBuf>,
-        /// Workspace id.
-        #[arg(long)]
-        workspace: Option<String>,
-        /// Physical journal id.
-        #[arg(long)]
-        journal: Option<String>,
-        /// Optional private-network canonical replica-source listener address.
-        #[arg(long)]
-        replica_addr: Option<String>,
-        /// Environment variable containing the replica MAC secret.
-        #[arg(long, default_value = "TEXO_REPLICA_TOKEN")]
-        replica_token_env: String,
-    },
+    Serve(ServeOptions),
     /// Extract claims from one path.
     Extract { path: PathBuf },
     /// Session utilities.
@@ -350,13 +339,43 @@ enum ReplicaCmd {
     },
 }
 
+#[derive(Args)]
 struct ServeOptions {
+    /// Listen address.
+    #[arg(long)]
     addr: Option<String>,
+    /// Workspace root.
+    #[arg(long)]
     root: Option<PathBuf>,
+    /// Workspace id.
+    #[arg(long)]
     workspace: Option<String>,
+    /// Physical journal id.
+    #[arg(long)]
     journal: Option<String>,
+    /// Optional private-network canonical replica-source listener address.
+    #[arg(long)]
     replica_addr: Option<String>,
+    /// Environment variable containing the replica MAC secret.
+    #[arg(long, default_value = "TEXO_REPLICA_TOKEN")]
     replica_token_env: String,
+}
+
+impl ServeOptions {
+    #[must_use]
+    fn with_default_journal(mut self, default_journal: Option<&str>) -> Self {
+        if self.journal.is_none() {
+            self.journal = default_journal.map(str::to_string);
+        }
+        self
+    }
+}
+
+struct PreparedServe {
+    listener: TcpListener,
+    config: crate::surfaces::http::server::ServerConfig,
+    shutdown: crate::surfaces::http::server::ShutdownHandle,
+    replica_thread: Option<std::thread::JoinHandle<Result<netbat::TcpServeStats, TexoError>>>,
 }
 
 /// Run the CLI and return the requested process exit code.
@@ -369,588 +388,25 @@ pub fn run() -> Result<ExitCode, TexoError> {
     dispatch(cli)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI dispatch table mirrors the command surface during rebuild"
-)]
 fn dispatch(cli: Cli) -> Result<ExitCode, TexoError> {
-    match cli.command {
-        Command::Init { workspace } => {
-            let mut host =
-                TexoHost::open_for_init(cli.root.clone(), workspace.clone(), observed_at_ms())?;
-            let output =
-                host.invoke_json("texo.workspace.init", &json!({ "workspace_id": workspace }))?;
-            render::init(&cli.root, &output);
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Ingest {
-            path,
-            dry_run,
-            strict,
-            json,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json(
-                "texo.ingest.run",
-                &json!({
-                    "path": path,
-                    "dry_run": dry_run,
-                    "strict": strict,
-                    "observed_at_ms": observed_at_ms()
-                }),
-            )?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::ingest(&output);
-            }
-            Ok(
-                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
-                    ExitCode::from(2)
-                } else {
-                    ExitCode::SUCCESS
-                },
-            )
-        }
-        Command::Claims { subject, json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json("texo.claims.list", &json!({"subject": subject}))?;
-            if json {
-                let claims = output
-                    .get("claims")
-                    .cloned()
-                    .unwrap_or(Value::Array(Vec::new()));
-                render::json(&claims)?;
-            } else {
-                render::claims(&output);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Supersede {
-            old,
-            new,
-            reason,
-            decided_by,
-            json,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json(
-                "texo.claim.supersede",
-                &json!({
-                    "old": old,
-                    "new": new,
-                    "reason": reason,
-                    "decided_by": decided_by,
-                    "observed_at_ms": observed_at_ms()
-                }),
-            )?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::supersede(&output);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::CheckStaleness { path, json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json("texo.staleness.check", &json!({"path": path}))?;
-            let has_findings = output
-                .get("diagnostics")
-                .and_then(Value::as_array)
-                .is_some_and(|diagnostics| !diagnostics.is_empty());
-            if json {
-                render::json(&output)?;
-            } else {
-                render::staleness(&output);
-            }
-            Ok(if has_findings {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
-        }
-        Command::AgentContext {
-            subject,
-            out,
-            json,
-            strict_settlement,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json(
-                "texo.context.agent",
-                &json!({
-                    "subject": subject,
-                    "include_stale": true,
-                    "strict_settlement": strict_settlement
-                }),
-            )?;
-            let rendered = serde_json::to_string_pretty(&output)?;
-            if let Some(path) = out {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&path, &rendered)?;
-                if json {
-                    render::json(&output)?;
-                }
-            } else {
-                let _ = json;
-                render::json(&output)?;
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Compile {
-            out,
-            strict_settlement,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let out_for_input = out.clone();
-            let output = host.invoke_json(
-                "texo.compile.run",
-                &json!({
-                    "out_dir": out_for_input,
-                    "observed_at_ms": observed_at_ms(),
-                    "strict_settlement": strict_settlement
-                }),
-            )?;
-            render::compile(&out, &output);
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Conflicts { json, commit } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            if commit {
-                let output = host.invoke_json(
-                    "texo.conflicts.commit",
-                    &json!({"observed_at_ms": observed_at_ms()}),
-                )?;
-                if json {
-                    render::json(&output)?;
-                } else {
-                    render::conflicts_committed(&output);
-                }
-            } else {
-                let output = host.invoke_json("texo.conflicts.list", &json!({}))?;
-                if json {
-                    render::json(&output)?;
-                } else {
-                    render::conflicts(&output);
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Verify { json } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json("texo.verify.run", &json!({}))?;
-            let failed = ["projection_ok", "journal_ok", "transitions_ok"]
-                .iter()
-                .any(|key| output.get(*key).and_then(Value::as_bool) == Some(false));
-            if json {
-                render::json(&output)?;
-            } else if failed {
-                return Err(TexoError::Verify {
-                    failures: output
-                        .get("errors")
-                        .and_then(Value::as_array)
-                        .map(|errors| {
-                            errors
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_owned)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default(),
-                });
-            } else {
-                render::verify(&output);
-            }
-            Ok(if failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
-        }
-        Command::Stats { json: _ } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json("texo.stats.read", &json!({}))?;
-            render::json(&output)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Index {
-            scip,
-            max_files,
-            max_file_bytes,
-            max_total_bytes,
-            json: _,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let observed_at_ms = observed_at_ms();
-            let source = host.invoke_json(
-                "texo.knowledge.index",
-                &json!({
-                    "observed_at_ms": observed_at_ms,
-                    "max_files": max_files,
-                    "max_file_bytes": max_file_bytes,
-                    "max_total_bytes": max_total_bytes
-                }),
-            )?;
-            let code = host.invoke_json(
-                "texo.code.index.build",
-                &json!({
-                    "snapshot_id": source.get("snapshot_id").cloned(),
-                    "scip_path": scip,
-                    "observed_at_ms": observed_at_ms
-                }),
-            )?;
-            let output = json!({
-                "schema": "texo.index.v2",
-                "source": source,
-                "code": code
-            });
-            // Incomplete capture must not read as success: mirror the partial exit
-            // used by the other arms when either phase reports truncated coverage.
-            let truncated = ["source", "code"].iter().any(|phase| {
-                output
-                    .get(*phase)
-                    .and_then(|value| value.get("coverage"))
-                    .and_then(|coverage| coverage.get("truncated"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            });
-            render::json(&output)?;
-            if truncated {
-                Ok(ExitCode::from(2))
-            } else {
-                Ok(ExitCode::SUCCESS)
-            }
-        }
-        Command::Reconcile {
-            max_per_claim,
-            max_candidates,
-            min_score_ppm,
-            json,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json(
-                "texo.knowledge.reconcile",
-                &json!({
-                    "observed_at_ms": observed_at_ms(),
-                    "max_per_claim": max_per_claim,
-                    "max_candidates": max_candidates,
-                    "min_score_ppm": min_score_ppm,
-                    "budget_secs": null,
-                    "concurrency": null
-                }),
-            )?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::reconcile(&output);
-            }
-            Ok(
-                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
-                    ExitCode::from(2)
-                } else {
-                    ExitCode::SUCCESS
-                },
-            )
-        }
-        Command::Host {
-            cmd: HostCmd::Fingerprint,
-        } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json("texo.host.fingerprint", &json!({}))?;
-            render::json(&output)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Relate { json, strict } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let output = host.invoke_json(
-                "texo.relate.run",
-                &json!({"observed_at_ms": observed_at_ms(), "strict": strict}),
-            )?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::relate(&output);
-            }
-            Ok(
-                if output.get("outcome").and_then(Value::as_str) == Some("partial") {
-                    ExitCode::from(2)
-                } else {
-                    ExitCode::SUCCESS
-                },
-            )
-        }
-        Command::Mcp => {
-            refresh_selected_reader(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            crate::surfaces::mcp_stdio::run(
-                &cli.root,
-                cli.workspace.as_deref(),
-                cli.journal.as_deref(),
-            )?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Serve {
-            addr,
-            root,
-            workspace,
-            journal,
-            replica_addr,
-            replica_token_env,
-        } => serve(
-            ServeOptions {
-                addr,
-                root,
-                workspace,
-                journal: journal.or_else(|| cli.journal.clone()),
-                replica_addr,
-                replica_token_env,
-            },
-            &cli.root,
-            cli.workspace.as_deref(),
-        ),
-        Command::Extract { path } => Ok(extract(&path)),
-        Command::Session { cmd } => match cmd {
-            SessionCmd::Export { session_id } => {
-                let mut host =
-                    open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-                let output =
-                    host.invoke_json("texo.session.export", &json!({"session_id": session_id}))?;
-                render::session_markdown(
-                    output
-                        .get("markdown")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                );
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Command::Ops { cmd } => {
-            let inventory = crate::agent_catalog::operation_inventory();
-            match cmd {
-                OpsCmd::List { json } => {
-                    if json {
-                        render::json(&inventory)?;
-                    } else {
-                        render::operations(&inventory);
-                    }
-                }
-                OpsCmd::Describe { name, json } => {
-                    let operation = inventory["operations"]
-                        .as_array()
-                        .and_then(|operations| {
-                            operations
-                                .iter()
-                                .find(|operation| operation["name"] == name)
-                        })
-                        .cloned()
-                        .ok_or_else(|| TexoError::OpInput {
-                            op: "texo ops describe".to_string(),
-                            detail: format!("unknown operation `{name}`"),
-                        })?;
-                    if json {
-                        render::json(&operation)?;
-                    } else {
-                        render::operations(&json!({"operations": [operation]}));
-                    }
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Install {
-            client,
-            dry_run,
-            json,
-        } => {
-            let workspace = cli.workspace.as_deref().unwrap_or("demo");
-            let report = crate::install::install_for_journal(
-                &cli.root,
-                workspace,
-                cli.journal.as_deref(),
-                &client,
-                dry_run,
-            )?;
-            let output = serde_json::to_value(report)?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::installation(&output);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Uninstall {
-            client,
-            dry_run,
-            json,
-        } => {
-            let report = crate::install::uninstall(&cli.root, &client, dry_run)?;
-            let output = serde_json::to_value(report)?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::installation(&output);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Hook { cmd } => {
-            let mut host = open_host(&cli.root, cli.workspace.as_deref(), cli.journal.as_deref())?;
-            let (event, data, json) = match cmd {
-                HookCmd::SessionStart { json } => (
-                    "session_start",
-                    host.invoke_json(
-                        "texo.context.agent",
-                        &json!({
-                            "subject": null,
-                            "include_stale": true,
-                            "strict_settlement": false
-                        }),
-                    )?,
-                    json,
-                ),
-                HookCmd::FilesChanged { json } => {
-                    let mut bytes = Vec::new();
-                    std::io::stdin()
-                        .take((crate::hooks::MAX_INPUT_BYTES + 1) as u64)
-                        .read_to_end(&mut bytes)?;
-                    let input = crate::hooks::parse_files_changed(&bytes)?;
-                    let mut reports = Vec::with_capacity(input.paths.len());
-                    for path in input.paths {
-                        reports.push(
-                            host.invoke_json("texo.staleness.check", &json!({"path": path}))?,
-                        );
-                    }
-                    ("files_changed", json!({"reports": reports}), json)
-                }
-                HookCmd::PreCommit { json } => (
-                    "pre_commit",
-                    host.invoke_json("texo.verify.run", &json!({}))?,
-                    json,
-                ),
-            };
-            let output = json!({
-                "schema": "texo.hook-result.v1",
-                "event": event,
-                "advisory": true,
-                "data": data
-            });
-            let _ = json;
-            render::json(&output)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Doctor { deep, fix, json } => {
-            let report = crate::doctor::diagnose(&cli.root, cli.workspace.as_deref(), deep, fix);
-            let broken = report.status == crate::doctor::DoctorStatus::Broken;
-            let output = serde_json::to_value(report)?;
-            if json {
-                render::json(&output)?;
-            } else {
-                render::doctor(&output);
-            }
-            Ok(if broken {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
-        }
-        Command::Backup { cmd } => match cmd {
-            BackupCmd::Create { dest, json } => {
-                let config_path = cli.root.join(".texo/config.toml");
-                let root_config =
-                    TexoRootConfig::load(&config_path).map_err(|error| TexoError::Config {
-                        detail: error.to_string(),
-                        source: Some(Box::new(error)),
-                    })?;
-                let workspace = root_config
-                    .resolve(cli.workspace.as_deref())
-                    .map_err(|error| TexoError::Config {
-                        detail: error.to_string(),
-                        source: Some(Box::new(error)),
-                    })?;
-                let store = crate::host::open_workspace_store(&cli.root, &workspace.workspace_id)?;
-                let report = crate::backup::create(
-                    &cli.root,
-                    &workspace,
-                    store.as_ref(),
-                    &dest,
-                    observed_at_ms(),
-                )?;
-                let output = serde_json::to_value(report)?;
-                if json {
-                    render::json(&output)?;
-                } else {
-                    render::backup(&output);
-                }
-                Ok(ExitCode::SUCCESS)
-            }
-            BackupCmd::Verify {
-                dest,
-                expect_manifest_hash,
-                json,
-            } => {
-                let report = crate::backup::verify_with_expected_manifest_hash(
-                    &dest,
-                    expect_manifest_hash.as_deref(),
-                )?;
-                let verified = report.verified;
-                let output = serde_json::to_value(report)?;
-                if json {
-                    render::json(&output)?;
-                } else {
-                    render::backup(&output);
-                }
-                Ok(if verified {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                })
-            }
-            BackupCmd::Restore {
-                source,
-                expect_manifest_hash,
-                json,
-            } => {
-                let report =
-                    crate::backup::restore(&source, &cli.root, expect_manifest_hash.as_deref())?;
-                let output = serde_json::to_value(report)?;
-                if json {
-                    render::json(&output)?;
-                } else {
-                    render::backup(&output);
-                }
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Command::Replica { cmd } => {
-            let report = match cmd {
-                ReplicaCmd::Bootstrap { replica, json: _ } => {
-                    crate::replication::bootstrap(&cli.root, cli.workspace.as_deref(), &replica)?
-                }
-                ReplicaCmd::Follow {
-                    replica,
-                    json: _,
-                    watch: false,
-                    interval_ms: _,
-                } => {
-                    crate::replication::follow_once(&cli.root, cli.workspace.as_deref(), &replica)?
-                }
-                ReplicaCmd::Follow {
-                    replica,
-                    json: _,
-                    watch: true,
-                    interval_ms,
-                } => {
-                    return follow_replica_until_shutdown(
-                        &cli.root,
-                        cli.workspace.as_deref(),
-                        &replica,
-                        interval_ms,
-                    );
-                }
-            };
-            render::json(&serde_json::to_value(report)?)?;
-            Ok(ExitCode::SUCCESS)
-        }
-    }
+    let Cli {
+        root,
+        workspace,
+        journal,
+        command,
+    } = cli;
+    let context = DispatchContext {
+        root,
+        workspace,
+        journal,
+    };
+    dispatch::route(&context, command)
+}
+
+struct DispatchContext {
+    root: PathBuf,
+    workspace: Option<String>,
+    journal: Option<String>,
 }
 
 fn follow_replica_until_shutdown(
@@ -984,6 +440,21 @@ fn serve(
     global_root: &Path,
     global_workspace: Option<&str>,
 ) -> Result<ExitCode, TexoError> {
+    let PreparedServe {
+        listener,
+        config,
+        shutdown,
+        replica_thread,
+    } = prepare_serve(options, global_root, global_workspace)?;
+    let replica_stats = run_serve(&listener, config, &shutdown, replica_thread)?;
+    Ok(report_serve(replica_stats))
+}
+
+fn prepare_serve(
+    options: ServeOptions,
+    global_root: &Path,
+    global_workspace: Option<&str>,
+) -> Result<PreparedServe, TexoError> {
     let addr = options
         .addr
         .or_else(|| std::env::var("TEXO_AGENT_ADDR").ok())
@@ -1006,7 +477,7 @@ fn serve(
         .unwrap_or_else(|| "memory".to_string());
     let decision = crate::surfaces::bootstrap::resolve_bootstrap_from_env(&root)?;
     if let Some(warning) = &decision.warning {
-        render::serve_warning(warning);
+        render::serve_warning(warning)?;
     }
     crate::surfaces::bootstrap::ensure_workspace(&root, &workspace, &decision)?;
     let root_config = crate::config::TexoRootConfig::load(&root.join(".texo/config.toml"))
@@ -1035,7 +506,7 @@ fn serve(
         which: crate::error::SurfaceKind::Http,
         detail: error.to_string(),
     })?;
-    render::serve_listening(local);
+    render::serve_listening(local)?;
     let store =
         crate::host::open_workspace_journal_store(&root, &workspace, selected_journal.id.as_str())?;
     let gateway = root_config.gateway;
@@ -1051,7 +522,7 @@ fn serve(
         journal_id: selected_journal.id.to_string(),
         store: Some(store.clone()),
         projection_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        chat_enabled: crate::host::grants_model_capability(Some(chat_role.api_key)),
+        chat_enabled: crate::host::grants_model_capability(Some(chat_role.api_key.as_str())),
     };
     let config = crate::surfaces::http::server::ServerConfig::new(local.to_string(), state);
     let shutdown = crate::surfaces::http::server::ShutdownHandle::new();
@@ -1064,7 +535,21 @@ fn serve(
         &served_workspace,
         &shutdown,
     )?;
-    let http_result = crate::surfaces::http::server::serve_listener(listener, config, &shutdown);
+    Ok(PreparedServe {
+        listener,
+        config,
+        shutdown,
+        replica_thread,
+    })
+}
+
+fn run_serve(
+    listener: &TcpListener,
+    config: crate::surfaces::http::server::ServerConfig,
+    shutdown: &crate::surfaces::http::server::ShutdownHandle,
+    replica_thread: Option<std::thread::JoinHandle<Result<netbat::TcpServeStats, TexoError>>>,
+) -> Result<Option<netbat::TcpServeStats>, TexoError> {
+    let http_result = crate::surfaces::http::server::serve_listener(listener, config, shutdown);
     shutdown.shutdown();
     let replica_result = replica_thread
         .map(|thread| {
@@ -1075,7 +560,11 @@ fn serve(
         })
         .transpose()?;
     let _http_stats = http_result?;
-    if let Some(stats) = replica_result {
+    Ok(replica_result)
+}
+
+fn report_serve(replica_stats: Option<netbat::TcpServeStats>) -> ExitCode {
+    if let Some(stats) = replica_stats {
         tracing::debug!(
             accepted = stats.accepted_connections,
             served = stats.served_requests,
@@ -1083,7 +572,7 @@ fn serve(
             "replica listener stopped"
         );
     }
-    Ok(ExitCode::SUCCESS)
+    ExitCode::SUCCESS
 }
 
 fn refresh_selected_reader(
@@ -1166,7 +655,7 @@ fn extract(path: &Path) -> ExitCode {
     match extract_impl(path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            render::extract_error(error.as_ref());
+            let _rendered = render::extract_error(error.as_ref());
             ExitCode::FAILURE
         }
     }

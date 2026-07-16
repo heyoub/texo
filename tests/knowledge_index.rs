@@ -1,5 +1,8 @@
 //! Journaled Git snapshot and claim-evidence integration.
 
+#[path = "support/model.rs"]
+mod model_support;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -14,6 +17,8 @@ use texo::events::payloads::{
     SourceSnapshotRecordedV1, SourceSnapshotRelationV1,
 };
 use texo::host::TexoHost;
+
+use model_support::write_model_capable_config;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -68,6 +73,7 @@ fn initialized_repository() -> TestResult<(TempDir, TexoHost)> {
     git(root.path(), &["add", "docs/decision.md", "src/lib.rs"])?;
     git(root.path(), &["commit", "-qm", "initial"])?;
 
+    write_model_capable_config(root.path())?;
     let mut host = TexoHost::open(root.path(), "demo", 1_700_000_000_000)?;
     let _ = host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
     let _ = host.invoke_json(
@@ -103,6 +109,133 @@ fn count_event_kind(host: &TexoHost, kind: EventKind) -> usize {
         .into_iter()
         .filter(|entry| entry.event_kind() == kind)
         .count()
+}
+
+struct ReplacementScenario {
+    root: TempDir,
+    host: TexoHost,
+    superseded_before: usize,
+}
+
+fn concurrent_replacement_scenario() -> TestResult<ReplacementScenario> {
+    let root = TempDir::new()?;
+    git(root.path(), &["init", "-q"])?;
+    git(root.path(), &["config", "user.name", "Texo Test"])?;
+    git(
+        root.path(),
+        &["config", "user.email", "texo@example.invalid"],
+    )?;
+    std::fs::write(root.path().join("README.md"), "base\n")?;
+    git(root.path(), &["add", "README.md"])?;
+    git(root.path(), &["commit", "-qm", "base"])?;
+    let base = git_stdout(root.path(), &["branch", "--show-current"])?;
+
+    git(root.path(), &["checkout", "-qb", "left"])?;
+    std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::write(
+        root.path().join("docs/decision.md"),
+        "Decision: the deploy target is Frankfurt.\n",
+    )?;
+    git(root.path(), &["add", "docs/decision.md"])?;
+    git(root.path(), &["commit", "-qm", "Frankfurt target"])?;
+    let mut host = TexoHost::open(root.path(), "demo", 1_700_000_100_000)?;
+    host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
+    host.invoke_json(
+        "texo.ingest.run",
+        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_001_u64}),
+    )?;
+    host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_002_u64}),
+    )?;
+
+    git(root.path(), &["checkout", "-q", &base])?;
+    git(root.path(), &["checkout", "-qb", "right"])?;
+    std::fs::create_dir_all(root.path().join("docs"))?;
+    std::fs::write(
+        root.path().join("docs/decision.md"),
+        "Decision: the deploy target now is Singapore.\n",
+    )?;
+    git(root.path(), &["add", "docs/decision.md"])?;
+    git(root.path(), &["commit", "-qm", "Singapore target"])?;
+    let superseded_before = count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND);
+    Ok(ReplacementScenario {
+        root,
+        host,
+        superseded_before,
+    })
+}
+
+fn assert_unknown_replacement_is_held(scenario: &mut ReplacementScenario) -> TestResult {
+    let ingest = scenario.host.invoke_json(
+        "texo.ingest.run",
+        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_003_u64}),
+    )?;
+    assert_eq!(ingest["claims_superseded"], 0);
+    assert_eq!(ingest["supersessions_held"], 1);
+    assert_eq!(
+        ingest["held_supersessions"][0]["reason"],
+        "temporal_unknown"
+    );
+    assert_eq!(
+        count_event_kind(&scenario.host, <ClaimSupersededV2 as EventPayload>::KIND),
+        scenario.superseded_before
+    );
+    Ok(())
+}
+
+fn assert_concurrent_replacement_is_held(scenario: &mut ReplacementScenario) -> TestResult {
+    let concurrent = scenario.host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_004_u64}),
+    )?;
+    assert_eq!(concurrent["supersessions_applied"], 0);
+    assert_eq!(concurrent["supersessions_held"], 1);
+    assert_eq!(
+        concurrent["held_supersessions"][0]["reason"],
+        "temporal_concurrent"
+    );
+    assert_eq!(
+        count_event_kind(&scenario.host, <ClaimSupersededV2 as EventPayload>::KIND),
+        scenario.superseded_before
+    );
+    Ok(())
+}
+
+fn assert_descendant_replacement_resumes(scenario: &mut ReplacementScenario) -> TestResult {
+    git(scenario.root.path(), &["checkout", "-q", "left"])?;
+    std::fs::write(
+        scenario.root.path().join("docs/decision.md"),
+        "Decision: the deploy target now is Singapore.\n",
+    )?;
+    git(scenario.root.path(), &["add", "docs/decision.md"])?;
+    git(
+        scenario.root.path(),
+        &["commit", "-qm", "move target after Frankfurt"],
+    )?;
+    let descendant = scenario.host.invoke_json(
+        "texo.knowledge.index",
+        &json!({"observed_at_ms":1_700_000_100_005_u64}),
+    )?;
+    assert_eq!(descendant["supersessions_applied"], 1);
+    assert_eq!(descendant["supersessions_held"], 0);
+    assert_eq!(
+        count_event_kind(&scenario.host, <ClaimSupersededV2 as EventPayload>::KIND),
+        scenario.superseded_before + 1
+    );
+    let claims = scenario
+        .host
+        .invoke_json("texo.claims.list", &json!({"subject":null,"snapshot":null}))?;
+    assert_eq!(
+        claims["claims"]
+            .as_array()
+            .ok_or("claims")?
+            .iter()
+            .filter(|claim| claim["status"] == "superseded")
+            .count(),
+        1
+    );
+    Ok(())
 }
 
 #[test]
@@ -172,108 +305,10 @@ fn changed_worktree_never_links_old_claim_as_supporting_evidence() -> TestResult
 
 #[test]
 fn explicit_replacement_waits_for_git_authority_then_resumes_without_model() -> TestResult {
-    let root = TempDir::new()?;
-    git(root.path(), &["init", "-q"])?;
-    git(root.path(), &["config", "user.name", "Texo Test"])?;
-    git(
-        root.path(),
-        &["config", "user.email", "texo@example.invalid"],
-    )?;
-    std::fs::write(root.path().join("README.md"), "base\n")?;
-    git(root.path(), &["add", "README.md"])?;
-    git(root.path(), &["commit", "-qm", "base"])?;
-    let base = git_stdout(root.path(), &["branch", "--show-current"])?;
-
-    git(root.path(), &["checkout", "-qb", "left"])?;
-    std::fs::create_dir_all(root.path().join("docs"))?;
-    std::fs::write(
-        root.path().join("docs/decision.md"),
-        "Decision: the deploy target is Frankfurt.\n",
-    )?;
-    git(root.path(), &["add", "docs/decision.md"])?;
-    git(root.path(), &["commit", "-qm", "Frankfurt target"])?;
-    let mut host = TexoHost::open(root.path(), "demo", 1_700_000_100_000)?;
-    host.invoke_json("texo.workspace.init", &json!({"workspace_id": "demo"}))?;
-    host.invoke_json(
-        "texo.ingest.run",
-        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_001_u64}),
-    )?;
-    host.invoke_json(
-        "texo.knowledge.index",
-        &json!({"observed_at_ms":1_700_000_100_002_u64}),
-    )?;
-
-    git(root.path(), &["checkout", "-q", &base])?;
-    git(root.path(), &["checkout", "-qb", "right"])?;
-    std::fs::create_dir_all(root.path().join("docs"))?;
-    std::fs::write(
-        root.path().join("docs/decision.md"),
-        "Decision: the deploy target now is Singapore.\n",
-    )?;
-    git(root.path(), &["add", "docs/decision.md"])?;
-    git(root.path(), &["commit", "-qm", "Singapore target"])?;
-    let before = count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND);
-    let ingest = host.invoke_json(
-        "texo.ingest.run",
-        &json!({"path":"docs/decision.md","dry_run":false,"strict":false,"observed_at_ms":1_700_000_100_003_u64}),
-    )?;
-    assert_eq!(ingest["claims_superseded"], 0);
-    assert_eq!(ingest["supersessions_held"], 1);
-    assert_eq!(
-        ingest["held_supersessions"][0]["reason"],
-        "temporal_unknown"
-    );
-    assert_eq!(
-        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
-        before
-    );
-
-    let concurrent = host.invoke_json(
-        "texo.knowledge.index",
-        &json!({"observed_at_ms":1_700_000_100_004_u64}),
-    )?;
-    assert_eq!(concurrent["supersessions_applied"], 0);
-    assert_eq!(concurrent["supersessions_held"], 1);
-    assert_eq!(
-        concurrent["held_supersessions"][0]["reason"],
-        "temporal_concurrent"
-    );
-    assert_eq!(
-        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
-        before
-    );
-
-    git(root.path(), &["checkout", "-q", "left"])?;
-    std::fs::write(
-        root.path().join("docs/decision.md"),
-        "Decision: the deploy target now is Singapore.\n",
-    )?;
-    git(root.path(), &["add", "docs/decision.md"])?;
-    git(
-        root.path(),
-        &["commit", "-qm", "move target after Frankfurt"],
-    )?;
-    let descendant = host.invoke_json(
-        "texo.knowledge.index",
-        &json!({"observed_at_ms":1_700_000_100_005_u64}),
-    )?;
-    assert_eq!(descendant["supersessions_applied"], 1);
-    assert_eq!(descendant["supersessions_held"], 0);
-    assert_eq!(
-        count_event_kind(&host, <ClaimSupersededV2 as EventPayload>::KIND),
-        before + 1
-    );
-    let claims = host.invoke_json("texo.claims.list", &json!({"subject":null,"snapshot":null}))?;
-    assert_eq!(
-        claims["claims"]
-            .as_array()
-            .ok_or("claims")?
-            .iter()
-            .filter(|claim| claim["status"] == "superseded")
-            .count(),
-        1
-    );
-    Ok(())
+    let mut scenario = concurrent_replacement_scenario()?;
+    assert_unknown_replacement_is_held(&mut scenario)?;
+    assert_concurrent_replacement_is_held(&mut scenario)?;
+    assert_descendant_replacement_resumes(&mut scenario)
 }
 
 #[test]
@@ -293,6 +328,14 @@ fn explain_and_triangulate_join_exact_evidence_at_one_snapshot() -> TestResult {
         "texo.knowledge.index",
         &json!({"observed_at_ms": 1_700_000_000_002_u64}),
     )?;
+    let related = host.invoke_json(
+        "texo.relate.run",
+        &json!({
+            "observed_at_ms": 1_700_000_000_003_u64,
+            "max_candidate_pairs": 1
+        }),
+    )?;
+    assert_eq!(related["outcome"], "complete");
     let explain = host.invoke_json(
         "texo.claim.explain",
         &json!({"claim_id": claim_id, "snapshot": null}),

@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 
-use batpak::event::EventPayload;
 use hostbat::{
     DiagnosticRustType, GoldenVector, GuardDescriptor, HostModule, HostModuleBuilder,
     SchemaDescriptor, SchemaId, SchemaRole, SchemaVersion,
@@ -10,13 +9,7 @@ use hostbat::{
 use syncbat::{AdmissionDecision, OperationDescriptor};
 
 use crate::error::TexoError;
-use crate::events::payloads::{
-    ClaimEvidenceLinkedV1, ClaimRecordedV2, ClaimSupersededV2, CodeIndexRecordedV1,
-    ConflictOpenedV2, ConflictResolvedV2, EvidenceOccurrenceRecordedV1,
-    EvidenceReconciliationAcceptedV1, OnboardingCompiledV2, RelationDeferredV1, RelationJudgedV1,
-    ReplicaBatchMaterializedV1, SessionTurnV1, SourceObservedV2, SourceSnapshotRecordedV1,
-    SourceSnapshotRelationV1, WorkspaceInitializedV2,
-};
+use crate::events::inventory::EVENT_SCHEMAS;
 use crate::topology::JournalRole;
 
 /// Stable module id folded into the `hostbat` composition fingerprint.
@@ -84,56 +77,18 @@ fn declare_operation_schemas(
 }
 
 fn declare_event_payloads(mut builder: HostModuleBuilder) -> Result<HostModuleBuilder, TexoError> {
-    macro_rules! bind {
-        ($payload:ty, $schema:literal) => {{
-            builder = builder
-                .schema(schema_descriptor(
-                    $schema,
-                    SchemaRole::EventPayload,
-                    Some(std::any::type_name::<$payload>()),
-                )?)
-                .map_err(host_error)?;
-            builder = builder
-                .bind_event_payload(<$payload as EventPayload>::KIND, $schema)
-                .map_err(host_error)?;
-        }};
+    for event in EVENT_SCHEMAS {
+        builder = builder
+            .schema(schema_descriptor(
+                event.schema_ref,
+                SchemaRole::EventPayload,
+                Some(event.rust_type()),
+            )?)
+            .map_err(host_error)?;
+        builder = builder
+            .bind_event_payload(event.kind, event.schema_ref)
+            .map_err(host_error)?;
     }
-
-    bind!(ClaimRecordedV2, "texo.event.claim-recorded.v2");
-    bind!(ClaimSupersededV2, "texo.event.claim-superseded.v2");
-    bind!(ConflictOpenedV2, "texo.event.conflict-opened.v2");
-    bind!(ConflictResolvedV2, "texo.event.conflict-resolved.v2");
-    bind!(SourceObservedV2, "texo.event.source-observed.v2");
-    bind!(OnboardingCompiledV2, "texo.event.onboarding-compiled.v2");
-    bind!(
-        WorkspaceInitializedV2,
-        "texo.event.workspace-initialized.v2"
-    );
-    bind!(RelationJudgedV1, "texo.event.relation-judged.v1");
-    bind!(RelationDeferredV1, "texo.event.relation-deferred.v1");
-    bind!(
-        SourceSnapshotRecordedV1,
-        "texo.event.source-snapshot-recorded.v1"
-    );
-    bind!(
-        EvidenceOccurrenceRecordedV1,
-        "texo.event.evidence-occurrence-recorded.v1"
-    );
-    bind!(
-        EvidenceReconciliationAcceptedV1,
-        "texo.event.evidence-reconciliation-accepted.v1"
-    );
-    bind!(ClaimEvidenceLinkedV1, "texo.event.claim-evidence-linked.v1");
-    bind!(CodeIndexRecordedV1, "texo.event.code-index-recorded.v1");
-    bind!(
-        SourceSnapshotRelationV1,
-        "texo.event.source-snapshot-relation.v1"
-    );
-    bind!(SessionTurnV1, "texo.event.session-turn.v1");
-    bind!(
-        ReplicaBatchMaterializedV1,
-        "texo.event.replica-batch-materialized.v1"
-    );
     Ok(builder)
 }
 
@@ -175,7 +130,10 @@ fn host_error(error: impl std::fmt::Display) -> TexoError {
 
 #[cfg(test)]
 mod tests {
+    use batpak::event::EventPayload;
+
     use super::*;
+    use crate::events::payloads::ReplicaBatchMaterializedV1;
 
     #[test]
     fn module_seals_the_complete_catalog_and_event_surface() {
@@ -185,7 +143,10 @@ mod tests {
             module.manifest().operations().count(),
             crate::ops::catalog().len()
         );
-        assert_eq!(module.manifest().event_payload_bindings().count(), 17);
+        assert_eq!(
+            module.manifest().event_payload_bindings().count(),
+            EVENT_SCHEMAS.len()
+        );
     }
 
     #[test]

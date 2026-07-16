@@ -20,6 +20,7 @@ pub enum ClaimStatus {
 
 impl ClaimStatus {
     /// Serialize to the old status string form.
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Current => "current",
@@ -49,6 +50,7 @@ pub enum ConflictStatus {
 
 impl ConflictStatus {
     /// Serialize to the old status string form.
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -65,6 +67,7 @@ impl fmt::Display for ConflictStatus {
 }
 
 /// Derive claim status with Superseded > Conflicting > Current precedence.
+#[must_use]
 pub fn claim_status(card: &ClaimCard, in_open_conflict: bool) -> ClaimStatus {
     if card.phase == 2 {
         ClaimStatus::Superseded

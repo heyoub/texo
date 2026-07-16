@@ -15,6 +15,12 @@ use crate::knowledge::{
 };
 use crate::relate::settlement::{RelationFailureClass, SettledRelation};
 
+mod campaign;
+mod session;
+
+pub use campaign::RelationCampaignCheckpointV1;
+pub use session::SessionTurnV1;
+
 /// A source document observation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, batpak::EventPayload)]
 #[batpak(category = 0xE, type_id = 1, version = 2)]
@@ -165,24 +171,6 @@ pub struct WorkspaceInitializedV2 {
     pub config_digest_hex: String,
     /// Creation wall-clock time in milliseconds.
     pub created_at_ms: u64,
-}
-
-/// One turn in a session transcript.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, batpak::EventPayload)]
-#[batpak(category = 0xE, type_id = 8, version = 1)]
-pub struct SessionTurnV1 {
-    /// Stable session identifier.
-    pub session_id: String,
-    /// Workspace scope identifier.
-    pub workspace_id: String,
-    /// Speaker label, either `user` or `assistant`.
-    pub speaker: String,
-    /// Turn text.
-    pub text: String,
-    /// Monotonic turn number within the session.
-    pub turn_no: u32,
-    /// Observation wall-clock time in milliseconds.
-    pub observed_at_ms: u64,
 }
 
 /// A completed semantic judgment for one logical relation pair.

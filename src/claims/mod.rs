@@ -1,5 +1,6 @@
 //! Claim-domain projections and workspace views.
 
+pub(crate) mod campaign;
 pub mod card;
 pub mod compile_log;
 pub mod conflict;
