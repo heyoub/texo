@@ -4,10 +4,10 @@ One-hop map of where this project calls Alibaba Cloud, for submission review.
 
 ## 1. Qwen models via Model Studio (DashScope OpenAI-compatible mode)
 
-Every model call in the running agent goes through one HTTP client
+Every model call goes through one HTTP client
 ([`src/surfaces/openai.rs`](../src/surfaces/openai.rs)) whose base URL and
 models are configuration, resolved by the AI gateway
-([`src/gateway.rs`](../src/gateway.rs)). The deployed agent points at
+([`src/gateway.rs`](../src/gateway.rs)). The agent's gateway is configured for
 DashScope compatible mode:
 
 ```
@@ -18,7 +18,7 @@ TEXO_LLM_RELATE_MODEL=qwen3.7-max      # semantic judge    (POST /chat/completio
 TEXO_LLM_EMBED_MODEL=text-embedding-v4 # candidate embed   (POST /embeddings)
 ```
 
-See [`deploy/env.example`](../deploy/env.example) for the full deployed
+See [`deploy/env.example`](../deploy/env.example) for the full deploy
 configuration (key redacted).
 
 ## 2. ECS / VPC provisioning (Alibaba Cloud OpenAPI via `aliyun` CLI)
@@ -37,9 +37,10 @@ backend host using these ECS/VPC API operations:
 the instance; [`deploy/texo-agent.service`](../deploy/texo-agent.service)
 runs it under systemd.
 
-## 3. Live evidence
+## 3. Deployment proof
 
-[`scripts/proof-ecs.sh`](../scripts/proof-ecs.sh) is the recorded proof
-pass: `/api/health` on the ECS host, a three-session memory arc (teach →
-supersede → fresh-session recall with receipts), and the redacted host
-environment showing the DashScope endpoint and Qwen model configuration.
+[`scripts/proof-ecs.sh`](../scripts/proof-ecs.sh) is the deployment-proof
+pass to run once the instance is live: `/api/health` on the ECS host, a
+three-session memory arc (teach → supersede → fresh-session recall with
+receipts), and the redacted host environment showing the DashScope endpoint
+and Qwen model configuration.
