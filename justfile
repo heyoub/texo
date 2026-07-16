@@ -112,9 +112,13 @@ demo-helios:
     default_workspace = "helios"
 
     [workspaces.helios]
-    store_path = ".texo/helios-store"
+    primary_journal = "canonical"
     docs_glob = "examples/helios/docs/**/*.md"
     extractor_cmd = "$EXTRACT"
+
+    [workspaces.helios.journals.canonical]
+    role = "canonical"
+    store_path = ".texo/helios-store"
 
     [workspaces.helios.semantics]
     enabled = true
