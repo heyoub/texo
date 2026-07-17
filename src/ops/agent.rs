@@ -280,7 +280,7 @@ fn agent_memory(input: &[u8], cx: &mut syncbat::Ctx<'_>) -> HandlerResult {
     input_schema = "texo.agent.session.end.input.v2",
     output_schema = "texo.agent.session.end.output.v3",
     receipt_kind = "receipt.texo.agent.session.end.v2",
-    appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e009", "evt.e00a"],
+    appends_events = ["evt.e001", "evt.e002", "evt.e003", "evt.e004", "evt.e009", "evt.e00a", "evt.e012"],
     reads_events = ["evt.e008"],
     queries_projections = ["texo.workspace.view.v2"]
 )]
