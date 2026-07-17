@@ -1,5 +1,6 @@
 ---
 import Base from '../layouts/Base.astro';
+import { REEL } from '../lib/replay';
 ---
 
 <Base title="texo — claim-chain memory">
@@ -110,35 +111,58 @@ import Base from '../layouts/Base.astro';
     </figure>
   </section>
 
-  <!-- ═══ ACT II · WATCH A FACT DIE ═════════════════════════════════════ -->
-  <section class="act wrap" id="supersede">
-    <header class="sec-head reveal">
-      <span class="eyebrow">the supersession</span>
-      <h2 class="serif">A fact changed. Here's the receipt.</h2>
-      <p class="sec-head__sub sans">Teach a fact. Contradict it later. The old claim doesn't linger — it's retired on the record, with what replaced it, when, and from which source line.</p>
+  <!-- ═══ ACT II · REPLAY THE FRONTIER (scroll-scrubbed timeline) ═══════ -->
+  <section class="replay" id="replay" data-mode="flow">
+    <header class="replay__intro sec-head reveal">
+      <span class="eyebrow">the replay</span>
+      <h2 class="serif">Replay the frontier.</h2>
+      <p class="sec-head__sub sans">A real session, unspooled. Scroll to move the tape under the playhead — facts land, changed ones are struck and sealed with a receipt as the new truth rises, contradictions open as conflicts. Scroll back and it all reverses: you're scrubbing the record.</p>
     </header>
 
-    <div class="scene" id="scene" data-phase="0">
-      <div class="scene__claim scene__claim--old claim" data-state="current">
-        <p class="claim__text">Alice owns release approval.</p>
-        <p class="claim__meta">meeting_notes.md:3 · <span class="seq">seq 09</span></p>
-        <span class="scene__strike" aria-hidden="true"></span>
-      </div>
-      <div class="scene__seal" aria-hidden="true">
-        <span class="scene__arrow mono">retired&nbsp;by</span>
-        <span class="receipt scene__receipt"><span class="mono">receipt</span> <span class="receipt__addr">42abd965</span> · <span class="seq">seq 15</span></span>
-      </div>
-      <div class="scene__claim scene__claim--new claim" data-state="current">
-        <p class="claim__text">Ben owns release approval now.</p>
-        <p class="claim__meta">meeting_notes.md:5 · <span class="pill" style="--accent: var(--current)">current</span></p>
+    <div class="replay__scroller">
+      <div class="replay__stage">
+        <div class="replay__head" aria-hidden="true"></div>
+        <ol class="replay__tape" aria-label="Replay of the claim journal, seq 3 through 24">
+          {REEL.map((b, i) => (
+            <li class="rbeat" data-type={b.type} data-seq={b.seq} style={`--i:${i}`}>
+              <div class="rbeat__seq mono">seq {String(b.seq).padStart(2, '0')}</div>
+              <div class="rbeat__card">
+                {b.type === 'append' && (
+                  <Fragment>
+                    <p class="rbeat__claim serif">{b.text}</p>
+                    <p class="rbeat__src mono">{b.src}</p>
+                    <span class="rbeat__tag pill" style="--accent: var(--current)">current</span>
+                  </Fragment>
+                )}
+                {b.type === 'supersede' && (
+                  <Fragment>
+                    <p class="rbeat__old serif">{b.retires}<span class="rbeat__strikeline" aria-hidden="true"></span></p>
+                    <div class="rbeat__seal receipt"><span class="mono">retired&nbsp;·&nbsp;receipt</span> <span class="receipt__addr">{b.receipt}</span></div>
+                    <p class="rbeat__new serif">{b.text}</p>
+                    <p class="rbeat__src mono">{b.src} · <span class="rbeat__nowtag">current</span></p>
+                  </Fragment>
+                )}
+                {b.type === 'conflict' && (
+                  <Fragment>
+                    <p class="rbeat__claim serif">{b.a}</p>
+                    <p class="rbeat__vs mono">⚔ contradicts</p>
+                    <p class="rbeat__claim serif rbeat__claim--b">{b.b}</p>
+                    <span class="rbeat__tag pill" style="--accent: var(--conflict)">open conflict</span>
+                  </Fragment>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
       </div>
     </div>
 
     <p class="sec-note sans reveal">
-      The heuristic floor can't separate these — same subject, different words. The
-      <span style="color: var(--frontier)">Qwen relation judge</span> retires the superseded claim and
-      surfaces genuine contradictions as <span style="color: var(--conflict)">conflicts</span> instead of
-      silently trusting the newer sentence.
+      The heuristic floor can't separate <em>“Alice owns release approval”</em> from <em>“Ben owns it now”</em>
+      — same subject, different words. The <span style="color: var(--frontier)">Qwen relation judge</span> retires
+      the superseded claim and surfaces genuine contradictions as
+      <span style="color: var(--conflict)">conflicts</span> instead of silently trusting the newer sentence.
+      Everything above is real: real chains, real receipt addresses, real sequence numbers.
     </p>
   </section>
 
@@ -250,24 +274,51 @@ import Base from '../layouts/Base.astro';
     }
     :where([data-czap-motion='none']) .dg-pulse { animation: none; opacity: 0; }
 
-    /* ── the supersession scene ── */
-    .scene { max-width: 46rem; display: flex; flex-direction: column; }
-    .scene__claim { position: relative; }
-    .scene__strike { position: absolute; left: 1.1rem; right: 1.1rem; top: 1.5rem; height: 2px; background: var(--stale); transform: scaleX(0); transform-origin: left; box-shadow: 0 0 8px var(--stale); }
-    .scene__seal { display: flex; align-items: center; gap: 1rem; padding: 0.55rem 0 0.55rem 1.35rem; opacity: 0; transform: translateY(-6px); }
-    .scene__arrow { color: color-mix(in srgb, var(--frontier) 70%, transparent); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; }
-    .scene__claim--new { opacity: 0; transform: translateY(12px); }
+    /* ══ the horizontal replay ══════════════════════════════════════════ */
+    .replay { position: relative; }
+    .replay__intro { max-width: 44rem; margin: 0 auto 2rem; padding-inline: var(--gutter); }
 
-    .scene[data-phase='1'] .scene__strike,
-    .scene[data-phase='2'] .scene__strike,
-    .scene[data-phase='3'] .scene__strike { transform: scaleX(1); transition: transform 0.55s var(--ease-house); }
-    .scene[data-phase='2'] .scene__seal,
-    .scene[data-phase='3'] .scene__seal { opacity: 1; transform: none; transition: opacity 0.5s var(--ease-house), transform 0.5s var(--ease-house); }
-    .scene[data-phase='3'] .scene__claim--new { opacity: 1; transform: none; transition: opacity 0.7s var(--ease-house), transform 0.7s var(--ease-house); }
-    .scene[data-phase='2'] .scene__claim--old .claim__text,
-    .scene[data-phase='3'] .scene__claim--old .claim__text { color: var(--paper-dim); }
-    .scene[data-phase='2'] .scene__claim--old[data-state],
-    .scene[data-phase='3'] .scene__claim--old[data-state] { --accent: var(--stale); }
+    /* — flow (fallback / reduced-motion / static tier): user-swiped strip — */
+    .replay[data-mode='flow'] .replay__scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; padding-block: 1.5rem; }
+    .replay[data-mode='flow'] .replay__tape { display: flex; gap: 2rem; width: max-content; padding-inline: var(--gutter); align-items: stretch; }
+    .replay[data-mode='flow'] .rbeat { scroll-snap-align: center; }
+    .replay[data-mode='flow'] .replay__head { display: none; }
+
+    /* — pin (enhanced): sticky stage, scroll drives the tape under a playhead — */
+    .replay[data-mode='pin'] .replay__stage { position: sticky; top: 0; height: 100vh; overflow: hidden; display: flex; align-items: center; }
+    .replay[data-mode='pin'] .replay__stage::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--rule-strong); }
+    .replay[data-mode='pin'] .replay__tape { display: flex; gap: 3.5rem; width: max-content; padding-left: 60vw; padding-right: 40vw; align-items: center; will-change: transform; }
+
+    /* the playhead — the frontier, made a physical line */
+    .replay__head { position: absolute; left: 50%; top: 14%; bottom: 14%; width: 2px; background: linear-gradient(to bottom, transparent, var(--frontier) 18%, var(--frontier) 82%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--frontier) 70%, transparent); z-index: 4; pointer-events: none; }
+    .replay__head::before { content: 'frontier'; position: absolute; top: -1.6rem; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.18em; color: var(--frontier); white-space: nowrap; }
+    .replay__head::after { content: '▸'; position: absolute; bottom: -1.5rem; left: 50%; transform: translateX(-50%); color: var(--frontier); font-size: 0.7rem; }
+
+    /* — a beat on the tape — */
+    .replay__tape { list-style: none; }
+    .rbeat { --reveal: 1; --emph: 1; flex: 0 0 auto; width: 21rem; display: flex; flex-direction: column; gap: 0.55rem; }
+    .replay[data-mode='pin'] .rbeat { opacity: calc(0.28 + 0.72 * var(--emph)); }
+    .rbeat__seq { font-size: var(--t-label); color: var(--paper-faint); letter-spacing: 0.16em; text-transform: uppercase; }
+    .rbeat.is-head .rbeat__seq { color: var(--live); }
+    .rbeat__card { position: relative; padding: 1rem 1.15rem 1.15rem; background: color-mix(in srgb, var(--ink-1) 85%, transparent); border: 1px solid var(--rule); border-left: 3px solid color-mix(in srgb, var(--current) 55%, transparent); backdrop-filter: blur(3px); }
+    .rbeat[data-type='conflict'] .rbeat__card { border-left-color: color-mix(in srgb, var(--conflict) 60%, transparent); }
+    .replay[data-mode='pin'] .rbeat.is-head .rbeat__card { border-color: color-mix(in srgb, var(--frontier) 35%, var(--rule)); box-shadow: 0 12px 40px rgba(0,0,0,0.45); }
+
+    .rbeat__claim { font-size: 1.15rem; color: var(--paper); line-height: 1.32; }
+    .rbeat__claim--b { color: var(--paper-dim); }
+    .rbeat__src { margin-top: 0.55rem; font-size: var(--t-label); color: var(--paper-faint); letter-spacing: 0.04em; }
+    .rbeat__nowtag { color: var(--current); }
+    .rbeat__tag { margin-top: 0.7rem; display: inline-block; }
+    .rbeat__vs { color: var(--conflict); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; margin: 0.45rem 0; }
+
+    /* supersede internals — every value a pure function of --reveal (reversible) */
+    .rbeat__old { position: relative; display: inline-block; color: var(--paper-dim); font-size: 1.05rem; line-height: 1.3; transform: translateY(calc(var(--reveal) * 12px)); opacity: calc(1 - var(--reveal) * 0.4); }
+    .rbeat__strikeline { position: absolute; left: 0; top: 50%; height: 2px; background: var(--stale); box-shadow: 0 0 8px var(--stale); width: calc(clamp(0, (var(--reveal) - 0.25) * 2.6, 1) * 100%); }
+    .rbeat__seal { margin: 0.55rem 0; opacity: clamp(0, (var(--reveal) - 0.42) * 3.2, 1); transform: translateY(calc((1 - clamp(0, (var(--reveal) - 0.42) * 3.2, 1)) * -6px)); }
+    .rbeat__new { color: var(--paper); font-size: 1.15rem; line-height: 1.32; opacity: clamp(0, (var(--reveal) - 0.58) * 3, 1); transform: translateY(calc((1 - clamp(0, (var(--reveal) - 0.58) * 3, 1)) * 14px)); }
+    .rbeat[data-type='supersede'] .rbeat__src { opacity: clamp(0, (var(--reveal) - 0.7) * 4, 1); }
+
+    .replay .sec-note { margin-inline: auto; max-width: 44rem; padding-inline: var(--gutter); margin-top: 3rem; }
 
     /* ── memory rails ── */
     .rails { display: grid; grid-template-columns: 1fr; gap: 1rem; }
@@ -311,6 +362,7 @@ import Base from '../layouts/Base.astro';
 
   <script>
     import { fetchState, subscribeStream, type MemoryState, type Claim } from '../lib/memory';
+    import { initReplay } from '../lib/replay';
 
     const $ = (id: string) => document.getElementById(id);
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -343,23 +395,17 @@ import Base from '../layouts/Base.astro';
     let current: MemoryState;
     fetchState().then((s) => { current = s; render(s); });
 
-    // ── the kinetic supersession: staged on scroll-in (Act II) ──
-    const scene = $('scene');
-    if (scene) {
-      if (reduce) {
-        scene.setAttribute('data-phase', '3');
-      } else {
-        const io = new IntersectionObserver((entries) => {
-          for (const e of entries) {
-            if (!e.isIntersecting) continue;
-            io.unobserve(e.target);
-            setTimeout(() => { scene.setAttribute('data-phase', '1'); document.dispatchEvent(new CustomEvent('texo:supersede')); }, 240);
-            setTimeout(() => scene.setAttribute('data-phase', '2'), 900);
-            setTimeout(() => scene.setAttribute('data-phase', '3'), 1500);
-          }
-        }, { threshold: 0.5 });
-        io.observe(scene);
-      }
+    // ── the horizontal replay (Act II): scroll-scrubbed, drives the HUD ──
+    const setHud = (frontier: number | string, cur: number, stale: number, con: number) => {
+      const set = (id: string, v: string | number) => { const el = $(id); if (el) el.textContent = String(v); };
+      set('hud-frontier', frontier); set('hud-current', cur); set('hud-stale', stale); set('hud-conflict', con);
+    };
+    const replaySection = $('replay');
+    if (replaySection) {
+      initReplay(replaySection, {
+        onActive: (_i, t) => setHud(t.frontier, t.current, t.stale, t.conflict),
+        onIdle: () => { if (current) render(current); },
+      });
     }
 
     // ── live: on a real supersession (0xE003), refetch ──
