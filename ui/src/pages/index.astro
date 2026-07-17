@@ -189,6 +189,31 @@ import { REEL } from '../lib/replay';
       </div>
     </div>
 
+    <!-- teach → settle: drive a real supersession on-screen -->
+    <div class="console reveal" id="console">
+      <div class="console__bar">
+        <span class="console__label eyebrow">teach the ledger</span>
+        <span class="console__sid mono" id="console-sid">—</span>
+        <span class="console__state mono" id="console-state">open</span>
+      </div>
+      <ol class="console__log" id="console-log">
+        <li class="console__empty sans">State a fact. Then state one that changes it. Then <b>end&nbsp;session</b> — the relation judge retires the old claim and it re-appears <span style="color:var(--stale)">struck</span> on the stale rail, with a receipt.</li>
+      </ol>
+      <form class="console__form" id="teach">
+        <input class="console__in mono" id="teach-in" placeholder="state a fact — e.g. “Priya owns release approval now”" autocomplete="off" />
+        <button class="console__btn console__btn--state press" type="submit">state ▸</button>
+      </form>
+      <div class="console__egs">
+        <span class="console__egs-lbl mono">try:</span>
+        <button class="console__eg mono" data-say="Priya owns release approval now.">Priya owns release approval now.</button>
+        <button class="console__eg mono" data-say="Actually, Dana owns release approval.">Actually, Dana owns release approval.</button>
+      </div>
+      <div class="console__foot">
+        <button class="console__btn console__btn--end press" id="end-session" disabled>end session &amp; settle</button>
+        <div class="console__receipt" id="settle-out" hidden></div>
+      </div>
+    </div>
+
     <form class="ask reveal" id="ask">
       <input class="ask__in mono" id="ask-in" placeholder="ask the ledger — e.g. who owns release approval?" autocomplete="off" />
       <button class="ask__btn mono press" type="submit">ask</button>
@@ -344,6 +369,57 @@ import { REEL } from '../lib/replay';
     .rail__new { color: var(--current); }
     .rail__empty { padding: 0.9rem; color: var(--paper-faint); font-style: italic; font-family: var(--font-sans); font-size: var(--t-small); }
 
+    /* ══ teach → settle console ══════════════════════════════════════════ */
+    .console { margin-top: 1.6rem; max-width: 46rem; border: 1px solid var(--rule-strong); background: color-mix(in srgb, var(--ink-0) 70%, transparent); }
+    .console__bar { display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--rule); }
+    .console__label { color: var(--paper-dim); }
+    .console__sid { margin-left: auto; font-size: var(--t-label); color: var(--paper-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 10rem; }
+    .console__state { font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; color: var(--live); }
+
+    .console__log { list-style: none; margin: 0; padding: 0.5rem 0; max-height: 15rem; overflow-y: auto; }
+    .console__empty { padding: 0.7rem 0.95rem; color: var(--paper-faint); font-size: var(--t-small); line-height: 1.55; }
+    .console__line { display: flex; align-items: baseline; gap: 0.55rem; padding: 0.5rem 0.95rem; border-left: 2px solid color-mix(in srgb, var(--frontier) 45%, transparent); }
+    .console__line.is-journaled { border-left-color: color-mix(in srgb, var(--current) 55%, transparent); }
+    .console__line.is-warn { border-left-color: color-mix(in srgb, var(--stale) 55%, transparent); }
+    .console__line.is-err { border-left-color: color-mix(in srgb, var(--conflict) 55%, transparent); }
+    .console__line.is-sealed { opacity: 0.6; }
+    .console__prompt { color: var(--frontier); font-family: var(--font-mono); }
+    .console__said { font-family: var(--font-serif); font-size: 1.05rem; color: var(--paper); flex: 1; }
+    .console__meta { font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-faint); letter-spacing: 0.03em; white-space: nowrap; }
+    .console__meta[data-kind='ok'] { color: var(--current); }
+    .console__meta[data-kind='warn'] { color: var(--stale); }
+    .console__meta[data-kind='err'] { color: var(--conflict); }
+
+    .console__form { display: flex; gap: 0; border-top: 1px solid var(--rule); }
+    .console__in { flex: 1; background: var(--ink-1); border: none; color: var(--paper); padding: 0.75rem 0.95rem; font-size: var(--t-small); }
+    .console__in:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--frontier); }
+    .console__btn { font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; cursor: pointer; transition: background var(--dur-hover), color var(--dur-hover), border-color var(--dur-hover); }
+    .console__btn--state { padding: 0.75rem 1.2rem; background: color-mix(in srgb, var(--frontier) 16%, var(--ink-1)); border: none; border-left: 1px solid var(--rule); color: color-mix(in srgb, var(--frontier) 92%, var(--paper)); }
+    .console__btn--state:hover { background: color-mix(in srgb, var(--frontier) 26%, var(--ink-1)); }
+
+    .console__egs { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.6rem 0.95rem; border-top: 1px solid var(--rule); }
+    .console__egs-lbl { font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; color: var(--paper-faint); }
+    .console__eg { font-size: var(--t-label); color: var(--paper-dim); background: transparent; border: 1px dashed var(--rule-strong); padding: 0.3rem 0.6rem; cursor: pointer; transition: border-color var(--dur-hover), color var(--dur-hover); }
+    .console__eg:hover { color: var(--paper); border-color: color-mix(in srgb, var(--frontier) 50%, transparent); }
+
+    .console__foot { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; padding: 0.7rem 0.95rem; border-top: 1px solid var(--rule); background: color-mix(in srgb, var(--ink-1) 40%, transparent); }
+    .console__btn--end { padding: 0.6rem 1.1rem; background: color-mix(in srgb, var(--live) 14%, var(--ink-1)); border: 1px solid color-mix(in srgb, var(--live) 34%, transparent); color: color-mix(in srgb, var(--live) 92%, var(--paper)); }
+    .console__btn--end:hover:not(:disabled) { background: color-mix(in srgb, var(--live) 24%, var(--ink-1)); border-color: var(--live); }
+    .console__btn--end:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .console__receipt { font-family: var(--font-mono); font-size: var(--t-small); color: var(--paper-dim); }
+    .console__receipt.is-pending { color: var(--paper-faint); font-style: italic; }
+    .console__receipt.is-err { color: color-mix(in srgb, var(--conflict) 80%, var(--paper)); }
+    .console__receipt.is-sealed { display: inline-flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.75rem; background: var(--ink-1); border: 1px dashed var(--rule-strong);
+      mask:
+        radial-gradient(4px 4px at 8px -2px, transparent 96%, #000) repeat-x top / 16px 6px,
+        radial-gradient(4px 4px at 8px calc(100% + 2px), transparent 96%, #000) repeat-x bottom / 16px 6px,
+        linear-gradient(#000, #000) center / 100% calc(100% - 8px) no-repeat; }
+    .console__seal-tag { color: var(--live); text-transform: uppercase; letter-spacing: 0.14em; font-size: var(--t-label); }
+    .console__seal-nums b { color: var(--paper); font-variant-numeric: tabular-nums; }
+    .console__seal-nums .n-stale { color: var(--stale); }
+    .console__seal-nums .n-con { color: var(--conflict); }
+
     /* ── ask ── */
     .ask { display: flex; gap: 0.6rem; margin-top: 1.6rem; max-width: 46rem; }
     .ask__in { flex: 1; background: var(--ink-1); border: 1px solid var(--rule-strong); color: var(--paper); padding: 0.7rem 0.9rem; font-size: var(--t-small); }
@@ -363,6 +439,7 @@ import { REEL } from '../lib/replay';
   <script>
     import { fetchState, subscribeStream, type MemoryState, type Claim } from '../lib/memory';
     import { initReplay } from '../lib/replay';
+    import { initConsole } from '../lib/console';
 
     const $ = (id: string) => document.getElementById(id);
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -405,6 +482,15 @@ import { REEL } from '../lib/replay';
       initReplay(replaySection, {
         onActive: (_i, t) => setHud(t.frontier, t.current, t.stale, t.conflict),
         onIdle: () => { if (current) render(current); },
+      });
+    }
+
+    // ── the teach → settle console: drives a real supersession, refreshes the ledger ──
+    const consoleEl = $('console');
+    if (consoleEl) {
+      initConsole(consoleEl, {
+        sessionId,
+        onState: (s) => { current = s; render(s); },
       });
     }
 
