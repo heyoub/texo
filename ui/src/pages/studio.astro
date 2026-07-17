@@ -1,0 +1,106 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="texo — studio" bare={true}>
+  <section class="studio">
+    <div class="studio__head">
+      <a class="studio__back mono" href="/">← ledger</a>
+      <span class="eyebrow">video studio · encoded by LiteShip WebCodecs</span>
+    </div>
+
+    <div class="studio__stage">
+      <canvas id="hero-preview" class="studio__canvas" width="1280" height="720" aria-label="hero preview"></canvas>
+    </div>
+
+    <div class="studio__controls">
+      <button class="studio__btn press" id="btn-replay">↻ replay preview</button>
+      <button class="studio__btn studio__btn--rec press" id="btn-record">● record mp4</button>
+      <span class="studio__status mono" id="rec-status">21s · 1920×1080 · 30fps · H.264</span>
+    </div>
+    <p class="studio__note sans" id="rec-note">
+      Records the hero deterministically via <code>@czap/web</code>’s WebCodecs pipeline (Chromium + localhost/https).
+      If your browser lacks <code>VideoEncoder</code>, screen-record the preview instead — the visual is identical.
+    </p>
+  </section>
+
+  <style>
+    .studio { min-height: 100dvh; display: flex; flex-direction: column; gap: 1.25rem; padding: 1.5rem var(--gutter) 3rem; }
+    .studio__head { display: flex; align-items: center; gap: 1rem; }
+    .studio__back { color: var(--paper-faint); text-decoration: none; font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.16em; }
+    .studio__back:hover { color: var(--live); }
+    .studio__stage { flex: 1; display: flex; align-items: center; justify-content: center; }
+    .studio__canvas { width: 100%; max-width: 62rem; aspect-ratio: 16 / 9; border: 1px solid var(--rule-strong); background: var(--ink-void); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+    .studio__controls { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; justify-content: center; }
+    .studio__btn { font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.14em; padding: 0.6rem 1.1rem; background: var(--ink-1); border: 1px solid var(--rule-strong); color: var(--paper-dim); cursor: pointer; transition: border-color var(--dur-hover), color var(--dur-hover); }
+    .studio__btn:hover { color: var(--paper); border-color: var(--frontier); }
+    .studio__btn--rec { color: color-mix(in srgb, var(--conflict) 85%, var(--paper)); border-color: color-mix(in srgb, var(--conflict) 40%, transparent); }
+    .studio__btn--rec:hover { border-color: var(--conflict); }
+    .studio__btn:disabled { opacity: 0.5; cursor: wait; }
+    .studio__status { font-size: var(--t-label); color: var(--paper-faint); }
+    .studio__note { text-align: center; max-width: 42rem; margin: 0 auto; color: var(--paper-faint); font-size: var(--t-small); line-height: 1.6; }
+    .studio__note code { font-family: var(--font-mono); color: var(--live); }
+  </style>
+
+  <script>
+    import { makeHero, HERO_MS } from '../lib/hero';
+    import { recordMP4, canRecord } from '../lib/capture';
+
+    const canvas = document.getElementById('hero-preview') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d')!;
+    const status = document.getElementById('rec-status')!;
+    const btnRec = document.getElementById('btn-record') as HTMLButtonElement;
+    const btnReplay = document.getElementById('btn-replay') as HTMLButtonElement;
+
+    // fit backing store to display size (crisp preview)
+    function fit() {
+      const r = canvas.getBoundingClientRect();
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+    }
+    addEventListener('resize', fit);
+
+    const hero = makeHero();
+    let start = 0, raf = 0;
+
+    function loop(ts: number) {
+      if (!start) start = ts;
+      let t = ts - start;
+      if (t > HERO_MS) { start = ts; t = 0; }
+      hero.frame(ctx, t, canvas.width, canvas.height);
+      raf = requestAnimationFrame(loop);
+    }
+    fit();
+    (document as any).fonts?.ready?.then(() => { fit(); });
+    raf = requestAnimationFrame(loop);
+
+    btnReplay.addEventListener('click', () => { start = 0; });
+
+    if (!canRecord()) {
+      btnRec.disabled = true;
+      status.textContent = 'no VideoEncoder — screen-record the preview';
+    }
+
+    btnRec.addEventListener('click', async () => {
+      btnRec.disabled = true; btnReplay.disabled = true;
+      cancelAnimationFrame(raf);
+      try {
+        await (document as any).fonts?.ready;
+        await recordMP4({
+          width: 1920, height: 1080, fps: 30, durationMs: HERO_MS,
+          filename: 'texo-ledger.mp4',
+          render: (c, tMs) => hero.frame(c as any, tMs, 1920, 1080),
+          onProgress: (p) => { status.textContent = `recording… ${Math.round(p * 100)}%`; },
+        });
+        status.textContent = '✓ saved texo-ledger.mp4';
+      } catch (err) {
+        status.textContent = 'record failed — screen-record the preview instead';
+        console.error('[studio]', err);
+      } finally {
+        btnRec.disabled = false; btnReplay.disabled = false;
+        start = 0; raf = requestAnimationFrame(loop);
+      }
+    });
+  </script>
+</Base>

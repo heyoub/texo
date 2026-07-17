@@ -10,6 +10,7 @@
   "dependencies": {
     "@czap/astro": "0.8.0",
     "@czap/core": "0.8.0",
+    "@czap/web": "0.8.0",
     "astro": "^7.0.0",
     "typescript": "^5.7.0"
   },

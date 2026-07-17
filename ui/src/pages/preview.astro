@@ -1,0 +1,81 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="texo — the ledger">
+  <!-- ═══ ACT I · THE FRONTIER ═══════════════════════════════════════════ -->
+  <section class="act hero wrap">
+    <p class="eyebrow reveal">claim-chain memory · append-only · receipts on every answer</p>
+    <h1 class="hero__title reveal" data-delay="1">
+      Memory that knows<br />
+      <em>when to stop believing</em> things.
+    </h1>
+    <p class="hero__lead sans reveal" data-delay="2">
+      Every fact you state becomes a journaled <span class="frontier-mark">claim</span>.
+      When a fact changes, the old claim isn't buried in a vector index — it's
+      <span class="strike">struck</span>, sealed with a receipt, and superseded on the record.
+      Git tracks code diffs. <strong>texo tracks claim diffs.</strong>
+    </p>
+    <div class="hero__meta mono reveal" data-delay="3">
+      <span class="addr-chip">journal · canonical</span>
+      <span class="seq">frontier <b id="hero-frontier">0047</b></span>
+      <span class="seq">replayed · deterministic</span>
+    </div>
+  </section>
+
+  <!-- ═══ THE SUPERSESSION · watch a fact die ════════════════════════════ -->
+  <section class="act wrap ledger">
+    <header class="ledger__head reveal">
+      <span class="eyebrow">the supersession</span>
+      <h2 class="serif">A fact changed. Here's the receipt.</h2>
+    </header>
+
+    <ol class="ledger__chain">
+      <li class="claim reveal" data-state="stale" data-delay="1">
+        <p class="claim__text">Alice owns release approval.</p>
+        <p class="claim__meta">meeting_notes.md:3 · seq 09 · superseded → <span class="addr-chip">claim_854bcc</span></p>
+      </li>
+
+      <li class="supersede reveal" data-delay="2" aria-hidden="true">
+        <span class="supersede__arrow mono">└─ retired by ─┐</span>
+        <span class="receipt"><span class="mono">receipt</span> <span class="receipt__addr">42abd965</span> · seq 15</span>
+      </li>
+
+      <li class="claim reveal" data-state="current" data-delay="3">
+        <p class="claim__text">Ben owns release approval now.</p>
+        <p class="claim__meta">meeting_notes.md:5 · seq 15 · <span class="pill" style="--accent: var(--current)">current</span></p>
+      </li>
+    </ol>
+
+    <div class="ledger__chain" style="margin-top: var(--rule-gap)">
+      <div class="claim reveal" data-state="conflict" data-delay="1">
+        <p class="claim__text">Deploys happen on Friday. / Deploys moved to Wednesday.</p>
+        <p class="claim__meta">two live sources · no temporal order · <span class="pill" style="--accent: var(--conflict)">conflict — surfaced, not guessed</span></p>
+      </div>
+    </div>
+
+    <p class="ledger__note sans reveal">
+      The heuristic floor can't tell these apart — same subject, different words. The
+      <span style="color: var(--frontier)">Qwen relation judge</span> retires the superseded ones and
+      surfaces genuine contradictions as conflicts, rather than silently trusting the newer sentence.
+    </p>
+  </section>
+
+  <style>
+    .hero { min-height: 82vh; display: flex; flex-direction: column; justify-content: center; gap: 1.4rem; max-width: 54rem; }
+    .hero__title { font-size: var(--t-display); line-height: 0.98; }
+    .hero__title em { font-style: italic; color: color-mix(in srgb, var(--live) 55%, var(--paper)); }
+    .hero__lead { font-size: var(--t-lead); color: var(--paper-dim); max-width: 42rem; line-height: 1.55; }
+    .hero__lead strong { color: var(--paper); font-weight: 500; }
+    .hero__lead .strike { color: var(--stale); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 70%, transparent); }
+    .hero__meta { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: center; font-size: var(--t-small); color: var(--paper-faint); }
+    .hero__meta b { color: var(--live); }
+
+    .ledger__head { margin-bottom: 2rem; }
+    .ledger__head h2 { font-size: var(--t-h1); margin-top: 0.5rem; }
+    .ledger__chain { display: flex; flex-direction: column; gap: 0; max-width: 48rem; }
+    .supersede { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 0 0.6rem 1.35rem; color: var(--paper-faint); font-size: var(--t-label); }
+    .supersede__arrow { color: color-mix(in srgb, var(--frontier) 70%, transparent); letter-spacing: 0.1em; }
+    .ledger__note { margin-top: 2.5rem; max-width: 40rem; font-size: var(--t-body); color: var(--paper-dim); line-height: 1.6; }
+  </style>
+</Base>

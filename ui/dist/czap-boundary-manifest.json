@@ -4,35 +4,8 @@
   "boundaries": {
     "layout": {
       "id": "fnv1a:ece35505",
-      "outputs": [
-        {
-          "css": ":root {\n  container-type: inline-size;\n  container-name: viewport-width;\n}\n\n@container viewport-width (width < 768px) {\n.app {\n  grid-template-columns: 1fr;\n}\n.chat__messages {\n  max-height: 45dvh;\n}\n}\n\n@container viewport-width (width >= 768px) {\n.app {\n  grid-template-columns: minmax(0, 1fr) 22rem;\n  grid-template-areas: 'chat rail'\n          'timeline timeline';\n}\n.chat {\n  grid-area: chat;\n}\n.rail {\n  grid-area: rail;\n}\n.timeline {\n  grid-area: timeline;\n}\n.chat__messages {\n  max-height: 58dvh;\n}\n}",
-          "propertyRegistrations": "",
-          "containerQueries": ":root {\n  container-type: inline-size;\n  container-name: viewport-width;\n}\n\n@container viewport-width (width < 768px) {\n.app {\n  grid-template-columns: 1fr;\n}\n.chat__messages {\n  max-height: 45dvh;\n}\n}\n\n@container viewport-width (width >= 768px) {\n.app {\n  grid-template-columns: minmax(0, 1fr) 22rem;\n  grid-template-areas: 'chat rail'\n          'timeline timeline';\n}\n.chat {\n  grid-area: chat;\n}\n.rail {\n  grid-area: rail;\n}\n.timeline {\n  grid-area: timeline;\n}\n.chat__messages {\n  max-height: 58dvh;\n}\n}"
-        }
-      ],
-      "outputsByTier": {
-        "none:minimal": 0,
-        "none:standard": 0,
-        "none:enhanced": 0,
-        "none:rich": 0,
-        "transitions:minimal": 0,
-        "transitions:standard": 0,
-        "transitions:enhanced": 0,
-        "transitions:rich": 0,
-        "animations:minimal": 0,
-        "animations:standard": 0,
-        "animations:enhanced": 0,
-        "animations:rich": 0,
-        "physics:minimal": 0,
-        "physics:standard": 0,
-        "physics:enhanced": 0,
-        "physics:rich": 0,
-        "compute:minimal": 0,
-        "compute:standard": 0,
-        "compute:enhanced": 0,
-        "compute:rich": 0
-      }
+      "outputs": [],
+      "outputsByTier": {}
     }
   }
 }

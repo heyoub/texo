@@ -1,0 +1,266 @@
+/* ============================================================================
+   texo — the LEDGER design system
+   ----------------------------------------------------------------------------
+   Original language for a claim-chain memory agent. The page is an append-only
+   journal: claims land on a ruled baseline, stale ones are struck and sealed
+   with a receipt, the frontier advances. Color is TAXONOMY (current/stale/
+   conflict own their meaning); indigo is structural (the frontier), teal is
+   "live". Near-black ink, hairline rules, perforated receipts, no soft cards.
+   Color tokens (--czap-*) come from src/tokens + the @token blocks in Base.
+   ========================================================================== */
+
+/* ── mood channels: interpolate in calc() instead of stepping ────────────── */
+@property --mem-heat     { syntax: '<number>'; inherits: true; initial-value: 0; }
+@property --mem-frontier { syntax: '<number>'; inherits: true; initial-value: 0; }
+@property --mem-strike   { syntax: '<number>'; inherits: true; initial-value: 0; }
+
+:root {
+  /* ── ink ladder (near-black, barely stepped) ── */
+  --ink-void:  #08090b;   /* page floor */
+  --ink-0:     #0d0e12;   /* base surface */
+  --ink-1:     #14151b;   /* raised */
+  --ink-2:     #1b1d25;   /* panel / inset */
+
+  /* ── rules (the ledger hairlines) ── */
+  --rule:        color-mix(in srgb, var(--czap-text) 7%, transparent);
+  --rule-strong: color-mix(in srgb, var(--czap-text) 14%, transparent);
+  --rule-lit:    color-mix(in srgb, var(--frontier) 45%, transparent);
+
+  /* ── paper (ink text ramp) ── */
+  --paper:       var(--czap-text);   /* #e7e5e4 */
+  --paper-dim:   var(--czap-muted);  /* #a8a29e */
+  --paper-faint: color-mix(in srgb, var(--czap-muted) 55%, transparent);
+
+  /* ── semantic accents: structural vs live vs status taxonomy ── */
+  --frontier: var(--czap-primary);    /* indigo — the advancing frontier, links, focus */
+  --live:     var(--czap-secondary);  /* teal  — the "live" pulse */
+  --current:  var(--czap-current);    /* green — live truth */
+  --stale:    var(--czap-stale);      /* amber — superseded */
+  --conflict: var(--czap-conflict);   /* red   — contradiction */
+
+  /* accent wash levels — color is NEVER a flat fill (except hover-invert) */
+  --wash-lo: 6%;
+  --wash-md: 14%;
+  --wash-hi: 28%;
+
+  /* ── type: human claim ↔ machine receipt ↔ explanation ── */
+  --font-serif: var(--font-instrument-serif, ui-serif, Georgia, serif);
+  --font-mono:  var(--font-space-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  --font-sans:  var(--font-dm-sans, system-ui, -apple-system, sans-serif);
+
+  --t-display: clamp(2.75rem, 7.5vw, 6rem);
+  --t-h1:      clamp(2rem, 4.5vw, 3.25rem);
+  --t-h2:      clamp(1.4rem, 2.6vw, 2rem);
+  --t-lead:    clamp(1.05rem, 1.6vw, 1.35rem);
+  --t-body:    1rem;
+  --t-small:   0.8125rem;
+  --t-label:   0.6875rem;   /* mono uppercase eyebrows */
+
+  /* ── space (fluid) ── */
+  --gutter: clamp(1.25rem, 8vw, 9rem);
+  --stack:  clamp(3rem, 10vw, 9rem);
+  --rule-gap: 2.125rem;     /* ledger baseline pitch */
+
+  /* ── geometry: sharp ledger corners; perforation is the signature ── */
+  --radius: 0px;
+  --radius-chip: 2px;       /* content-address chips only */
+  --seal: 999px;            /* status pills */
+
+  /* ── motion ── */
+  --ease-house: cubic-bezier(0.16, 1, 0.3, 1);   /* the house curve: snap → long settle */
+  --ease-cross: cubic-bezier(0.645, 0.045, 0.355, 1); /* easeInOutCubic — state crossings */
+  --dur-reveal: 0.8s;
+  --dur-cross:  0.9s;
+  --dur-hover:  0.25s;
+  --dur-press:  0.1s;
+
+  /* :root mood transition — @property vars ease on every crossing */
+  transition: --mem-heat var(--dur-cross) var(--ease-cross),
+              --mem-frontier var(--dur-cross) var(--ease-cross),
+              --mem-strike 0.5s var(--ease-cross);
+}
+
+/* ── reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+
+html {
+  font-family: var(--font-sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+/* the LEDGER floor: ruled baseline + faint frontier column, ink void behind. */
+body {
+  min-height: 100dvh;
+  color: var(--paper);
+  background-color: var(--ink-void);
+  background-image:
+    /* ruled ledger baselines */
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(var(--rule-gap) - 1px),
+      var(--rule) calc(var(--rule-gap) - 1px),
+      var(--rule) var(--rule-gap)
+    );
+  background-attachment: fixed;
+  position: relative;
+}
+
+/* fixed film grain — barely there, keeps flat ink from feeling dead */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+  opacity: 0.028;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ── type roles ── */
+.serif { font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.01em; }
+.mono  { font-family: var(--font-mono); }
+.sans  { font-family: var(--font-sans); }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-label);
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--paper-faint);
+}
+.seq { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+h1, h2, h3 { font-family: var(--font-serif); font-weight: 400; line-height: 1.02; letter-spacing: -0.015em; }
+
+/* ── the frontier rail: indigo structural line ── */
+.frontier-mark {
+  position: relative;
+  padding-left: 1.25rem;
+}
+.frontier-mark::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0.15em;
+  width: 3px; height: 1.1em;
+  background: var(--frontier);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--frontier) 60%, transparent);
+}
+
+/* ── claim entry: a ledger row. left rule-mark keyed to state. ── */
+.claim {
+  --accent: var(--current);
+  position: relative;
+  padding: 0.85rem 1.1rem 0.85rem 1.35rem;
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--accent) var(--wash-lo), transparent),
+      transparent 60%);
+  border: 1px solid color-mix(in srgb, var(--accent) var(--wash-md), transparent);
+  border-left: none;
+  transition: transform var(--dur-hover) var(--ease-house),
+              border-color var(--dur-hover) var(--ease-house),
+              background var(--dur-cross) var(--ease-cross);
+}
+.claim::before {           /* the 4px status rule-mark */
+  content: '';
+  position: absolute;
+  left: 0; top: -1px; bottom: -1px;
+  width: 3px;
+  background: var(--accent);
+}
+.claim[data-state='current']  { --accent: var(--current); }
+.claim[data-state='stale']    { --accent: var(--stale); }
+.claim[data-state='conflict'] { --accent: var(--conflict); }
+.claim:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) var(--wash-hi), transparent); }
+
+.claim__text { font-family: var(--font-serif); font-size: var(--t-lead); color: var(--paper); }
+.claim__meta { margin-top: 0.4rem; font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-faint); letter-spacing: 0.04em; }
+
+/* stale claim: struck through, dimmed */
+.claim[data-state='stale'] .claim__text {
+  color: var(--paper-dim);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--stale) 70%, transparent);
+  text-decoration-thickness: 1px;
+}
+
+/* ── receipt: perforated tear-off carrying the content address ── */
+.receipt {
+  font-family: var(--font-mono);
+  font-size: var(--t-label);
+  color: var(--paper-dim);
+  padding: 0.4rem 0.7rem;
+  background: var(--ink-1);
+  border: 1px dashed var(--rule-strong);
+  /* torn perforation top + bottom */
+  mask:
+    radial-gradient(4px 4px at 8px -2px, transparent 96%, #000) repeat-x top / 16px 6px,
+    radial-gradient(4px 4px at 8px calc(100% + 2px), transparent 96%, #000) repeat-x bottom / 16px 6px,
+    linear-gradient(#000, #000) center / 100% calc(100% - 8px) no-repeat;
+  display: inline-flex; align-items: center; gap: 0.5rem;
+}
+.receipt__addr { color: var(--live); }
+
+/* content-address chip (sealed) */
+.addr-chip {
+  font-family: var(--font-mono);
+  font-size: var(--t-label);
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--frontier) 10%, var(--ink-1));
+  border: 1px solid color-mix(in srgb, var(--frontier) 24%, transparent);
+  color: color-mix(in srgb, var(--frontier) 85%, var(--paper));
+  letter-spacing: 0.02em;
+}
+
+/* ── status pill ── */
+.pill {
+  font-family: var(--font-mono);
+  font-size: var(--t-label);
+  text-transform: uppercase; letter-spacing: 0.14em;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--seal);
+  border: 1px solid color-mix(in srgb, var(--accent, var(--frontier)) var(--wash-hi), transparent);
+  color: color-mix(in srgb, var(--accent, var(--frontier)) 88%, var(--paper));
+  background: color-mix(in srgb, var(--accent, var(--frontier)) var(--wash-lo), transparent);
+}
+
+/* ── reveal: house-curve entrance, one-shot ── */
+.reveal { opacity: 0; transform: translateY(40px); transition: opacity var(--dur-reveal) var(--ease-house), transform var(--dur-reveal) var(--ease-house); will-change: opacity, transform; }
+.reveal.is-visible { opacity: 1; transform: none; }
+.reveal[data-delay='1'] { transition-delay: 0.07s; }
+.reveal[data-delay='2'] { transition-delay: 0.14s; }
+.reveal[data-delay='3'] { transition-delay: 0.21s; }
+.reveal[data-delay='4'] { transition-delay: 0.28s; }
+.reveal[data-delay='5'] { transition-delay: 0.35s; }
+
+/* ── interactive grammar: lift + brighten + press ── */
+.lift { transition: transform var(--dur-hover) var(--ease-house); }
+.lift:hover { transform: translateY(-2px); }
+.press:active { transform: scale(0.98); transition: transform var(--dur-press) var(--ease-house); }
+
+/* ── layout scaffolding ── */
+.wrap { max-width: 78rem; margin: 0 auto; padding-inline: var(--gutter); }
+.act  { padding-block: var(--stack); }
+
+/* ── tier + reduced-motion gates (motionOK) ─────────────────────────────────
+   data-czap-motion is stamped by @czap/detect; also honor the OS setting. */
+:where([data-czap-motion='none'], [data-czap-reduced-motion='reduce']) .reveal { opacity: 1; transform: none; transition: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  .reveal { opacity: 1 !important; transform: none !important; }
+  :root { transition: none; }
+}
+
+/* focus: real double-ring, never removed */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ink-void), 0 0 0 4px var(--frontier);
+}
