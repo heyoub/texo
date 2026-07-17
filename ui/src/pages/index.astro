@@ -18,8 +18,96 @@ import Base from '../layouts/Base.astro';
     <div class="hero__meta mono reveal" data-delay="3">
       <span class="addr-chip">journal · canonical</span>
       <span class="seq">frontier <b id="hero-frontier">—</b></span>
-      <a class="hero__cta press" href="#agent">open the ledger ↓</a>
+      <a class="hero__cta press" href="#journey">trace a claim ↓</a>
     </div>
+  </section>
+
+  <!-- ═══ ACT · THE MAP — a claim's journey ═════════════════════════════ -->
+  <section class="act wrap diagram" id="journey">
+    <header class="sec-head reveal">
+      <span class="eyebrow">the map</span>
+      <h2 class="serif">The journey of a claim.</h2>
+      <p class="sec-head__sub sans">Every fact you state walks the same pipeline. The heuristic floor and the Qwen judge decide, per claim, whether it lands as new truth, retires an older claim, or opens a conflict — and the record keeps all three.</p>
+    </header>
+
+    <figure class="dg reveal" data-delay="1">
+      <svg class="dg-svg" viewBox="0 0 900 700" role="img"
+           aria-label="Flowchart. A stated fact is ingested; claims are extracted by the heuristic floor and Qwen; each claim is judged against the frontier and routed to one of three outcomes — appended as new current truth, superseding an older claim through a struck-and-sealed receipt, or flagged as an open conflict — before the answer is returned with receipts.">
+        <defs>
+          <marker id="dg-tip" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="context-stroke" />
+          </marker>
+        </defs>
+
+        <!-- edges (under the nodes) -->
+        <g class="dg-edges" fill="none" marker-end="url(#dg-tip)">
+          <path class="dg-edge dg-spine" d="M450 80 L450 132" />
+          <path class="dg-edge dg-spine" d="M450 196 L450 248" />
+          <path class="dg-edge dg-e-new" d="M388 320 C 300 356, 220 360, 172 392" />
+          <path class="dg-edge dg-e-chg" d="M450 320 L450 392" />
+          <path class="dg-edge dg-e-con" d="M512 320 C 600 356, 680 360, 728 392" />
+          <path class="dg-edge dg-e-new" d="M450 468 L450 500" />
+          <path class="dg-edge dg-e-new" d="M170 468 C 170 556, 300 590, 358 596" />
+          <path class="dg-edge dg-e-new" d="M450 564 L450 596" />
+          <path class="dg-edge dg-e-con" d="M730 468 C 730 556, 600 590, 542 596" />
+        </g>
+
+        <!-- read-head: one claim tracing the pipeline -->
+        <circle class="dg-pulse" r="4.5" cx="450" cy="52" />
+
+        <!-- edge labels -->
+        <g class="dg-elabels">
+          <text class="dg-elabel" x="498" y="110">ingest</text>
+          <text class="dg-elabel" x="508" y="226">per claim</text>
+          <text class="dg-elabel" x="250" y="350">new</text>
+          <text class="dg-elabel" x="502" y="360">changed</text>
+          <text class="dg-elabel" x="648" y="350">contradiction</text>
+          <text class="dg-elabel" x="512" y="486">supersede</text>
+        </g>
+
+        <!-- nodes -->
+        <g class="dg-nodes">
+          <g class="dg-node dg-in">
+            <rect x="320" y="24" width="260" height="56" />
+            <text class="dg-title" x="450" y="59">you state a fact</text>
+          </g>
+          <g class="dg-node">
+            <rect x="320" y="132" width="260" height="64" />
+            <text class="dg-title" x="450" y="163">extract claims</text>
+            <text class="dg-sub" x="450" y="183">heuristic floor + Qwen</text>
+          </g>
+          <g class="dg-node dg-decision">
+            <rect x="300" y="248" width="300" height="72" />
+            <text class="dg-title" x="450" y="281">judge against the frontier</text>
+            <text class="dg-sub" x="450" y="303">new · changed · in conflict?</text>
+          </g>
+          <g class="dg-node dg-current">
+            <rect x="64" y="392" width="212" height="76" />
+            <text class="dg-title" x="170" y="425">append</text>
+            <text class="dg-sub dg-cur-t" x="170" y="447">● new current</text>
+          </g>
+          <g class="dg-node dg-receipt">
+            <rect x="344" y="392" width="212" height="76" />
+            <text class="dg-title" x="450" y="425">strike + seal receipt</text>
+            <text class="dg-sub dg-stale-t" x="450" y="447">old claim retired</text>
+          </g>
+          <g class="dg-node dg-conflict">
+            <rect x="624" y="392" width="212" height="76" />
+            <text class="dg-title" x="730" y="425">flag conflict</text>
+            <text class="dg-sub dg-con-t" x="730" y="447">▲ open, unresolved</text>
+          </g>
+          <g class="dg-node dg-current">
+            <rect x="344" y="500" width="212" height="64" />
+            <text class="dg-title dg-cur-t" x="450" y="537">● current — new truth</text>
+          </g>
+          <g class="dg-node dg-answer">
+            <rect x="300" y="596" width="300" height="64" />
+            <text class="dg-title" x="450" y="623">answer — with receipts</text>
+            <text class="dg-sub" x="450" y="645">source + seq on every claim</text>
+          </g>
+        </g>
+      </svg>
+    </figure>
   </section>
 
   <!-- ═══ ACT II · WATCH A FACT DIE ═════════════════════════════════════ -->
@@ -115,6 +203,52 @@ import Base from '../layouts/Base.astro';
     .sec-head h2 { font-size: var(--t-h1); margin-top: 0.5rem; }
     .sec-head__sub { margin-top: 0.9rem; color: var(--paper-dim); font-size: var(--t-body); line-height: 1.6; }
     .sec-note { margin-top: 2.4rem; max-width: 40rem; color: var(--paper-dim); line-height: 1.6; }
+
+    /* ── the journey diagram (mermaid-legible, ledger-skinned) ── */
+    .dg { margin: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .dg-svg { display: block; width: 100%; min-width: 600px; max-width: 58rem; height: auto; margin-inline: auto; overflow: visible; }
+
+    .dg-node rect { fill: var(--ink-1); stroke: var(--rule-strong); stroke-width: 1.25px; }
+    .dg-node text { text-anchor: middle; }
+    .dg-title { font-family: var(--font-serif); font-size: 21px; fill: var(--paper); letter-spacing: -0.01em; }
+    .dg-sub { font-family: var(--font-mono); font-size: 12px; fill: var(--paper-faint); letter-spacing: 0.04em; text-transform: uppercase; }
+
+    .dg-in rect       { fill: color-mix(in srgb, var(--live) 8%, var(--ink-1)); stroke: color-mix(in srgb, var(--live) 45%, transparent); }
+    .dg-decision rect { fill: color-mix(in srgb, var(--frontier) 10%, var(--ink-1)); stroke: var(--frontier); stroke-width: 1.5px; }
+    .dg-current rect  { stroke: color-mix(in srgb, var(--current) 55%, transparent); }
+    .dg-conflict rect { stroke: color-mix(in srgb, var(--conflict) 55%, transparent); }
+    .dg-answer rect   { fill: color-mix(in srgb, var(--frontier) 8%, var(--ink-1)); stroke: color-mix(in srgb, var(--frontier) 50%, transparent); }
+    /* the receipt node wears the perforation: a dashed seal */
+    .dg-receipt rect  { fill: var(--ink-1); stroke: color-mix(in srgb, var(--stale) 60%, transparent); stroke-dasharray: 5 4; }
+
+    .dg-cur-t   { fill: var(--current); }
+    .dg-stale-t { fill: var(--stale); }
+    .dg-con-t   { fill: var(--conflict); }
+
+    .dg-edge  { stroke-width: 1.5px; }
+    .dg-spine { stroke: color-mix(in srgb, var(--frontier) 72%, transparent); }
+    .dg-e-new { stroke: color-mix(in srgb, var(--current) 75%, transparent); }
+    .dg-e-chg { stroke: color-mix(in srgb, var(--stale) 78%, transparent); }
+    .dg-e-con { stroke: color-mix(in srgb, var(--conflict) 72%, transparent); }
+
+    .dg-elabel { font-family: var(--font-mono); font-size: 11.5px; fill: var(--paper-dim); text-transform: uppercase; letter-spacing: 0.14em; text-anchor: middle; paint-order: stroke; stroke: var(--ink-void); stroke-width: 5px; stroke-linejoin: round; }
+
+    /* the read-head — a single claim travelling the spine. gated: hidden unless motion is welcome */
+    .dg-pulse { opacity: 0; }
+    @media (prefers-reduced-motion: no-preference) {
+      .dg-pulse {
+        fill: var(--live);
+        offset-path: path('M450 52 L450 628');
+        animation: dg-travel 5.2s var(--ease-cross) infinite;
+      }
+    }
+    @keyframes dg-travel {
+      0%   { offset-distance: 0%;   opacity: 0; }
+      10%  { opacity: 0.9; }
+      90%  { opacity: 0.9; }
+      100% { offset-distance: 100%; opacity: 0; }
+    }
+    :where([data-czap-motion='none']) .dg-pulse { animation: none; opacity: 0; }
 
     /* ── the supersession scene ── */
     .scene { max-width: 46rem; display: flex; flex-direction: column; }
