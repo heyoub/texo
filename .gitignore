@@ -11,6 +11,9 @@
 /public/*
 !/public/.gitkeep
 
+# Ephemeral chat/session docs written by `texo serve` (POST /api/chat)
+/sessions/
+
 # VS Code extension build artifacts
 /extensions/vscode/node_modules/
 /extensions/vscode/out/

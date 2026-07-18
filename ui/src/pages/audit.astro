@@ -1,0 +1,214 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="texo remembers texo — self-audit" bare={true}>
+  <section class="audit">
+    <header class="audit__bar">
+      <a class="audit__back mono" href="/">← ledger</a>
+      <div class="audit__title">
+        <span class="eyebrow">dogfooding · texo remembers texo</span>
+        <h1 class="serif">Its own docs, on the record.</h1>
+      </div>
+      <dl class="audit__stats mono" id="audit-stats">
+        <div><dt>claims</dt><dd id="st-claims">—</dd></div>
+        <div><dt>docs</dt><dd id="st-docs">—</dd></div>
+        <div><dt>superseded</dt><dd class="st-sup" id="st-sup">—</dd></div>
+      </dl>
+    </header>
+
+    <p class="audit__lead sans" id="audit-lead">
+      texo ingested its <b>own repository</b> — every ADR, the spec, the architecture notes — and
+      extracted each factual claim with a receipt back to the source line. Pick a document: the left
+      pane is the raw source it read, the right pane is what it remembers. Superseded claims point back
+      to the exact line they were retired from.
+    </p>
+
+    <div class="audit__panes" id="audit-panes">
+      <!-- doc rail -->
+      <nav class="audit__docs" id="audit-docs" aria-label="documents"></nav>
+
+      <!-- source -->
+      <div class="audit__source">
+        <div class="audit__source-head mono"><span id="src-name">—</span><span class="audit__source-hint" id="src-hint"></span></div>
+        <div class="audit__source-body" id="src-body"><p class="audit__empty">loading the corpus…</p></div>
+      </div>
+
+      <!-- claims -->
+      <aside class="audit__claims">
+        <div class="audit__claims-head mono">what texo remembers<span id="claims-count"></span></div>
+        <ol class="audit__claims-list" id="claims-list"></ol>
+      </aside>
+    </div>
+
+    <p class="audit__note sans" id="audit-note" hidden>
+      Snapshot missing — run <code>just self-audit</code> then rebuild the UI. This page reads
+      <code>/self-audit.json</code> (real <code>texo claims --json</code> over the repo's own docs).
+    </p>
+  </section>
+
+  <style>
+    .audit { min-height: 100dvh; padding: 1.25rem var(--gutter) 3rem; display: flex; flex-direction: column; gap: 1.1rem; }
+    .audit__bar { display: flex; align-items: flex-end; gap: 1.4rem; flex-wrap: wrap; padding-bottom: 1rem; border-bottom: 1px solid var(--rule); }
+    .audit__back { color: var(--paper-faint); text-decoration: none; font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.16em; }
+    .audit__back:hover { color: var(--live); }
+    .audit__title h1 { font-size: clamp(1.6rem, 3.5vw, 2.6rem); margin-top: 0.25rem; }
+    .audit__stats { margin-left: auto; display: flex; gap: 1.5rem; }
+    .audit__stats dt { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--paper-faint); }
+    .audit__stats dd { font-size: 1.5rem; font-variant-numeric: tabular-nums; color: var(--paper); }
+    .audit__stats .st-sup { color: var(--stale); }
+    .audit__lead { max-width: 52rem; color: var(--paper-dim); font-size: var(--t-body); line-height: 1.6; }
+    .audit__lead b { color: var(--paper); font-weight: 500; }
+
+    .audit__panes { display: grid; grid-template-columns: 1fr; gap: 1rem; flex: 1; min-height: 0; }
+    @media (min-width: 900px) { .audit__panes { grid-template-columns: 13rem minmax(0, 1fr) 23rem; } }
+
+    /* doc rail */
+    .audit__docs { display: flex; flex-direction: row; flex-wrap: wrap; gap: 0.4rem; align-content: flex-start; }
+    @media (min-width: 900px) { .audit__docs { flex-direction: column; flex-wrap: nowrap; overflow-y: auto; } }
+    .audit__doc { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 0.6rem; border: 1px solid var(--rule); background: color-mix(in srgb, var(--ink-0) 55%, transparent); cursor: pointer; font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-dim); text-align: left; transition: border-color var(--dur-hover), color var(--dur-hover), background var(--dur-hover); }
+    .audit__doc:hover { color: var(--paper); border-color: var(--rule-strong); }
+    .audit__doc.is-active { color: var(--paper); border-color: color-mix(in srgb, var(--frontier) 50%, transparent); background: color-mix(in srgb, var(--frontier) 8%, transparent); }
+    .audit__doc-n { margin-left: auto; color: var(--paper-faint); }
+    .audit__doc-sup { color: var(--stale); }
+
+    /* source pane */
+    .audit__source, .audit__claims { border: 1px solid var(--rule); background: color-mix(in srgb, var(--ink-0) 45%, transparent); display: flex; flex-direction: column; min-height: 0; }
+    .audit__source-head, .audit__claims-head { display: flex; align-items: center; justify-content: space-between; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.12em; color: var(--paper-dim); }
+    .audit__source-hint { color: var(--paper-faint); text-transform: none; letter-spacing: 0; }
+    .audit__source-body { overflow: auto; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.65; padding: 0.6rem 0; max-height: 68vh; }
+
+    .src-line { display: grid; grid-template-columns: 3rem 1fr; gap: 0.6rem; padding: 0 0.8rem; scroll-margin-top: 4rem; }
+    .src-line__n { color: color-mix(in srgb, var(--paper-faint) 70%, transparent); text-align: right; user-select: none; border-right: 2px solid transparent; padding-right: 0.5rem; }
+    .src-line__t { color: var(--paper-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .src-line.has-claim .src-line__t { color: var(--paper); }
+    .src-line.has-claim.s-current .src-line__n { border-right-color: var(--current); }
+    .src-line.has-claim.s-superseded .src-line__n { border-right-color: var(--stale); }
+    .src-line.has-claim.s-superseded .src-line__t { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 55%, transparent); color: var(--paper-dim); }
+    .src-line.is-lit { background: color-mix(in srgb, var(--frontier) 14%, transparent); }
+    .src-line.is-dim { opacity: 0.4; }
+
+    /* claims pane */
+    .audit__claims-list { list-style: none; overflow-y: auto; max-height: 68vh; }
+    .audit__claim { padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--rule); border-left: 3px solid transparent; cursor: pointer; transition: background var(--dur-hover); }
+    .audit__claim:hover, .audit__claim.is-lit { background: color-mix(in srgb, var(--paper) 4%, transparent); }
+    .audit__claim.s-current { border-left-color: color-mix(in srgb, var(--current) 45%, transparent); }
+    .audit__claim.s-superseded { border-left-color: color-mix(in srgb, var(--stale) 45%, transparent); }
+    .audit__claim-text { font-family: var(--font-serif); font-size: 1rem; color: var(--paper); line-height: 1.35; }
+    .audit__claim.s-superseded .audit__claim-text { color: var(--paper-dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 55%, transparent); }
+    .audit__claim-meta { margin-top: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-faint); }
+    .audit__subj { padding: 0.1rem 0.4rem; border-radius: var(--radius-chip); background: color-mix(in srgb, var(--frontier) 10%, var(--ink-1)); border: 1px solid color-mix(in srgb, var(--frontier) 22%, transparent); color: color-mix(in srgb, var(--frontier) 88%, var(--paper)); }
+    .audit__loc { color: var(--paper-faint); }
+    .audit__rcpt { color: var(--live); }
+    .audit__super { margin-top: 0.4rem; font-family: var(--font-sans); font-size: var(--t-small); color: var(--paper-dim); }
+    .audit__super b { color: var(--current); font-weight: 500; }
+
+    .audit__empty { padding: 1rem 0.8rem; color: var(--paper-faint); font-style: italic; font-family: var(--font-sans); }
+    .audit__note { color: var(--paper-faint); font-size: var(--t-small); }
+    .audit__note code { font-family: var(--font-mono); color: var(--live); }
+  </style>
+
+  <script>
+    import { loadAudit, type AuditData, type AuditDoc, type AuditClaim } from '../lib/audit';
+
+    const $ = (id: string) => document.getElementById(id);
+    const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    (async () => {
+      const data = await loadAudit();
+      if (!data) { $('audit-note')!.hidden = false; $('src-body')!.innerHTML = ''; return; }
+
+      $('st-claims')!.textContent = String(data.totals.claims);
+      $('st-docs')!.textContent = String(data.totals.docs);
+      $('st-sup')!.textContent = String(data.totals.superseded);
+
+      // doc rail
+      const rail = $('audit-docs')!;
+      rail.innerHTML = data.docs.map((d, i) =>
+        `<button class="audit__doc${i === 0 ? ' is-active' : ''}" data-file="${esc(d.file)}">` +
+          `<span class="audit__doc-name">${esc(d.file)}</span>` +
+          `<span class="audit__doc-n">${d.claims.length}${d.superseded ? ` · <span class="audit__doc-sup">${d.superseded}↓</span>` : ''}</span>` +
+        `</button>`
+      ).join('');
+
+      let activeFile = data.docs[0].file;
+      rail.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest('.audit__doc') as HTMLElement | null;
+        if (!btn) return;
+        rail.querySelectorAll('.audit__doc').forEach((b) => b.classList.toggle('is-active', b === btn));
+        activeFile = btn.dataset.file!;
+        selectDoc(activeFile);
+      });
+
+      const srcCache = new Map<string, string>();
+      async function selectDoc(file: string) {
+        const doc = data!.docs.find((d) => d.file === file)!;
+        $('src-name')!.textContent = file;
+        $('src-hint')!.textContent = `${doc.claims.length} claims · ${doc.superseded} superseded`;
+        $('claims-count')!.textContent = ` ${doc.claims.length}`;
+
+        // source
+        let text = srcCache.get(file);
+        if (text == null) {
+          try { const r = await fetch(doc.path); text = r.ok ? await r.text() : ''; }
+          catch { text = ''; }
+          srcCache.set(file, text);
+        }
+        renderSource(doc, text);
+        renderClaims(doc);
+      }
+
+      function renderSource(doc: AuditDoc, text: string) {
+        const body = $('src-body')!;
+        if (!text) { body.innerHTML = `<p class="audit__empty">source not snapshotted — run <code>just self-audit</code></p>`; return; }
+        const byLine = new Map<number, AuditClaim[]>();
+        for (const c of doc.claims) { if (c.line == null) continue; const l = byLine.get(c.line) ?? []; l.push(c); byLine.set(c.line, l); }
+        const lines = text.replace(/\n$/, '').split('\n');
+        body.innerHTML = lines.map((ln, i) => {
+          const n = i + 1;
+          const cs = byLine.get(n);
+          const status = cs ? (cs.some((c) => c.status !== 'current') && cs.every((c) => c.status !== 'current') ? 's-superseded' : 's-current') : '';
+          const cls = ['src-line']; if (cs) cls.push('has-claim', status);
+          return `<div class="${cls.join(' ')}" data-line="${n}"><span class="src-line__n">${n}</span><span class="src-line__t">${esc(ln) || '&nbsp;'}</span></div>`;
+        }).join('');
+      }
+
+      function renderClaims(doc: AuditDoc) {
+        const list = $('claims-list')!;
+        list.innerHTML = doc.claims.map((c) => {
+          const loc = c.line != null ? `${doc.file}:${c.line}` : doc.file;
+          const seq = c.receipt?.sequence != null ? ` · <span class="audit__rcpt">seq ${c.receipt.sequence}</span>` : '';
+          const subj = c.subject_hint ? `<span class="audit__subj">${esc(c.subject_hint)}</span>` : '';
+          const winner = c.superseded_by ? data!.byId.get(c.superseded_by) : null;
+          const sup = winner ? `<div class="audit__super">↳ now: <b>${esc(winner.text)}</b></div>` : '';
+          const st = c.status === 'current' ? 's-current' : 's-superseded';
+          return `<li class="audit__claim ${st}" data-line="${c.line ?? ''}">` +
+            `<div class="audit__claim-text">${esc(c.text)}</div>` +
+            `<div class="audit__claim-meta">${subj}<span class="audit__loc">${esc(loc)}</span>${seq}</div>` +
+            sup +
+          `</li>`;
+        }).join('');
+      }
+
+      // cross-highlight: claim <-> source line
+      const srcBody = $('src-body')!;
+      const claimsList = $('claims-list')!;
+      function litLine(line: string | null, scroll: boolean) {
+        srcBody.querySelectorAll('.src-line.is-lit').forEach((el) => el.classList.remove('is-lit'));
+        if (!line) return;
+        const row = srcBody.querySelector(`.src-line[data-line="${line}"]`);
+        if (row) { row.classList.add('is-lit'); if (scroll) row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      }
+      claimsList.addEventListener('mouseover', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litLine(li.dataset.line || null, false); });
+      claimsList.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litLine(li.dataset.line || null, true); });
+      srcBody.addEventListener('mouseover', (e) => {
+        const row = (e.target as HTMLElement).closest('.src-line') as HTMLElement;
+        const line = row?.dataset.line;
+        claimsList.querySelectorAll('.audit__claim.is-lit').forEach((el) => el.classList.remove('is-lit'));
+        if (line) claimsList.querySelectorAll(`.audit__claim[data-line="${line}"]`).forEach((el) => el.classList.add('is-lit'));
+      });
+
+      selectDoc(activeFile);
+    })();
+  </script>
+</Base>

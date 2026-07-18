@@ -1,0 +1,235 @@
+# Qwen Cloud hackathon — Track 1: MemoryAgent
+
+Rebuild note: supersedes, see [ADR-003](ADR-003-single-crate-rebuild.md).
+
+Working doc for the [Global AI Hackathon Series with Qwen Cloud](https://qwencloud-hackathon.devpost.com/)
+submission. **Deadline: Jul 20, 2026, 2:00pm PT.** (Extended from Jul 9 — see
+the [deadline extension](https://qwencloud-hackathon.devpost.com/updates/45184-more-time-to-build-submission-deadline-extended-to-july-20).)
+
+## The pitch
+
+Every memory agent accumulates; almost none *retire*. RAG-over-a-vector-DB
+memory keeps contradictory preferences forever and hopes retrieval ranks the
+right one. texo's claim-chain gives an agent memory with **supersession
+semantics**: when a remembered fact changes, the old claim is retired with a
+receipt — *what* superseded it, *when*, from *which source line*. The agent
+doesn't just remember; it knows when to stop believing things.
+
+Track-1 requirement → texo mechanism:
+
+| Track 1 asks for | texo mechanism |
+|---|---|
+| Persistent memory accumulating across sessions | append-only BatPak journal, deterministic replay |
+| Timely forgetting of outdated information | supersession events + stale-claim projection (typed forgetting, not decay) |
+| Recalling critical memories in limited context | compiled current-context projection (JSON/MCP), only *current* claims |
+| Efficient storage & retrieval | content-addressed claims, embed prefilter, record-once LLM cache |
+
+## Submission requirements → status
+
+- [x] Public repo (`github.com/freebatteryfactory/texo`)
+- [x] Open-source license, detectable in About (LICENSE-MIT + LICENSE-APACHE, matches Cargo.toml)
+- [ ] Uses Qwen models on Qwen Cloud (DashScope OpenAI-compatible mode — see gaps below)
+- [x] The agent itself (Track 1 wants an *agent*, not a library — `texo serve`)
+- [ ] Backend deployed on Alibaba Cloud + short proof recording + judge-visible code file using Alibaba Cloud APIs
+- [ ] Architecture diagram (Qwen Cloud ↔ backend ↔ journal ↔ agent surfaces)
+- [ ] ~3-min public demo video (YouTube/Vimeo)
+- [ ] Text description + track identification on Devpost
+- [ ] Optional: blog post (separate $500×10 prize)
+
+**Rules note — pre-existing project.** texo predates the submission window
+(opened May 26, 2026). The rules allow this if the project is *significantly
+updated* during the window and the update is explained. Everything below the
+line in "In-window changelog" is built during the window; the Devpost
+description must say so explicitly.
+
+## Gaps to close (code)
+
+1. ~~**Embed model has no override.**~~ **Done (Jul 4; superseded by the Jul 12
+   gateway).** Every live role now resolves through the neutral `TEXO_LLM_*`
+   schema; the unused rerank and NLI roles were deleted.
+2. **Validate the pipeline on Qwen models.** Extractor + relater prompts
+   demand strict JSON; verify with the config below. Oracle: the key-gated
+   live tests + the Helios corpus (must stay 5/5).
+3. ~~**The memory agent.**~~ **Done pending Qwen validation (Jul 5), rebuilt
+   Jul 6 as one binary.** `texo serve` is a sync HTTP chat agent and thin
+   consumer of the claim-chain (sibling to the MCP surface — texo stays the
+   substrate, journal stays source of truth):
+   - every turn injects the replayed *current* claims as trusted memory (with
+     `path:line` + byte-span receipts) and lists superseded claims as
+     "outdated — do not trust";
+   - `POST /api/session/end` → transcript rendered to `sessions/<id>.md` →
+     ingest (`texo extract` LLM path via `extractor_cmd`) → relate;
+   - changed preferences get *superseded*, and the one-file UI at `/` shows
+     the chain live (current, struck-through stale + what replaced it,
+     conflicts). Chat uses the shared model gateway; remaining work is
+     validating the whole loop on Qwen models (gap 2).
+4. **Alibaba Cloud deployment.** Agent backend on ECS; deploy config/script in
+   repo doubles as the judge-visible "uses Alibaba Cloud" code file.
+5. ~~**Provider-neutral configuration.**~~ **Done (Jul 12).** The only schema is
+   `TEXO_LLM_*`; there are no provider-specific aliases or dual paths.
+
+Deliberately **not** in scope: ADR-002 code-awareness and the WASM roadmap
+item (both post-submission). The batpak 0.8.2 → 0.9.0 bump — originally
+deferred for deadline risk — landed Jul 4 after a behavior-preserving
+migration with empirical store-compat proof (a 0.8.2-written store replays
+byte-identically on 0.9.0; full suite + frozen Helios regression green, zero
+golden churn). No 0.9.0 primitives (lanes, `import_events`) are adopted yet.
+
+## Qwen Cloud setup (verified Jul 4, 2026)
+
+- **Console / signup:** [home.qwencloud.com](https://home.qwencloud.com) — free
+  90-day quota on signup, no payment method required. API keys at
+  `home.qwencloud.com/api-keys`. Hackathon credits coupon: form linked from the
+  [Devpost resources page](https://qwencloud-hackathon.devpost.com/resources).
+- **Endpoint:** OpenAI-compatible base URL (international / Singapore):
+  `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` — serves both
+  `/chat/completions` and `/embeddings`. Keys are **not** interchangeable
+  across regions.
+- **Models:** chat `qwen3.7-max` (flagship) / `qwen3.7-plus`; embeddings
+  `text-embedding-v4` (works through compatible-mode `/embeddings`,
+  `dimensions` param supported). `qwen3-rerank` exists but only via
+  DashScope's native API — irrelevant here: texo's relate path uses only
+  embedder + relater.
+
+```sh
+export TEXO_LLM_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+export TEXO_LLM_API_KEY=sk-...                # DashScope/Qwen Cloud key
+export TEXO_LLM_PROPOSE_MODEL=qwen3.7-max
+export TEXO_LLM_RELATE_MODEL=qwen3.7-max
+export TEXO_LLM_EMBED_MODEL=text-embedding-v4
+```
+
+(`qwen3.7-plus` for both LLM roles once validated, if cost matters; the
+relater is the hardest judgment in the pipeline, so downgrade it last.)
+
+- **Deployment (Alibaba Cloud proper, separate account/console at
+  [alibabacloud.com](https://www.alibabacloud.com)):** ECS instance in
+  Singapore (`ap-southeast-1`, same side as `dashscope-intl`), agent backend as
+  a systemd service. The deploy script committed to this repo doubles as the
+  judge-visible "uses Alibaba Cloud" code file; record the proof video on the
+  live instance. Check the "Alibaba Resource Guide" + "Proof of Deployment"
+  Drive docs on the Devpost resources page before provisioning.
+
+## Architecture
+
+```mermaid
+flowchart TB
+  UI["Browser: chat + live memory UI<br/>(single self-contained page)"]
+  subgraph ECS["Alibaba Cloud ECS — ap-southeast-1 (provisioned via deploy/)"]
+    AGENT["texo serve<br/>sync HTTP memory agent"]
+    EXTRACT["texo extract<br/>record-once LLM extractor + faithfulness gate"]
+    JOURNAL[("BatPak journal (.texo store)<br/>append-only · hash-chained · receipts")]
+  end
+  subgraph QWEN["Qwen Cloud — DashScope compatible mode"]
+    CHAT["qwen3.7-max · chat"]
+    PROP["qwen3.7-max · claim extraction"]
+    EMB["text-embedding-v4 · cluster prefilter"]
+    JUDGE["qwen3.7-max · relation judge"]
+  end
+  UI <-->|"/api/chat · /api/memory · /api/session/end"| AGENT
+  AGENT <-->|"chat/completions"| CHAT
+  AGENT -->|"session end: transcript → sessions/id.md"| EXTRACT
+  EXTRACT <-->|"chat/completions"| PROP
+  EXTRACT -->|"claims + char-span/model provenance"| JOURNAL
+  AGENT <-->|"embeddings"| EMB
+  AGENT <-->|"supersede / conflict / duplicate"| JUDGE
+  AGENT -->|"relate verdicts as events"| JOURNAL
+  JOURNAL -->|"deterministic replay → current context<br/>(stale claims quarantined with receipts)"| AGENT
+```
+
+*(GitHub renders this; screenshot it for the Devpost image field.)*
+
+## Plan
+
+- **Jul 4** — docs/compliance sweep (this commit); register on Devpost, claim
+  Qwen Cloud trial + hackathon credits coupon.
+- **Jul 5** — embed-model override; Helios green on Qwen models end-to-end.
+- **Jul 5–6** — memory agent loop (chat + ingest-on-session-end + context
+  compile), cross-session demo scenario.
+- **Jul 7** — ECS deployment, proof recording, architecture diagram.
+- **Jul 8** — demo video, Devpost description, blog post. **Submit Jul 8**,
+  one day early.
+
+## Known demo consideration (transcript phrasing)
+
+Chat transcripts are **first-person prose**. The extractor tends to normalize
+subjects ("we deploy on Fridays" → "The team deploys on Fridays"), and the
+faithfulness gate — correctly — rejects paraphrases whose entities aren't
+grounded in the source, so a first-person fact can fail to journal. Observed
+live Jul 5 (the claim was proposed, then gated). Declaratively-phrased facts
+journal reliably; the demo script should phrase facts with explicit subjects.
+Proper fix is extractor-prompt iteration against a transcript-style oracle
+case (same discipline as the reverted self-assertion rule) — post-submission
+unless time allows.
+
+## In-window changelog (the "significantly updated" evidence)
+
+- **Jul 4:** license files added; docs generalized to OpenAI-compatible
+  backends; this plan.
+- **Jul 4:** provider-specific env overrides were added for model selection;
+  this transitional surface was deleted by the Jul 12 neutral gateway. The
+  historical precedence logic remained covered while the unused rerank role
+  was removed.
+- **Jul 4:** proposer self-assertion rule attempted (`PROPOSE_PROMPT_VERSION`
+  3→4) and **reverted the same day** after the live integrated oracle dropped
+  to 4/5 — see ROADMAP for the lesson (prompt changes are pipeline changes).
+- **Jul 4:** VS Code extension manners landed (timeout, debounce, status bar,
+  missing-config notice).
+- **Jul 4:** batpak 0.8.2 → 0.9.0 migration landed, behavior-preserving, with
+  empirical store-compat proof (0.8.2-written store replays byte-identically).
+- **Jul 4:** char offsets + model provenance on `ClaimRecorded` landed
+  (ROADMAP v1.1 item): span-level byte ranges + extractor model/prompt
+  version on every claim, `#[serde(default)]` back-compat, zero golden churn,
+  claim IDs unchanged — precise "jump to source" for the memory agent.
+- **Jul 4:** cluster-first relate landed (O(n²) fix): judge pairs bounded to
+  within connected-component clusters (~O(n · cluster_size)), verdict
+  semantics unchanged, live-validated 5/5 on Helios. Default
+  `cosine_threshold` retuned 0.78 → 0.65 (measured Helios same-subject floor
+  ≈ 0.70; rationale at the constant). Directly serves the memory agent:
+  repeated relate passes over a growing memory corpus stay affordable.
+- **Jul 5:** `texo-agent` landed — the Track-1 memory agent (later folded into
+  `texo serve` in WO-4) with a one-file vanilla-JS UI. Chat is grounded in the replayed current claims
+  (every injected memory carries `path:line` + byte-span receipts;
+  superseded claims are injected as "outdated — do not trust"); session end
+  renders the transcript to `sessions/<id>.md`, ingests through the
+  `texo extract` seam, and runs the relate pass so the next session sees the
+  updated chain. Self-bootstraps its workspace (`extractor_cmd` +
+  `[semantics] enabled`), honors the record-once cache env vars, keeps
+  BatPak I/O behind typed texo host APIs. Real-store tests
+  only (cross-session supersession, span receipts slicing the transcript,
+  HTTP surface in-process); the LLM call is isolated behind a unit-tested
+  pure request builder.
+- **Jul 5:** memory agent driven live end-to-end (three-session demo: teach →
+  change → recall; supersession with receipts and cited recall all verified
+  against real models). Transcript ingestion narrowed to user utterances only
+  — the assistant's restatements were journaling every fact twice.
+- **Jul 6:** WO-0 flattened the workspace into one `texo` crate and binary,
+  added BatPak-family risk spikes, and ported schema-independent modules.
+- **Jul 6:** WO-1 introduced event schema v2, transition machines,
+  per-entity projections, session lanes, and deterministic `WorkspaceView`
+  assembly.
+- **Jul 6:** WO-2a added the unified `TexoError`, syncbat `OpEnv`,
+  `TexoEffectBackend`, host composition, and the first six operations.
+- **Jul 6:** WO-2b replaced the old HTTP/model stack with a hand-rolled sync
+  HTTP/1.1 client, retry loop, OpenAI-compatible edge, semantic backends, and
+  chat builders.
+- **Jul 6:** WO-3 wired the CLI through the operation kit, restored read and
+  compile operations, and re-blessed schema-v2 goldens deliberately.
+- **Jul 6:** WO-4 landed session lanes, the sync HTTP server, LiteShip SSE,
+  `texo serve`, and the 0.9.0 canonical interface fingerprint.
+- **Jul 6:** WO-5 landed the LLM extractor, record-once caches, `texo extract`,
+  `texo relate`, and the Helios frozen trophy guard on the new stack.
+- **Jul 6:** WO-6 closes the rebuild with sync MCP stdio, `just drift`, the
+  one-binary deploy path, ADR-003, and removal of the old crates.
+
+## Deployment update (Jul 6 rebuild closeout)
+
+The deploy ships a single binary: `/opt/texo/bin/texo serve`. The systemd
+unit still uses the `texo-agent` service name for operational continuity, but
+the workspace and env file move to `/opt/texo/`. The deploy script stops the
+old service, preserves the durable journal workspace, migrates a live env file
+when present, and ships only the `texo` binary.
+
+texo now builds on batpak family 0.10.0; see ROADMAP.md for the remaining
+substrate work (hostbat manifest remount, MemFs/SimFs test stores, and SSE
+replay).

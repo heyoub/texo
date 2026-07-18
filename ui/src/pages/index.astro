@@ -221,13 +221,18 @@ import { REEL } from '../lib/replay';
     <div class="ask__out sans" id="ask-out" hidden></div>
   </section>
 
-  <!-- ═══ ACT IV · DRIFT ════════════════════════════════════════════════ -->
-  <section class="act wrap drift-teaser">
+  <!-- ═══ ACT IV · TEXO REMEMBERS TEXO (dogfood) ═══════════════════════ -->
+  <section class="act wrap dogfood" id="dogfood">
     <div class="reveal">
-      <span class="eyebrow">the party trick</span>
-      <h2 class="serif">texo audits its own docs.</h2>
-      <p class="sec-head__sub sans">Feed the repo's own prose back through the pipeline and its stale architecture claims come back superseded — with receipts — by the docs that replaced them. The thesis, demonstrated on the tool.</p>
-      <a class="hero__cta press" href="/drift.html">see the drift →</a>
+      <span class="eyebrow">dogfooding · on its own repository</span>
+      <h2 class="serif">texo remembers texo.</h2>
+      <p class="sec-head__sub sans">We pointed texo at its <b>own repository</b> — every ADR, the spec, the architecture notes — and it extracted each factual claim with a receipt back to the source line. Not a mock corpus: the tool, reading itself, catching where its own docs went stale.</p>
+      <dl class="dogfood__stats mono reveal" data-delay="1">
+        <div><dt>claims remembered</dt><dd id="df-claims">214</dd></div>
+        <div><dt>docs ingested</dt><dd id="df-docs">12</dd></div>
+        <div><dt>already superseded</dt><dd class="df-sup" id="df-sup">11</dd></div>
+      </dl>
+      <a class="hero__cta press reveal" data-delay="2" href="/audit.html">open the self-audit — source vs. memory →</a>
     </div>
   </section>
 
@@ -428,8 +433,14 @@ import { REEL } from '../lib/replay';
     .ask__out { margin-top: 1rem; max-width: 46rem; padding: 0.9rem 1.1rem; border: 1px solid var(--rule); background: var(--ink-0); color: var(--paper-dim); line-height: 1.6; }
     .ask__out code { font-family: var(--font-mono); color: var(--live); }
 
-    .drift-teaser h2 { font-size: var(--t-h1); margin-top: 0.5rem; }
-    .drift-teaser .hero__cta { display: inline-block; margin-top: 1.2rem; }
+    .dogfood h2 { font-size: var(--t-h1); margin-top: 0.5rem; }
+    .dogfood .sec-head__sub { max-width: 46rem; margin-top: 0.9rem; }
+    .dogfood b { color: var(--paper); font-weight: 500; }
+    .dogfood__stats { display: flex; gap: 2.4rem; flex-wrap: wrap; margin: 1.8rem 0 0.4rem; }
+    .dogfood__stats dt { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--paper-faint); }
+    .dogfood__stats dd { font-size: clamp(1.8rem, 4vw, 2.6rem); font-variant-numeric: tabular-nums; color: var(--paper); margin-top: 0.2rem; }
+    .dogfood__stats .df-sup { color: var(--stale); }
+    .dogfood .hero__cta { display: inline-block; margin-top: 1.2rem; }
 
     .foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; padding: 2.5rem var(--gutter); border-top: 1px solid var(--rule); color: var(--paper-faint); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.12em; }
 
@@ -493,6 +504,17 @@ import { REEL } from '../lib/replay';
         onState: (s) => { current = s; render(s); },
       });
     }
+
+    // ── dogfood stats from the self-audit snapshot (keeps the headline honest) ──
+    fetch('/self-audit.json').then((r) => (r.ok ? r.json() : null)).then((raw) => {
+      if (!raw) return;
+      const arr: any[] = Array.isArray(raw) ? raw : (raw.claims ?? []);
+      if (!arr.length) return;
+      const docs = new Set(arr.map((c) => String(c.source?.path ?? c.source_path ?? '').split('/').pop()).filter(Boolean));
+      const sup = arr.filter((c) => (c.status ?? 'current') !== 'current').length;
+      const set = (id: string, v: number) => { const el = $(id); if (el) el.textContent = String(v); };
+      set('df-claims', arr.length); set('df-docs', docs.size); set('df-sup', sup);
+    }).catch(() => {});
 
     // ── live: on a real supersession (0xE003), refetch ──
     const statusEl = $('stream-status');

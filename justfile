@@ -220,3 +220,23 @@ drift-ui:
       && { [ -n "${TEXO_LLM_API_KEY:-}" ] && TEXO_RELATE_CACHE="$OLDPWD/.texo/cache/relate-drift" "$TEXO" relate || true; } \
       && "$TEXO" claims --json > "$OUT" )
     echo "wrote $OUT ($(grep -c 'claim_id' "$OUT") claims)"
+
+# "texo remembers texo": ingest the repo's OWN docs and snapshot the claims +
+# corpus into the UI, powering /audit.html (source pane vs. remembered-claims
+# pane, receipts cross-highlighting source lines). The curated corpus lives at
+# examples/texo-self/docs (committed). Optional semantic pass adds conflicts on
+# top of heuristic supersessions when TEXO_LLM_API_KEY is set. Rebuild the UI
+# (`cd ui && pnpm build`) afterwards to ship the refreshed snapshot.
+self-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -q --bin texo
+    TEXO="$(pwd)/target/debug/texo"
+    mkdir -p examples/texo-self/docs ui/public/corpus
+    cp ADR-*.md ARCHITECTURE.md SPEC.md README.md HACKATHON.md INTELLIGENCE.md ROADMAP.md INVARIANTS.md CONVENTIONS.md AGENTS.md examples/texo-self/docs/
+    "$TEXO" init --workspace self >/dev/null 2>&1 || true
+    "$TEXO" ingest examples/texo-self/docs --workspace self
+    [ -n "${TEXO_LLM_API_KEY:-}" ] && "$TEXO" relate --workspace self || true
+    "$TEXO" claims --workspace self --json > ui/public/self-audit.json
+    cp examples/texo-self/docs/*.md ui/public/corpus/
+    echo "wrote ui/public/self-audit.json ($(grep -c 'claim_id' ui/public/self-audit.json) claims) + ui/public/corpus/ ($(ls ui/public/corpus | wc -l) docs)"
