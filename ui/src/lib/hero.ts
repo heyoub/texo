@@ -77,7 +77,7 @@ class Field {
     const loc = gl.getAttribLocation(p, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     for (const n of ['u_res', 'u_time', 'u_heat', 'u_strike', 'u_frontier', 'u_live', 'u_current', 'u_stale', 'u_conflict', 'u_ink']) this.U[n] = gl.getUniformLocation(p, n);
     gl.uniform2f(this.U.u_res!, RW, RH);
-    gl.uniform3fv(this.U.u_frontier!, css('--frontier', '#818cf8'));
+    gl.uniform3fv(this.U.u_frontier!, css('--frontier', '#5c9ce0'));
     gl.uniform3fv(this.U.u_live!, css('--live', '#2dd4bf'));
     gl.uniform3fv(this.U.u_current!, css('--current', '#4ade80'));
     gl.uniform3fv(this.U.u_stale!, css('--stale', '#fbbf24'));
@@ -106,7 +106,7 @@ const P = {
   paper: () => hex(css('--paper', '#e7e5e4')),
   dim: () => hex(css('--paper-dim', '#a8a29e')),
   faint: () => 'rgba(168,162,158,0.55)',
-  frontier: () => hex(css('--frontier', '#818cf8')),
+  frontier: () => hex(css('--frontier', '#5c9ce0')),
   live: () => hex(css('--live', '#2dd4bf')),
   current: () => hex(css('--current', '#4ade80')),
   stale: () => hex(css('--stale', '#fbbf24')),

@@ -10,7 +10,7 @@ export const dark = Theme.make({
   name: 'brand',
   variants: ['light', 'dark'],
   tokens: {
-    primary: { light: '#4338ca', dark: '#818cf8' },
+    primary: { light: '#2f6fb3', dark: '#5c9ce0' },
     secondary: { light: '#0d9488', dark: '#2dd4bf' },
     surface: { light: '#faf9f6', dark: '#0f1115' },
     panel: { light: '#ffffff', dark: '#171a21' },

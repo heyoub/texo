@@ -9,9 +9,12 @@ import { Token } from '@czap/core';
 export const primary = Token.make({
   name: 'primary',
   category: 'color',
+  // the FRONTIER — structural "fresh-ink" line. Deliberately azure, NOT the
+  // periwinkle #818cf8 (reads as generic-AI indigo) and kept distinct from the
+  // warm paper text ramp so the current-line never blends into body copy.
   axes: ['theme'],
-  values: { light: '#4338ca', dark: '#818cf8' },
-  fallback: '#4338ca',
+  values: { light: '#2f6fb3', dark: '#5c9ce0' },
+  fallback: '#2f6fb3',
 });
 
 export const secondary = Token.make({
