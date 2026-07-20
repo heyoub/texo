@@ -1,6 +1,8 @@
 [default]
-# The last entry ignores content-addressed ids (claim_/conflict_/src_ + hex):
-# the hex can spell anything ("...beed...") and they appear in generated trophies.
+# The last two entries ignore content-addressed ids (claim_/conflict_/src_ + hex)
+# and bare 8+-char hex tokens (receipt ids, event_ids, journal hashes): the hex can
+# spell anything ("...abd...", "...beed...") and appears across the UI + generated
+# snapshots. A real English word is never 8+ chars of only [0-9a-f], so this is safe.
 extend-ignore-re = [
     "(?i)crate",
     "Ba?tPak",
@@ -9,6 +11,7 @@ extend-ignore-re = [
     "serde",
     "rmcp",
     "\\b(claim|conflict|src)_[0-9a-f]+\\b",
+    "\\b[0-9a-f]{8,}\\b",
 ]
 
 [files]
