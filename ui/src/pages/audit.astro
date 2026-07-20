@@ -76,17 +76,34 @@ import Base from '../layouts/Base.astro';
     .audit__source, .audit__claims { border: 1px solid var(--rule); background: color-mix(in srgb, var(--ink-0) 45%, transparent); display: flex; flex-direction: column; min-height: 0; }
     .audit__source-head, .audit__claims-head { display: flex; align-items: center; justify-content: space-between; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.12em; color: var(--paper-dim); }
     .audit__source-hint { color: var(--paper-faint); text-transform: none; letter-spacing: 0; }
-    .audit__source-body { overflow: auto; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.65; padding: 0.6rem 0; max-height: 68vh; }
+    .audit__source-body { overflow: auto; padding: 0.4rem 1.1rem 2.5rem; max-height: 68vh; }
 
-    .src-line { display: grid; grid-template-columns: 3rem 1fr; gap: 0.6rem; padding: 0 0.8rem; scroll-margin-top: 4rem; }
-    .src-line__n { color: color-mix(in srgb, var(--paper-faint) 70%, transparent); text-align: right; user-select: none; border-right: 2px solid transparent; padding-right: 0.5rem; }
-    .src-line__t { color: var(--paper-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
-    .src-line.has-claim .src-line__t { color: var(--paper); }
-    .src-line.has-claim.s-current .src-line__n { border-right-color: var(--current); }
-    .src-line.has-claim.s-superseded .src-line__n { border-right-color: var(--stale); }
-    .src-line.has-claim.s-superseded .src-line__t { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 55%, transparent); color: var(--paper-dim); }
-    .src-line.is-lit { background: color-mix(in srgb, var(--frontier) 14%, transparent); }
-    .src-line.is-dim { opacity: 0.4; }
+    /* rendered markdown — readable prose in the ledger palette */
+    .md { font-family: var(--font-sans); font-size: 0.9rem; line-height: 1.7; color: var(--paper-dim); }
+    .md [data-line] { scroll-margin-top: 3rem; }
+    .md h1, .md h2, .md h3, .md h4 { font-family: var(--font-serif); font-weight: 400; color: var(--paper); line-height: 1.2; letter-spacing: -0.01em; margin: 1.35em 0 0.5em; }
+    .md h1 { font-size: 1.5rem; } .md h2 { font-size: 1.24rem; } .md h3 { font-size: 1.06rem; } .md h4 { font-size: 0.96rem; }
+    .md h1:first-child, .md h2:first-child { margin-top: 0.2em; }
+    .md p { margin: 0.6em 0; }
+    .md a { color: var(--frontier); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--frontier) 30%, transparent); }
+    .md strong { color: var(--paper); font-weight: 600; }
+    .md em { font-style: italic; }
+    .md code { font-family: var(--font-mono); font-size: 0.85em; background: var(--ink-1); padding: 0.1em 0.35em; border-radius: 2px; color: var(--live); overflow-wrap: anywhere; }
+    .md pre { background: var(--ink-1); border: 1px solid var(--rule); padding: 0.75rem 0.9rem; overflow-x: auto; margin: 0.8em 0; }
+    .md pre code { background: none; padding: 0; color: var(--paper-dim); font-size: 0.82rem; }
+    .md ul, .md ol { margin: 0.6em 0; padding-left: 1.4em; }
+    .md li { margin: 0.3em 0; }
+    .md blockquote { border-left: 2px solid var(--rule-strong); padding-left: 1em; margin: 0.8em 0; color: var(--paper-faint); }
+    .md hr { border: none; border-top: 1px solid var(--rule); margin: 1.3em 0; }
+    .md table { border-collapse: collapse; margin: 0.8em 0; font-size: 0.82em; display: block; overflow-x: auto; }
+    .md th, .md td { border: 1px solid var(--rule); padding: 0.35em 0.6em; text-align: left; }
+    .md th { color: var(--paper); }
+
+    /* claim-bearing blocks: a status gutter + hover/select highlight */
+    .md .has-claim { border-left: 2px solid transparent; padding-left: 0.85rem; margin-left: -0.95rem; border-radius: 0 2px 2px 0; transition: background var(--dur-hover); }
+    .md .has-claim.s-current { border-left-color: color-mix(in srgb, var(--current) 55%, transparent); }
+    .md .has-claim.s-superseded { border-left-color: color-mix(in srgb, var(--stale) 55%, transparent); }
+    .md .is-lit { background: color-mix(in srgb, var(--frontier) 14%, transparent); border-left-color: var(--frontier) !important; }
 
     /* claims pane */
     .audit__claims-list { list-style: none; overflow-y: auto; max-height: 68vh; }
@@ -110,6 +127,15 @@ import Base from '../layouts/Base.astro';
 
   <script>
     import { loadAudit, type AuditData, type AuditDoc, type AuditClaim } from '../lib/audit';
+    import MarkdownIt from 'markdown-it';
+
+    const md = new MarkdownIt({ html: false, linkify: true });
+    // tag every block-level element with the source line it starts on, so a
+    // claim can still be cross-highlighted to its exact spot in the rendered doc
+    md.core.ruler.push('source_line', (state) => {
+      for (const t of state.tokens) if (t.map && t.type.endsWith('_open')) t.attrSet('data-line', String(t.map[0] + 1));
+      return true;
+    });
 
     const $ = (id: string) => document.getElementById(id);
     const esc = (s: string) => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
@@ -158,19 +184,27 @@ import Base from '../layouts/Base.astro';
         renderClaims(doc);
       }
 
+      let srcBlocks: { el: HTMLElement; line: number }[] = [];
+      function blockForLine(line: number): HTMLElement | null {
+        let hit: HTMLElement | null = null;
+        for (const b of srcBlocks) { if (b.line <= line) hit = b.el; else break; }
+        return hit;
+      }
       function renderSource(doc: AuditDoc, text: string) {
         const body = $('src-body')!;
         if (!text) { body.innerHTML = `<p class="audit__empty">source not snapshotted — run <code>just self-audit</code></p>`; return; }
-        const byLine = new Map<number, AuditClaim[]>();
-        for (const c of doc.claims) { if (c.line == null) continue; const l = byLine.get(c.line) ?? []; l.push(c); byLine.set(c.line, l); }
-        const lines = text.replace(/\n$/, '').split('\n');
-        body.innerHTML = lines.map((ln, i) => {
-          const n = i + 1;
-          const cs = byLine.get(n);
-          const status = cs ? (cs.some((c) => c.status !== 'current') && cs.every((c) => c.status !== 'current') ? 's-superseded' : 's-current') : '';
-          const cls = ['src-line']; if (cs) cls.push('has-claim', status);
-          return `<div class="${cls.join(' ')}" data-line="${n}"><span class="src-line__n">${n}</span><span class="src-line__t">${esc(ln) || '&nbsp;'}</span></div>`;
-        }).join('');
+        body.innerHTML = `<div class="md">${md.render(text)}</div>`;
+        srcBlocks = Array.from(body.querySelectorAll<HTMLElement>('[data-line]'))
+          .map((el) => ({ el, line: parseInt(el.getAttribute('data-line') || '0', 10) }))
+          .sort((a, b) => a.line - b.line);
+        // mark the block each claim came from, colour it by status, remember the claim lines
+        for (const c of doc.claims) {
+          if (c.line == null) continue;
+          const el = blockForLine(c.line);
+          if (!el) continue;
+          el.classList.add('has-claim', c.status === 'current' ? 's-current' : 's-superseded');
+          el.dataset.claimLines = `${el.dataset.claimLines || ''} ${c.line}`.trim();
+        }
       }
 
       function renderClaims(doc: AuditDoc) {
@@ -193,19 +227,21 @@ import Base from '../layouts/Base.astro';
       // cross-highlight: claim <-> source line
       const srcBody = $('src-body')!;
       const claimsList = $('claims-list')!;
-      function litLine(line: string | null, scroll: boolean) {
-        srcBody.querySelectorAll('.src-line.is-lit').forEach((el) => el.classList.remove('is-lit'));
+      function litBlock(line: string | null, scroll: boolean) {
+        srcBody.querySelectorAll('.md .is-lit').forEach((el) => el.classList.remove('is-lit'));
         if (!line) return;
-        const row = srcBody.querySelector(`.src-line[data-line="${line}"]`);
-        if (row) { row.classList.add('is-lit'); if (scroll) row.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+        const el = blockForLine(parseInt(line, 10));
+        if (el) { el.classList.add('is-lit'); if (scroll) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
       }
-      claimsList.addEventListener('mouseover', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litLine(li.dataset.line || null, false); });
-      claimsList.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litLine(li.dataset.line || null, true); });
+      claimsList.addEventListener('mouseover', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litBlock(li.dataset.line || null, false); });
+      claimsList.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.audit__claim') as HTMLElement; if (li) litBlock(li.dataset.line || null, true); });
       srcBody.addEventListener('mouseover', (e) => {
-        const row = (e.target as HTMLElement).closest('.src-line') as HTMLElement;
-        const line = row?.dataset.line;
+        const blk = (e.target as HTMLElement).closest('[data-line]') as HTMLElement;
         claimsList.querySelectorAll('.audit__claim.is-lit').forEach((el) => el.classList.remove('is-lit'));
-        if (line) claimsList.querySelectorAll(`.audit__claim[data-line="${line}"]`).forEach((el) => el.classList.add('is-lit'));
+        if (!blk || !blk.dataset.claimLines) return;
+        for (const ln of blk.dataset.claimLines.split(' ')) {
+          claimsList.querySelectorAll(`.audit__claim[data-line="${ln}"]`).forEach((el) => el.classList.add('is-lit'));
+        }
       });
 
       selectDoc(activeFile);

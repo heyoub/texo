@@ -12,6 +12,7 @@
     "@czap/core": "0.8.0",
     "@czap/web": "0.8.0",
     "astro": "^7.0.0",
+    "markdown-it": "^14.3.0",
     "typescript": "^5.7.0"
   },
   "pnpm": {
@@ -22,5 +23,8 @@
       "esbuild",
       "msgpackr-extract"
     ]
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2"
   }
 }

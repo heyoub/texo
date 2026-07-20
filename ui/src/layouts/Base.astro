@@ -82,6 +82,9 @@ const { title = 'texo — claim-chain memory', bare = false } = Astro.props;
       .ledger-canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: 0; transition: opacity 1.2s var(--ease-house); }
       html[data-field='on'] .ledger-canvas { opacity: 1; }
 
+      /* content sits above the HUD so scrolling blocks duck OVER the frontier readout */
+      main { position: relative; z-index: 10; }
+
       /* ── ledger header: a thin ruled bar ── */
       .led-head {
         position: sticky; top: 0; z-index: 100;
@@ -114,7 +117,7 @@ const { title = 'texo — claim-chain memory', bare = false } = Astro.props;
 
       /* ── Frontier HUD: machinery made visible ── */
       .hud {
-        position: fixed; bottom: 1rem; left: 1rem; z-index: 200;
+        position: fixed; bottom: 1rem; left: 1rem; z-index: 6;
         padding: 0.7rem 0.85rem;
         background: color-mix(in srgb, var(--ink-1) 88%, transparent);
         backdrop-filter: blur(12px);

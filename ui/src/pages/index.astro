@@ -228,9 +228,9 @@ import { REEL } from '../lib/replay';
       <h2 class="serif">texo remembers texo.</h2>
       <p class="sec-head__sub sans">We pointed texo at its <b>own repository</b> — every ADR, the spec, the architecture notes — and it extracted each factual claim with a receipt back to the source line. Not a mock corpus: the tool, reading itself, catching where its own docs went stale.</p>
       <dl class="dogfood__stats mono reveal" data-delay="1">
-        <div><dt>claims remembered</dt><dd id="df-claims">214</dd></div>
-        <div><dt>docs ingested</dt><dd id="df-docs">12</dd></div>
-        <div><dt>already superseded</dt><dd class="df-sup" id="df-sup">11</dd></div>
+        <div><dd id="df-claims">214</dd><dt>claims remembered</dt></div>
+        <div><dd id="df-docs">12</dd><dt>docs ingested</dt></div>
+        <div><dd class="df-sup" id="df-sup">11</dd><dt>already superseded</dt></div>
       </dl>
       <a class="hero__cta press reveal" data-delay="2" href="/audit.html">open the self-audit — source vs. memory →</a>
     </div>
@@ -317,17 +317,17 @@ import { REEL } from '../lib/replay';
     /* — pin (enhanced): sticky stage, scroll drives the tape under a playhead — */
     .replay[data-mode='pin'] .replay__stage { position: sticky; top: 0; height: 100vh; overflow: hidden; display: flex; align-items: center; }
     .replay[data-mode='pin'] .replay__stage::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--rule-strong); }
-    .replay[data-mode='pin'] .replay__tape { display: flex; gap: 3.5rem; width: max-content; padding-left: 60vw; padding-right: 40vw; align-items: center; will-change: transform; }
+    .replay[data-mode='pin'] .replay__tape { position: relative; z-index: 2; display: flex; gap: 3.5rem; width: max-content; padding-left: 60vw; padding-right: 40vw; align-items: center; will-change: transform; }
 
     /* the playhead — the frontier, made a physical line */
-    .replay__head { position: absolute; left: 50%; top: 14%; bottom: 14%; width: 2px; background: linear-gradient(to bottom, transparent, var(--frontier) 18%, var(--frontier) 82%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--frontier) 70%, transparent); z-index: 4; pointer-events: none; }
+    .replay__head { position: absolute; left: 50%; top: 14%; bottom: 14%; width: 2px; background: linear-gradient(to bottom, transparent, var(--frontier) 18%, var(--frontier) 82%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--frontier) 70%, transparent); z-index: 1; pointer-events: none; }
     .replay__head::before { content: 'frontier'; position: absolute; top: -1.6rem; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.18em; color: var(--frontier); white-space: nowrap; }
     .replay__head::after { content: '▸'; position: absolute; bottom: -1.5rem; left: 50%; transform: translateX(-50%); color: var(--frontier); font-size: 0.7rem; }
 
     /* — a beat on the tape — */
     .replay__tape { list-style: none; }
     .rbeat { --reveal: 1; --emph: 1; flex: 0 0 auto; width: 21rem; display: flex; flex-direction: column; gap: 0.55rem; }
-    .replay[data-mode='pin'] .rbeat { opacity: calc(0.28 + 0.72 * var(--emph)); }
+    .replay[data-mode='pin'] .rbeat { opacity: calc(0.52 + 0.48 * var(--emph)); }
     .rbeat__seq { font-size: var(--t-label); color: var(--paper-faint); letter-spacing: 0.16em; text-transform: uppercase; }
     .rbeat.is-head .rbeat__seq { color: var(--live); }
     .rbeat__card { position: relative; padding: 1rem 1.15rem 1.15rem; background: color-mix(in srgb, var(--ink-1) 85%, transparent); border: 1px solid var(--rule); border-left: 3px solid color-mix(in srgb, var(--current) 55%, transparent); backdrop-filter: blur(3px); }
@@ -360,18 +360,21 @@ import { REEL } from '../lib/replay';
     .rail[data-k='stale'] .rail__dot { background: var(--stale); }
     .rail[data-k='conflict'] .rail__dot { background: var(--conflict); }
     .rail__n { margin-left: auto; color: var(--paper-faint); }
-    .rail__list { list-style: none; display: flex; flex-direction: column; }
+    .rail__list { list-style: none; display: flex; flex-direction: column; max-height: 24rem; overflow-y: auto; scrollbar-width: thin; }
     .rail__item { padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--rule); border-left: 2px solid transparent; transition: background var(--dur-hover), border-color var(--dur-hover); }
     .rail__item:last-child { border-bottom: none; }
     .rail[data-k='current'] .rail__item { border-left-color: color-mix(in srgb, var(--current) 40%, transparent); }
     .rail[data-k='stale'] .rail__item { border-left-color: color-mix(in srgb, var(--stale) 40%, transparent); }
     .rail[data-k='conflict'] .rail__item { border-left-color: color-mix(in srgb, var(--conflict) 40%, transparent); }
     .rail__item:hover { background: color-mix(in srgb, var(--paper) 3%, transparent); }
-    .rail__text { font-family: var(--font-serif); font-size: 1.02rem; color: var(--paper); }
-    .rail[data-k='stale'] .rail__text { color: var(--paper-dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 60%, transparent); }
-    .rail__meta { margin-top: 0.35rem; font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-faint); overflow-wrap: anywhere; }
+    .rail__text { font-family: var(--font-serif); font-size: 1.02rem; line-height: 1.4; color: var(--paper); }
+    .rail[data-k='stale'] .rail__text { color: var(--paper-dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--stale) 55%, transparent); text-decoration-thickness: 1px; }
+    /* the supersession, as a code-editor diff line: green gutter → the new truth */
+    .rail__diff { margin-top: 0.4rem; padding-left: 0.75rem; border-left: 2px solid color-mix(in srgb, var(--current) 45%, transparent); display: flex; gap: 0.5rem; align-items: baseline; }
+    .rail__diff-mark { flex: none; font-family: var(--font-mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.1em; color: var(--paper-faint); }
+    .rail__new { font-family: var(--font-serif); font-size: 0.98rem; line-height: 1.35; color: var(--current); }
+    .rail__meta { margin-top: 0.45rem; font-family: var(--font-mono); font-size: var(--t-label); color: var(--paper-faint); overflow-wrap: anywhere; letter-spacing: 0.02em; }
     .rail__meta .receipt__addr { color: var(--live); }
-    .rail__new { color: var(--current); }
     .rail__empty { padding: 0.9rem; color: var(--paper-faint); font-style: italic; font-family: var(--font-sans); font-size: var(--t-small); }
 
     /* ══ teach → settle console ══════════════════════════════════════════ */
@@ -434,13 +437,15 @@ import { REEL } from '../lib/replay';
     .ask__out code { font-family: var(--font-mono); color: var(--live); }
 
     .dogfood h2 { font-size: var(--t-h1); margin-top: 0.5rem; }
-    .dogfood .sec-head__sub { max-width: 46rem; margin-top: 0.9rem; }
+    .dogfood .sec-head__sub { max-width: 46rem; margin-top: 0.9rem; color: var(--paper-dim); }
     .dogfood b { color: var(--paper); font-weight: 500; }
-    .dogfood__stats { display: flex; gap: 2.4rem; flex-wrap: wrap; margin: 1.8rem 0 0.4rem; }
-    .dogfood__stats dt { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--paper-faint); }
-    .dogfood__stats dd { font-size: clamp(1.8rem, 4vw, 2.6rem); font-variant-numeric: tabular-nums; color: var(--paper); margin-top: 0.2rem; }
+    .dogfood__stats { display: flex; flex-wrap: wrap; width: fit-content; margin: 2rem 0 0.4rem; border: 1px solid var(--rule-strong); background: color-mix(in srgb, var(--ink-1) 45%, transparent); }
+    .dogfood__stats > div { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.9rem 1.5rem; border-right: 1px solid var(--rule); }
+    .dogfood__stats > div:last-child { border-right: none; }
+    .dogfood__stats dd { font-size: clamp(1.9rem, 4vw, 2.7rem); font-variant-numeric: tabular-nums; color: var(--paper); line-height: 1; }
+    .dogfood__stats dt { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--paper-faint); }
     .dogfood__stats .df-sup { color: var(--stale); }
-    .dogfood .hero__cta { display: inline-block; margin-top: 1.2rem; }
+    .dogfood .hero__cta { display: inline-block; margin-top: 1.4rem; }
 
     .foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; padding: 2.5rem var(--gutter); border-top: 1px solid var(--rule); color: var(--paper-faint); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.12em; }
 
@@ -458,12 +463,18 @@ import { REEL } from '../lib/replay';
 
     function escapeHtml(s: string) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+    // strip chat-role prefixes so raw session transcripts read as clean claims
+    const cleanText = (s: string) => (s || '').replace(/^\s*(user|assistant)\s*:\s*/i, '').trim();
+    // markdown headers / fragments aren't factual claims — keep them out of the rails
+    const isNoise = (c: Claim) => { const t = (c.text || '').trim(); return t.startsWith('#') || t.length < 4; };
+
     function claimItem(c: Claim, k: string): string {
-      const src = c.source_path ? `${c.source_path}${c.line ? ':' + c.line : ''}` : '';
-      const receipt = c.receipt?.event_id ? `<span class="receipt__addr">${escapeHtml(c.receipt.event_id)}</span>${c.receipt.sequence != null ? ' · seq ' + c.receipt.sequence : ''}` : '';
-      const supersede = k === 'stale' && c.superseded_by_text ? ` · → <span class="rail__new">${escapeHtml(c.superseded_by_text)}</span>` : '';
-      const meta = [src, receipt].filter(Boolean).join(' · ') + supersede;
-      return `<li class="rail__item"><div class="rail__text">${escapeHtml(c.text)}</div>${meta ? `<div class="rail__meta">${meta}</div>` : ''}</li>`;
+      const src = c.source_path ? `${escapeHtml(c.source_path)}${c.line ? ':' + c.line : ''}` : '';
+      const receipt = c.receipt?.event_id ? `<span class="receipt__addr">${escapeHtml(c.receipt.event_id.slice(0, 8))}</span>${c.receipt.sequence != null ? ' · seq ' + c.receipt.sequence : ''}` : '';
+      const meta = [src, receipt].filter(Boolean).join(' · ');
+      const diff = (k === 'stale' && c.superseded_by_text)
+        ? `<div class="rail__diff"><span class="rail__diff-mark">now</span><span class="rail__new">${escapeHtml(cleanText(c.superseded_by_text))}</span></div>` : '';
+      return `<li class="rail__item"><div class="rail__text">${escapeHtml(cleanText(c.text))}</div>${diff}${meta ? `<div class="rail__meta">${meta}</div>` : ''}</li>`;
     }
 
     function render(state: MemoryState) {
@@ -473,11 +484,14 @@ import { REEL } from '../lib/replay';
       set('hud-frontier', state.frontier ?? '—');
       set('hud-current', state.current.length); set('hud-stale', state.stale.length);
       set('hud-conflict', state.conflicts.length); set('hud-settle', state.settlement);
-      set('n-current', state.current.length); set('n-stale', state.stale.length); set('n-conflict', state.conflicts.length);
+      const cur = state.current.filter((c) => !isNoise(c));
+      const st = state.stale.filter((c) => !isNoise(c));
+      const cf = state.conflicts;
+      set('n-current', cur.length); set('n-stale', st.length); set('n-conflict', cf.length);
       const fill = (id: string, claims: Claim[], k: string) => { const el = $(id); if (el) el.innerHTML = claims.length ? claims.map((c) => claimItem(c, k)).join('') : `<li class="rail__empty">${k === 'conflict' ? 'none open' : 'nothing yet'}</li>`; };
-      fill('list-current', state.current, 'current');
-      fill('list-stale', state.stale, 'stale');
-      fill('list-conflict', state.conflicts, 'conflict');
+      fill('list-current', cur, 'current');
+      fill('list-stale', st, 'stale');
+      fill('list-conflict', cf, 'conflict');
     }
 
     let current: MemoryState;
